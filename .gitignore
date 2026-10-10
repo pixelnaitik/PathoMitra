@@ -1,0 +1,14 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Tooling scratch directories (safe to delete)
+.tmp-build/
+.build-tmp/
+.npm-cache/
+

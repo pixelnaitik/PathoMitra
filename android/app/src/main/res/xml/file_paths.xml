@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Paths the FileProvider may hand out as content:// URIs. The Share plugin
+  resolves `<applicationId>.fileprovider` against this table, so every directory
+  Capacitor's Filesystem can write to has to appear here — otherwise sharing a
+  report PDF fails with "Couldn't find host ... for file:// URI".
+
+  Every entry is scoped to the app's own `PathLab OS/` sub-folder. They used to
+  all be `path="."`, which granted this provider authority over the *entire*
+  external-storage root: any future bug in a share or deep-link path would
+  become a whole-volume read primitive over a device that holds patient records,
+  and it is the exact pattern Play's automated storage-path scans flag. Narrowing
+  to the one folder the app actually writes is free — nothing else is shared.
+
+  Keep these in step with OUTPUT_SUBDIR in src/lib/native-files.ts.
+-->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- getFilesDir()/PathLab OS — Directory.Data. The default destination:
+         app-private, unreadable by any other app or file manager. -->
+    <files-path name="shared_files" path="PathLab OS" />
+    <!-- getCacheDir()/PathLab OS — Directory.Cache. -->
+    <cache-path name="shared_cache" path="PathLab OS" />
+
+    <!-- The entries below are only reachable when the lab has deliberately
+         enabled Settings → Data & Diagnostics → "Save exports to Documents".
+         They expose the app's own sub-folder, never the volume root. -->
+
+    <!-- Environment.getExternalStorageDirectory()/PathLab OS — Directory.External. -->
+    <external-path name="shared_external" path="PathLab OS" />
+    <!-- Environment.getExternalStoragePublicDirectory(DOCUMENTS)/PathLab OS
+         — Directory.Documents. -->
+    <external-path name="shared_documents" path="Documents/PathLab OS" />
+    <!-- getExternalFilesDir(null)/PathLab OS — app-private on external storage. -->
+    <external-files-path name="shared_external_files" path="PathLab OS" />
+    <!-- getExternalCacheDir()/PathLab OS. -->
+    <external-cache-path name="shared_external_cache" path="PathLab OS" />
+</paths>

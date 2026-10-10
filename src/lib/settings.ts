@@ -1,0 +1,337 @@
+/**
+ * Single source of truth for locally-stored lab settings and custom tests.
+ *
+ * Historically these values were read/written directly from localStorage in
+ * SettingsPage, ReportsPage and DashboardLayout (each with its own copy of the
+ * migration logic). All of that now lives here:
+ *
+ *   - readSettings() / writeSettings()  -> 'pathologyos_settings'
+ *   - readCustomTests() / writeCustomTests() -> 'custom_pathology_tests'
+ *
+ * writeSettings() applies the theme and dispatches the 'settings-updated'
+ * event so already-mounted components (sidebar avatar, theme) stay in sync.
+ */
+import { applyAppearance, applyTheme } from './theme';
+import { RECOMMENDED_LAYOUT_DEFAULTS } from './report-layout';
+import { DEFAULT_NOTIFICATION_PREFS, type NotificationPrefs } from './notification-engine';
+import type { PathologyTest } from './pathology-tests';
+
+export const SETTINGS_STORAGE_KEY = 'pathologyos_settings';
+export const CUSTOM_TESTS_STORAGE_KEY = 'custom_pathology_tests';
+
+/**
+ * Fired by `writeSettings` / `writeCustomTests` so the cloud-sync layer
+ * (lib/settings-sync) can react without this module importing Firebase — that
+ * keeps settings.ts free of network dependencies and trivially unit-testable.
+ */
+export const SETTINGS_UPDATED_EVENT = 'settings-updated';
+export const CUSTOM_TESTS_UPDATED_EVENT = 'custom-tests-updated';
+
+export interface LabSettings {
+  name: string;
+  email: string;
+  phone: string;
+  labName: string;
+  address: string;
+  /**
+   * Legacy mirrors of `notificationPrefs.channels.email` / `.sms`. They predate
+   * the notification engine, when the two toggles were stored and never read;
+   * `writeSettings` keeps them in step so an older synced document still
+   * reflects the lab's choices.
+   */
+  emailNotifications: boolean;
+  smsNotifications: boolean;
+  /**
+   * What the Notification Center actually evaluates: which categories alert,
+   * how long a lab has before something counts as late, and which delivery
+   * channels may offer to send an alert.
+   */
+  notificationPrefs: NotificationPrefs;
+  /**
+   * Seconds of inactivity after which the console re-locks itself. 0 means
+   * "never on idle" — backgrounding still locks regardless, because leaving the
+   * app foregrounded is not a setting, it is the point of the lock. See
+   * `lib/session-lock`.
+   */
+  autoLockSeconds: number;
+  reportTemplate: string;
+  shareTemplate: string;
+  themeId: string;
+  themeMode: string;
+  /** Appearance: UI text scale — root font size step ('sm' | 'md' | 'lg'). */
+  textSize: 'sm' | 'md' | 'lg';
+  /** Appearance: collapse animations/transitions regardless of the OS preference. */
+  reduceMotion: boolean;
+  /** Appearance: collapse the frosted blur to solid surfaces regardless of the OS. */
+  reduceTransparency: boolean;
+  /** Appearance: corner rounding style — 'rounded' (default) or 'sharp'. */
+  cornerStyle: 'rounded' | 'sharp';
+  /** Feel: device vibration on presses and toast outcomes (native only). */
+  hapticsEnabled: boolean;
+  /**
+   * Write exported PDFs/CSVs into shared `Documents` storage instead of the
+   * app-private directory. Off by default: those files hold patient data in
+   * plaintext, outside the SQLCipher database, and shared storage is readable by
+   * other apps, file managers and media indexers. Labs that want to browse the
+   * files themselves can opt in (Settings → Data & Diagnostics).
+   */
+  allowPublicExports: boolean;
+  reportMarginTop: number;
+  reportMarginBottom: number;
+  reportMarginLeft: number;
+  reportMarginRight: number;
+  shareMarginTop: number;
+  shareMarginBottom: number;
+  shareMarginLeft: number;
+  shareMarginRight: number;
+  reportTableBodyFontSize: number;
+  shareTableBodyFontSize: number;
+  reportTitleFontSize: number;
+  patientInfoFontSize: number;
+  patientLineHeight: number;
+  reportSectionGap: number;
+  tableHeaderFontSize: number;
+  tableBodyFontSize: number;
+  tableCellPadding: number;
+  notesFontSize: number;
+  footerFontSize: number;
+  avatarSeed: string;
+  sharingTemplateImage: string;
+  /**
+   * Legal footer credentials, supplied by the laboratory operator. Printing an
+   * accreditation is opt-in and gated: nothing appears on a report unless
+   * `accreditationAttestedAt` is non-empty *and* both the body and its number
+   * are filled (see `lib/report-compliance`). Defaults are therefore empty.
+   */
+  accreditationBody: string;
+  accreditationNumber: string;
+  /** Statutory laboratory registration/licence number; a factual identifier. */
+  licenceNumber: string;
+  /**
+   * ISO timestamp of the operator's one-time attestation that they hold the
+   * accreditation above. Clearing it immediately stops the claim printing.
+   */
+  accreditationAttestedAt: string;
+  /**
+   * Stamped on every write; used as the last-write-wins token when the local
+   * copy is reconciled against `labSettings/current` in Firestore.
+   */
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
+export const DEFAULT_SETTINGS: LabSettings = {
+  name: '',
+  email: '',
+  phone: '',
+  labName: 'PathLab OS Lab',
+  address: '',
+  emailNotifications: DEFAULT_NOTIFICATION_PREFS.channels.email,
+  smsNotifications: DEFAULT_NOTIFICATION_PREFS.channels.sms,
+  notificationPrefs: DEFAULT_NOTIFICATION_PREFS,
+  autoLockSeconds: 120,
+  // Report layout values come from the single shared source of truth in
+  // lib/report-layout — never hard-code copies of them in UI components.
+  ...RECOMMENDED_LAYOUT_DEFAULTS,
+  themeId: 'navy',
+  themeMode: 'light',
+  textSize: 'md',
+  reduceMotion: false,
+  reduceTransparency: false,
+  cornerStyle: 'rounded',
+  hapticsEnabled: true,
+  allowPublicExports: false,
+  // Legacy field kept only as a fallback for older stored settings; the UI
+  // edits reportTableBodyFontSize / shareTableBodyFontSize directly.
+  tableBodyFontSize: RECOMMENDED_LAYOUT_DEFAULTS.tableBodyFontSize,
+  avatarSeed: 'default',
+  sharingTemplateImage: '',
+  accreditationBody: '',
+  accreditationNumber: '',
+  licenceNumber: '',
+  accreditationAttestedAt: '',
+};
+
+/** Threshold bounds — a mistyped or hand-edited value must not silence alerts. */
+const HOUR_LIMITS = { min: 1, max: 336 };
+const DAY_LIMITS = { min: 1, max: 90 };
+
+function clamp(value: unknown, fallback: number, limits: { min: number; max: number }): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(limits.max, Math.max(limits.min, Math.round(n)));
+}
+
+/**
+ * Rebuild notification preferences from whatever is stored.
+ *
+ * `readSettings` merges stored values over defaults shallowly, so a stored
+ * `notificationPrefs` that predates a newer key (or arrived as a partial through
+ * cloud sync) would otherwise leave `undefined` in the UI and silently disable a
+ * category. Every field is therefore taken from the stored object *only when it
+ * has the right type*, and from the defaults otherwise — which also makes a
+ * corrupt value (a string, an array, a JSON scalar) harmless rather than
+ * spread-able. Legacy `emailNotifications` / `smsNotifications` are honoured when
+ * the nested channel flag is absent, so an existing lab's choices carry over.
+ */
+export function sanitizeNotificationPrefs(
+  raw: unknown,
+  legacy?: { email?: unknown; sms?: unknown },
+): NotificationPrefs {
+  const source = isRecord(raw) ? raw : {};
+  const channels = isRecord(source.channels) ? source.channels : {};
+  const categories = isRecord(source.categories) ? source.categories : {};
+  const defaults = DEFAULT_NOTIFICATION_PREFS;
+  const bool = (value: unknown, fallback: boolean): boolean =>
+    typeof value === 'boolean' ? value : fallback;
+
+  // The legacy booleans only apply where the nested flag was never written.
+  const email = typeof channels.email === 'boolean' ? channels.email : legacy?.email;
+  const sms = typeof channels.sms === 'boolean' ? channels.sms : legacy?.sms;
+
+  return {
+    channels: {
+      email: bool(email, defaults.channels.email),
+      sms: bool(sms, defaults.channels.sms),
+      whatsapp: bool(channels.whatsapp, defaults.channels.whatsapp),
+      desktop: bool(channels.desktop, defaults.channels.desktop),
+    },
+    categories: {
+      overdue: bool(categories.overdue, defaults.categories.overdue),
+      draft: bool(categories.draft, defaults.categories.draft),
+      amended: bool(categories.amended, defaults.categories.amended),
+      due: bool(categories.due, defaults.categories.due),
+    },
+    // Thresholds fall back to the *defaults*, never to whatever the stored
+    // object claimed: an out-of-bounds or non-numeric value is unusable.
+    overdueHours: clamp(source.overdueHours, defaults.overdueHours, HOUR_LIMITS),
+    draftHours: clamp(source.draftHours, defaults.draftHours, HOUR_LIMITS),
+    dueDays: clamp(source.dueDays, defaults.dueDays, DAY_LIMITS),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Upgrade legacy stored values to the current defaults. Safe to run on every
+ * read — it only rewrites values that match known old defaults.
+ */
+export function migrateSettings(parsed: Record<string, unknown>): Record<string, unknown> {
+  const s = { ...parsed };
+  // Auto-migrate old default margins (20/10/40/15) to new standard values (50/20/8/15)
+  if (s.reportMarginTop === 20 || s.reportMarginTop === 40) s.reportMarginTop = 50;
+  if (s.reportMarginBottom === 10) s.reportMarginBottom = 20;
+  if (s.reportMarginLeft === 15) s.reportMarginLeft = 8;
+
+  const bodyFont = (s.tableBodyFontSize as number) ?? DEFAULT_SETTINGS.tableBodyFontSize;
+  if (s.reportTableBodyFontSize === undefined) s.reportTableBodyFontSize = bodyFont;
+  if (s.shareTableBodyFontSize === undefined) s.shareTableBodyFontSize = bodyFont;
+  if (s.themeMode === undefined) s.themeMode = DEFAULT_SETTINGS.themeMode;
+  // Appearance prefs are enumerated — a corrupt or hand-edited stored value
+  // must not stick (an unknown textSize would silently disable the scale).
+  if (s.textSize !== 'sm' && s.textSize !== 'md' && s.textSize !== 'lg')
+    s.textSize = DEFAULT_SETTINGS.textSize;
+  if (typeof s.reduceMotion !== 'boolean') s.reduceMotion = DEFAULT_SETTINGS.reduceMotion;
+  if (typeof s.reduceTransparency !== 'boolean')
+    s.reduceTransparency = DEFAULT_SETTINGS.reduceTransparency;
+  if (typeof s.hapticsEnabled !== 'boolean') s.hapticsEnabled = DEFAULT_SETTINGS.hapticsEnabled;
+  // A leaked PHI-export preference must fail closed, never open.
+  if (typeof s.allowPublicExports !== 'boolean')
+    s.allowPublicExports = DEFAULT_SETTINGS.allowPublicExports;
+  if (s.cornerStyle !== 'rounded' && s.cornerStyle !== 'sharp')
+    s.cornerStyle = DEFAULT_SETTINGS.cornerStyle;
+  // Legal-footer credentials are claims printed on a clinical document, so a
+  // corrupt or hand-edited stored value is dropped rather than rendered, and an
+  // attestation flag that is not a real timestamp disables the claim entirely.
+  for (const key of [
+    'accreditationBody',
+    'accreditationNumber',
+    'licenceNumber',
+    'accreditationAttestedAt',
+  ] as const) {
+    const value = s[key];
+    if (typeof value !== 'string') {
+      s[key] = DEFAULT_SETTINGS[key];
+    } else {
+      s[key] = value.trim().slice(0, key === 'accreditationAttestedAt' ? 64 : 120);
+    }
+  }
+  if (
+    s.accreditationAttestedAt &&
+    Number.isNaN(new Date(String(s.accreditationAttestedAt)).getTime())
+  )
+    s.accreditationAttestedAt = '';
+  s.notificationPrefs = sanitizeNotificationPrefs(s.notificationPrefs, {
+    email: s.emailNotifications,
+    sms: s.smsNotifications,
+  });
+  // Only the listed intervals are valid; an arbitrary stored number (a hand edit,
+  // or a value from a build with different options) falls back to the default.
+  if (![0, 30, 120, 300, 900].includes(safeInt(s.autoLockSeconds)))
+    s.autoLockSeconds = DEFAULT_SETTINGS.autoLockSeconds;
+  return s;
+}
+
+/** Small helper for the enumerated numeric prefs above. */
+function safeInt(value: unknown): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? Math.trunc(n) : -1;
+}
+
+/** Read, migrate and merge stored settings with defaults. Never throws. */
+export function readSettings(): LabSettings {
+  try {
+    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_SETTINGS };
+    const parsed = migrateSettings(JSON.parse(raw));
+    return { ...DEFAULT_SETTINGS, ...parsed } as LabSettings;
+  } catch (e) {
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+
+/** Persist settings, apply the theme and notify other mounted components. */
+export function writeSettings(settings: LabSettings): void {
+  const prefs = sanitizeNotificationPrefs(settings.notificationPrefs, {
+    email: settings.emailNotifications,
+    sms: settings.smsNotifications,
+  });
+  // The legacy booleans are mirrors, never inputs: keeping them in step means a
+  // document written by an older client still shows the lab's real choices.
+  const stamped: LabSettings = {
+    ...settings,
+    notificationPrefs: prefs,
+    emailNotifications: prefs.channels.email,
+    smsNotifications: prefs.channels.sms,
+    updatedAt: new Date().toISOString(),
+  };
+  try {
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(stamped));
+  } catch (e) {
+    console.error('SettingsContext: failed to persist settings', e);
+  }
+  applyTheme(stamped.themeId || 'navy', stamped.themeMode === 'dark' ? 'dark' : 'light');
+  applyAppearance(stamped);
+  window.dispatchEvent(new Event(SETTINGS_UPDATED_EVENT));
+}
+
+/** Read stored custom pathology tests. Never throws. */
+export function readCustomTests(): PathologyTest[] {
+  try {
+    const raw = localStorage.getItem(CUSTOM_TESTS_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as PathologyTest[]) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+export function writeCustomTests(tests: PathologyTest[]): void {
+  try {
+    localStorage.setItem(CUSTOM_TESTS_STORAGE_KEY, JSON.stringify(tests));
+  } catch (e) {
+    console.error('SettingsContext: failed to persist custom tests', e);
+  }
+  window.dispatchEvent(new Event(CUSTOM_TESTS_UPDATED_EVENT));
+}

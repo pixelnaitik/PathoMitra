@@ -1,0 +1,13 @@
+# robots.txt — Healthcare OS / PathLab OS
+# https://healthcare-os.pages.dev
+
+User-agent: *
+Allow: /
+Allow: /technology
+Allow: /solutions
+
+# Block private dashboard and auth routes from indexing
+Disallow: /dashboard
+Disallow: /auth
+
+Sitemap: https://healthcare-os.pages.dev/sitemap.xml

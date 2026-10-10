@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <!-- Kept byte-identical to `appName` in capacitor.config.ts. This is what the
+         launcher, Recents and the system print / share sheets display, so a
+         stale value here makes the app introduce itself under two names. -->
+    <string name="app_name">PathLab OS</string>
+    <string name="title_activity_main">PathLab OS</string>
+    <string name="package_name">com.healthcareos.app</string>
+    <string name="custom_url_scheme">com.healthcareos.app</string>
+</resources>
