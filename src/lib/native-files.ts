@@ -20,6 +20,7 @@
  */
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import type { Directory as DirectoryKind } from '@capacitor/filesystem';
+import { desktopBridge } from './desktop-bridge';
 import { readSettings } from './settings';
 
 /** Sub-folder inside the app's storage area that generated documents land in. */
@@ -33,6 +34,8 @@ export interface SavedFile {
   uri: string;
   /** Absolute filesystem path, shown to the user after a bare save. */
   path: string;
+  /** Desktop only: false when the file landed in public Documents. */
+  private?: boolean;
 }
 
 /** Directory names the plugin understands, used as the storage policy keys. */
@@ -58,6 +61,24 @@ function candidateDirectories(): DirName[] {
 
 export function isNativeShell(): boolean {
   return Capacitor.isNativePlatform();
+}
+
+/** Which shell wraps the shared web bundle: the APK, the Electron window, or neither. */
+export type ShellKind = 'web' | 'android' | 'desktop';
+
+export function getShellKind(): ShellKind {
+  if (desktopBridge()) return 'desktop';
+  if (isNativeShell()) return 'android';
+  return 'web';
+}
+
+/**
+ * True when the runtime has real file output (the Electron bridge or the
+ * APK's Filesystem plugin) — the condition every "hand the bytes to the OS"
+ * path branches on. Web falls through to browser downloads, which still work.
+ */
+export function hasShellOutput(): boolean {
+  return getShellKind() !== 'web';
 }
 
 /**
@@ -94,9 +115,21 @@ async function writeOnDevice(
   data: string,
   encoding?: 'utf8',
 ): Promise<SavedFile> {
+  const name = safeFileName(filename);
+  const bridge = desktopBridge();
+  if (bridge) {
+    // Desktop: same policy, enforced in the main process (public Documents is
+    // the lab's opt-in, app-private userData is always the fallback).
+    const saved = await bridge.files.save({
+      relPath: `${OUTPUT_SUBDIR}/${name}`,
+      data,
+      base64: encoding !== 'utf8',
+      publicFirst: candidateDirectories().includes('Documents'),
+    });
+    return { name: saved.name, uri: saved.uri, path: saved.path, private: saved.isPrivate };
+  }
   const fs = await loadFilesystem();
   const { Directory, Encoding } = fs;
-  const name = safeFileName(filename);
   const path = `${OUTPUT_SUBDIR}/${name}`;
   const byName: Record<DirName, DirectoryKind> = {
     Documents: Directory.Documents,
@@ -164,6 +197,18 @@ async function appExternal() {
 
 /** Write a text file at an exact app-relative path. */
 export async function writeAppTextFile(path: string, text: string): Promise<SavedFile> {
+  const bridge = desktopBridge();
+  if (bridge) {
+    // App-owned files (backups above all) always land in the private root —
+    // the same "never guess the directory" rule as the Android path.
+    const saved = await bridge.files.save({
+      relPath: path,
+      data: text,
+      base64: false,
+      publicFirst: false,
+    });
+    return { name: path.split('/').pop() ?? path, uri: saved.uri, path: saved.path, private: true };
+  }
   const { Directory, Encoding, Filesystem } = await appExternal();
   const written = await Filesystem.writeFile({
     path,
@@ -177,6 +222,8 @@ export async function writeAppTextFile(path: string, text: string): Promise<Save
 
 /** Read back a file written by {@link writeAppTextFile}. */
 export async function readAppTextFile(path: string): Promise<string> {
+  const bridge = desktopBridge();
+  if (bridge) return bridge.files.readText(path);
   const { Directory, Encoding, Filesystem } = await appExternal();
   const result = await Filesystem.readFile({
     path,
@@ -189,6 +236,15 @@ export async function readAppTextFile(path: string): Promise<string> {
 
 /** Names of the files directly inside an app-relative directory. */
 export async function listAppFiles(dir: string, extension?: string): Promise<string[]> {
+  const bridge = desktopBridge();
+  if (bridge) {
+    try {
+      return await bridge.files.list(dir, extension);
+    } catch (err) {
+      if (isMissing(err)) return [];
+      throw err;
+    }
+  }
   const { Directory, Filesystem } = await appExternal();
   try {
     const listing = await Filesystem.readdir({ path: dir, directory: Directory.External });
@@ -205,6 +261,8 @@ export async function listAppFiles(dir: string, extension?: string): Promise<str
 
 /** The `file://` URI for a path in the app's own storage, for sharing. */
 export async function getAppFileUri(path: string): Promise<string> {
+  const bridge = desktopBridge();
+  if (bridge) return bridge.files.uri(path);
   const { Directory, Filesystem } = await appExternal();
   return (await Filesystem.getUri({ path, directory: Directory.External })).uri;
 }
@@ -226,6 +284,15 @@ export function isMissing(err: unknown): boolean {
  *   the saved file, so it can fall back to telling the user where it is.
  */
 export async function shareSavedFile(file: SavedFile, title: string, text?: string): Promise<void> {
+  const bridge = desktopBridge();
+  if (bridge) {
+    // Windows has no unified share sheet. The honest desktop equivalent of
+    // "hand it to another app" is opening the file with the user's default
+    // handler (mail client, WhatsApp Desktop, Drive sync folder — their call).
+    // The caller's catch-and-report path stays intact because failures reject.
+    await bridge.shell.show(file.path);
+    return;
+  }
   const { Share } = await import('@capacitor/share');
   await Share.share({
     title,
@@ -261,6 +328,12 @@ let pdfViewer: PdfViewerPlugin | null = null;
  *   what the fallback experience is.
  */
 export async function openSavedFileInViewer(file: SavedFile, mimeType: string): Promise<void> {
+  const bridge = desktopBridge();
+  if (bridge) {
+    void mimeType; // the OS picks the handler by extension; the hint is Android's job
+    await bridge.shell.show(file.path);
+    return;
+  }
   // registerPlugin is a pure-JS factory: the native side is looked up by name
   // at call time, so nothing native loads on web, where this is never called.
   if (!pdfViewer) pdfViewer = registerPlugin<PdfViewerPlugin>('PdfViewer');
@@ -295,6 +368,13 @@ export async function shareDocument(
  * when it is outside anything the user can browse to.
  */
 export function describeSavedLocation(file: SavedFile): string {
+  if (typeof file.private === 'boolean') {
+    // Desktop: absolute Windows paths are meaningful to the operator, so name
+    // the real location and flag the one case they cannot browse to.
+    return file.private
+      ? `${file.path} (private to the app — other programs and File Explorer cannot open it)`
+      : file.path;
+  }
   const decoded = (() => {
     try {
       return decodeURIComponent(file.uri);

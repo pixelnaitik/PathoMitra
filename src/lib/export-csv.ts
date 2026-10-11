@@ -6,7 +6,7 @@
  * screen. Column values are declared per page so the export always matches the
  * columns on display, never the raw document shape.
  */
-import { describeSavedLocation, isNativeShell, saveTextDocument } from './native-files';
+import { describeSavedLocation, hasShellOutput, saveTextDocument } from './native-files';
 
 export interface CsvColumn<T> {
   /** Header text. */
@@ -41,7 +41,7 @@ export function toCsv<T>(columns: CsvColumn<T>[], rows: T[]): string {
  */
 export async function downloadCsv(filename: string, csv: string): Promise<string | null> {
   const text = `\uFEFF${csv}`;
-  if (isNativeShell()) {
+  if (hasShellOutput()) {
     const saved = await saveTextDocument(filename, text);
     return `Saved as ${describeSavedLocation(saved)}`;
   }

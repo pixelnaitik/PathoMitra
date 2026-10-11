@@ -1,16 +1,19 @@
 /**
  * Data-store entrypoint. Chooses the repository once, based on the runtime:
  *
- *   - native (the APK)  → `SqliteRepository`  (encrypted SQLCipher)
- *   - browser / tests   → `WebRepository`     (localStorage, dev only)
+ *   - native (the APK)      → `SqliteRepository`   (encrypted SQLCipher)
+ *   - desktop (Electron)    → `DesktopRepository`  (SQLCipher via the IPC bridge)
+ *   - browser / tests       → `WebRepository`      (localStorage, dev only)
  *
  * Pages import `getRepository()` (or `initDataStore()` during app bootstrap)
  * instead of the old Firestore `db`, and program against the
  * {@link DataRepository} interface so neither adapter leaks into UI code.
  */
 import { Capacitor } from '@capacitor/core';
+import { isDesktopShell } from '../lib/desktop-bridge';
 import type { DataRepository } from './types';
 import { SqliteRepository } from './sqliteRepository';
+import { DesktopRepository } from './desktopRepository';
 import { WebRepository } from './webRepository';
 
 let instance: DataRepository | null = null;
@@ -18,7 +21,8 @@ let instance: DataRepository | null = null;
 /** Lazily create (once) the repository appropriate for this platform. */
 export function getRepository(): DataRepository {
   if (!instance) {
-    instance = Capacitor.isNativePlatform() ? new SqliteRepository() : new WebRepository();
+    if (isDesktopShell()) instance = new DesktopRepository();
+    else instance = Capacitor.isNativePlatform() ? new SqliteRepository() : new WebRepository();
   }
   return instance;
 }

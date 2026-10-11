@@ -15,10 +15,11 @@
  * All plugins are imported lazily and only on native, so the web build never
  * loads any of them and its behaviour is unchanged.
  */
-import { Capacitor } from '@capacitor/core';
 import type { jsPDF } from 'jspdf';
+import { desktopBridge } from './desktop-bridge';
 import {
   describeSavedLocation,
+  hasShellOutput,
   openSavedFileInViewer,
   saveBinaryDocument,
   shareSavedFile,
@@ -64,11 +65,18 @@ function pdfBase64(doc: jsPDF): string {
  * @param filename Job name shown in the print dialog / used for "Save as PDF".
  */
 export async function printPdf(doc: jsPDF, filename: string): Promise<void> {
-  if (!Capacitor.isNativePlatform()) {
+  if (!hasShellOutput()) {
     doc.autoPrint();
     // A refused tab is not a dead end here: saving the file still lands it in
     // the browser, where its own print sheet is one keystroke away.
     if (!openInTab(doc.output('bloburl'), filename)) doc.save(filename);
+    return;
+  }
+
+  const bridge = desktopBridge();
+  if (bridge) {
+    // Windows: the shell "Print" verb over the spooled file (see electron/print.ts).
+    await bridge.print.pdfBase64(pdfBase64(doc), filename);
     return;
   }
 
@@ -95,7 +103,7 @@ export async function printPdf(doc: jsPDF, filename: string): Promise<void> {
  * @returns A message when the preview could not open in a tab, else null.
  */
 export async function previewPdf(doc: jsPDF, filename: string): Promise<string | null> {
-  if (!Capacitor.isNativePlatform()) {
+  if (!hasShellOutput()) {
     if (openInTab(doc.output('bloburl'), filename)) return null;
     doc.save(filename);
     return 'Pop-ups are blocked, so the PDF was downloaded instead — open it from your downloads.';
@@ -127,7 +135,7 @@ export async function previewPdf(doc: jsPDF, filename: string): Promise<string |
  *   browser handled the download itself.
  */
 export async function savePdf(doc: jsPDF, filename: string): Promise<string | null> {
-  if (!Capacitor.isNativePlatform()) {
+  if (!hasShellOutput()) {
     doc.save(filename);
     return null;
   }
@@ -152,7 +160,7 @@ export async function sharePdf(
   subject: string,
   body?: string,
 ): Promise<string | null> {
-  if (!Capacitor.isNativePlatform()) {
+  if (!hasShellOutput()) {
     const blob = doc.output('blob');
     const file = new File([blob], filename, { type: 'application/pdf' });
     if (navigator.canShare?.({ files: [file] })) {

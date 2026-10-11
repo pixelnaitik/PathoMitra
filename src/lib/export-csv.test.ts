@@ -15,6 +15,7 @@ const { mockIsNativeShell, mockSaveTextDocument } = vi.hoisted(() => ({
 type SavedStub = { name: string; uri: string; path: string };
 vi.mock('./native-files', () => ({
   isNativeShell: mockIsNativeShell,
+  hasShellOutput: mockIsNativeShell,
   saveTextDocument: mockSaveTextDocument,
   describeSavedLocation: (file: { name: string }) => `Documents/PathoMitra/${file.name}`,
 }));

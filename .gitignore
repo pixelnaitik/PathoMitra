@@ -15,5 +15,6 @@ coverage/
 .npm-cache/
 
 # Desktop (Electron) build output — never commit installers/win-unpacked
+dist-electron/
 release-desktop/
 

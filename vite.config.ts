@@ -58,12 +58,21 @@ function omitWebOnlyAssets(enabled: boolean): Plugin {
 }
 
 export default defineConfig(() => {
-  // Set by `npm run build:android`. Deliberately a build flag rather than a
-  // runtime check: the files it removes must not exist in the artifact at all.
-  const isNativeTarget = process.env.VITE_TARGET === 'native';
+  // Set by `npm run build:android` / `desktop:build-renderer`. Deliberately a
+  // build flag rather than a runtime check: the files it removes must not
+  // exist in the artifact at all.
+  const target = process.env.VITE_TARGET;
+  const isNativeTarget = target === 'native';
+  const isDesktopTarget = target === 'desktop';
+  // Both shell targets ship no public web surface — same asset strip.
+  const stripWebAssets = isNativeTarget || isDesktopTarget;
 
   return {
-    plugins: [react(), tailwindcss(), omitWebOnlyAssets(isNativeTarget)],
+    plugins: [react(), tailwindcss(), omitWebOnlyAssets(stripWebAssets)],
+    // Electron loads dist/index.html over file://, where absolute /assets URLs
+    // resolve to the drive root and 404. Relative paths work under file://,
+    // and https:// for the web build either way.
+    base: isDesktopTarget ? './' : '/',
     build: {
       minify: 'terser',
       terserOptions: {
