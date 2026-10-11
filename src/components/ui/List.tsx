@@ -6,6 +6,7 @@
 import { forwardRef, type InputHTMLAttributes, type ReactNode } from 'react';
 import { Search, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import { hapticTap } from '../../lib/haptics';
 
 /* ---------------------------------- Search ---------------------------------- */
 
@@ -71,7 +72,17 @@ export function ListRow({
   const Tag = onClick ? 'button' : 'div';
   return (
     <Tag
-      onClick={onClick}
+      onClick={
+        onClick
+          ? () => {
+              // Rows are the most-tapped thing in the app and every other
+              // pressable surface already ticks — a row that opens a sheet or a
+              // record felt dead next to a button.
+              hapticTap();
+              onClick();
+            }
+          : undefined
+      }
       className={cn(
         'cv-row group flex min-h-[60px] w-full items-center gap-3.5 px-4 py-3 text-left transition-colors',
         onClick && 'hover:bg-surface-container-low active:bg-surface-container-high',

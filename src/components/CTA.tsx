@@ -14,11 +14,11 @@ export default function CTA() {
         <div className="absolute inset-0 bg-gradient-to-br from-primary-container to-primary opacity-50" />
         <div className="relative z-10">
           <h2 className="text-4xl md:text-5xl font-bold mb-8 leading-tight tracking-[-0.03em]">
-            Experience PathLab OS Live
+            Run PathoMitra on Your Own Bench
           </h2>
           <p className="text-xl md:text-2xl opacity-80 mb-12 max-w-2xl mx-auto font-medium">
-            Explore the secure, clinical-grade pathology dashboard and patient report portal right
-            now.
+            Open the same patient, report and analytics dashboard the Android app uses, with the
+            records kept on the machine you are working at.
           </p>
           <div className="flex flex-wrap justify-center gap-4">
             <Link to="/auth">
@@ -28,7 +28,7 @@ export default function CTA() {
                 shine
                 className="h-auto rounded-full bg-surface-container-lowest px-10 py-5 text-primary shadow-raised hover:bg-surface hover:shadow-float"
               >
-                Enter Live Demo Portal
+                Open the Console
               </Button>
             </Link>
           </div>

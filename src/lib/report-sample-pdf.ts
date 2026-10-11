@@ -50,7 +50,7 @@ export async function openSampleReportPdf(
   const legacy = L.template === 'blank';
   const serifFont = L.template === 'classic' ? ('times' as const) : ('helvetica' as const);
 
-  const filename = `PathLab OS — sample report (${mode}).pdf`;
+  const filename = `PathoMitra — sample report (${mode}).pdf`;
   const doc = new jsPDF();
   doc.setProperties({ title: filename });
 

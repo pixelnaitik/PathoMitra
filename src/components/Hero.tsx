@@ -113,7 +113,7 @@ function ProductMock() {
         <span className="h-2.5 w-2.5 rounded-full bg-chart-4/60" aria-hidden="true" />
         <span className="h-2.5 w-2.5 rounded-full bg-chart-6/60" aria-hidden="true" />
         <span className="ml-3 hidden rounded-full bg-surface-container-high px-3 py-1 text-[10px] font-medium text-on-surface-variant sm:block">
-          app.pathlab.io/dashboard
+          app.pathomitra.app/dashboard
         </span>
         <span className="ml-auto flex items-center gap-1.5">
           <span
@@ -275,7 +275,7 @@ export default function Hero() {
           transition={{ duration: 0.6, delay: 0.15 }}
           className="mx-auto mt-6 max-w-2xl text-lg leading-relaxed text-on-surface-variant"
         >
-          PathLab OS runs the whole bench-to-report workflow — intake, results, digital sign-off and
+          PathoMitra runs the whole bench-to-report workflow — intake, results, digital sign-off and
           sealed PDF delivery — in one fast, offline-ready console built for clinical teams.
         </motion.p>
 

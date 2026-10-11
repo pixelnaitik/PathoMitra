@@ -3,7 +3,9 @@
  *
  * Sits between `lib/notification-engine` (pure derivation) and the header bell:
  * it owns the bounded Firestore reads, the per-user read/mute document, the
- * lab's channel preferences and the browser-notification side effects.
+ * lab's channel preferences and the OS-banner side effects (via
+ * `lib/desktop-notifications`, which knows the difference between the app's
+ * WebView and a real browser).
  *
  * Cost and correctness notes, because this hook runs once for the whole shell:
  *   - Reads are **one-shot**, not listeners. Four permanent listeners would
@@ -41,6 +43,13 @@ import {
   type ReportRecord,
 } from '../lib/models';
 import { captureError } from '../lib/telemetry';
+import {
+  currentPermission,
+  isSupported,
+  requestPermission,
+  showBanner,
+  type BannerPermission,
+} from '../lib/desktop-notifications';
 import { SETTINGS_UPDATED_EVENT, readSettings, writeSettings } from '../lib/settings';
 import {
   DEFAULT_NOTIFICATION_PREFS,
@@ -103,8 +112,8 @@ export interface UseNotificationsResult {
   toggleMute: (id: string) => void;
   clearMuted: () => void;
   desktopSupported: boolean;
-  desktopPermission: NotificationPermission | 'unsupported';
-  requestDesktopPermission: () => Promise<NotificationPermission | 'unsupported'>;
+  desktopPermission: BannerPermission;
+  requestDesktopPermission: () => Promise<BannerPermission>;
 }
 
 function isPermissionError(err: unknown): boolean {
@@ -137,6 +146,12 @@ export function useNotifications(): UseNotificationsResult {
   });
 
   const [state, setState] = useState<NotificationState>(() => readLocalState(uid));
+  /**
+   * What the OS actually allows. Async because on the app the answer comes from
+   * the notification plugin, not a global — and it is re-read whenever Settings
+   * changes so a grant made in the browser's site UI is picked up.
+   */
+  const [bannerPermission, setBannerPermission] = useState<BannerPermission>('prompt');
   /** Debounced Firestore push of the local state. */
   const pushTimer = useRef(0);
   /** One desktop banner per alert id per session — never a repeating ping. */
@@ -153,6 +168,16 @@ export function useNotifications(): UseNotificationsResult {
     window.addEventListener(SETTINGS_UPDATED_EVENT, load);
     return () => window.removeEventListener(SETTINGS_UPDATED_EVENT, load);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void currentPermission().then(value => {
+      if (!cancelled) setBannerPermission(value);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [prefs.channels.desktop]);
 
   const load = useCallback(async () => {
     if (!active) return;
@@ -335,25 +360,21 @@ export function useNotifications(): UseNotificationsResult {
     if (pruned !== state) commit(pruned);
   }, [active, derived, state, commit]);
 
-  // Desktop banner for anything new that needs attention right now.
+  // Banner for anything new that needs attention right now.
   useEffect(() => {
-    if (!prefs.channels.desktop || !desktopSupported()) return;
-    if (Notification.permission !== 'granted') return;
+    if (!prefs.channels.desktop || !isSupported()) return;
+    if (bannerPermission !== 'granted') return;
     for (const item of items) {
       if (item.read || announced.current.has(item.id)) continue;
       // Silence is fine for routine notices; only lateness wakes the OS.
       if (item.severity === 'info') continue;
       announced.current.add(item.id);
-      try {
-        // `tag` makes the OS replace an existing banner for the same alert
-        // instead of stacking duplicates of the same overdue patient.
-        new Notification(item.title, { body: item.body, tag: item.id });
-      } catch (err) {
-        // Some browsers only allow notifications from a service worker context.
-        captureError(err, { scope: 'useNotifications/desktop' });
-      }
+      // `showBanner` dedupes by alert key on every backend (the plugin's numeric
+      // id on device, `tag` on web), so the same overdue patient replaces its
+      // banner instead of stacking a pile of them.
+      void showBanner({ key: item.id, title: item.title, body: item.body });
     }
-  }, [items, prefs.channels.desktop]);
+  }, [items, prefs.channels.desktop, bannerPermission]);
 
   const markReadOne = useCallback((id: string) => commit(markRead(state, [id])), [commit, state]);
 
@@ -380,19 +401,19 @@ export function useNotifications(): UseNotificationsResult {
    * site as allowed.
    */
   const requestDesktopPermission = useCallback(async () => {
-    if (!desktopSupported()) return 'unsupported' as const;
+    const result = await requestPermission();
+    setBannerPermission(result);
+    if (result === 'unsupported') return result;
     try {
-      const result = await Notification.requestPermission();
       const current = readSettings();
       const nextPrefs = resolvePrefs(current.notificationPrefs);
       nextPrefs.channels = { ...nextPrefs.channels, desktop: result === 'granted' };
       writeSettings({ ...current, notificationPrefs: nextPrefs });
       setPrefs(nextPrefs);
-      return result;
     } catch (err) {
       captureError(err, { scope: 'useNotifications/permission' });
-      return readDesktopPermission();
     }
+    return result;
   }, []);
 
   return {
@@ -410,18 +431,8 @@ export function useNotifications(): UseNotificationsResult {
     markAllRead,
     toggleMute: toggleMuteOne,
     clearMuted: clearMutedAll,
-    desktopSupported: desktopSupported(),
-    desktopPermission: readDesktopPermission(),
+    desktopSupported: isSupported(),
+    desktopPermission: bannerPermission,
     requestDesktopPermission,
   };
-}
-
-/** Read the browser's current permission without throwing in unsupported hosts. */
-function readDesktopPermission(): NotificationPermission | 'unsupported' {
-  if (!desktopSupported()) return 'unsupported';
-  return Notification.permission;
-}
-
-function desktopSupported(): boolean {
-  return typeof Notification !== 'undefined';
 }

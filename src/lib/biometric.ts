@@ -47,13 +47,13 @@ export async function checkBiometric(): Promise<BiometricStatus> {
   }
 }
 
-export async function authenticate(reason = 'Unlock PathLab OS'): Promise<BiometricResult> {
+export async function authenticate(reason = 'Unlock PathoMitra'): Promise<BiometricResult> {
   if (!Capacitor.isNativePlatform()) {
     return { ok: false, error: 'Biometric unlock is only available in the mobile app.' };
   }
   try {
     // Only the title is set on purpose. Passing the same string as title,
-    // subtitle *and* description made the system sheet print "Unlock PathLab
+    // subtitle *and* description made the system sheet print "Unlock PathoMitra
     // OS" three times over; the app name is already shown by the OS above it.
     await BiometricAuth.authenticate({
       androidTitle: reason,

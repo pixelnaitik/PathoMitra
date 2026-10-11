@@ -110,7 +110,7 @@ export async function previewPdf(doc: jsPDF, filename: string): Promise<string |
   } catch (err) {
     // Rare but real: a device with no PDF-capable app. The print sheet renders
     // every page and offers "Save as PDF", so it stays the last-resort viewer.
-    console.warn('PathLab OS: no PDF viewer app on the device, using the print sheet', err);
+    console.warn('PathoMitra: no PDF viewer app on the device, using the print sheet', err);
     await printPdf(doc, filename);
     return 'No PDF viewer app is installed, so the report opened in the print sheet instead.';
   }

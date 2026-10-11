@@ -116,7 +116,7 @@ describe('crash-log', () => {
     await settle();
 
     const text = formatCrashLog(await readCrashLog());
-    expect(text).toContain('PathLab OS');
+    expect(text).toContain('PathoMitra');
     expect(text).toContain('bad row');
     expect(text).toContain('at x (a.js:1:1)');
     expect(text).toContain('/dashboard/reports');

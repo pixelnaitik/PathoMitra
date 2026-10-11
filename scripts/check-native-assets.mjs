@@ -98,4 +98,72 @@ if (checkSynced && fs.existsSync(androidAssets)) {
   }
 }
 
+/**
+ * Reserved-TLD values inside the *bundled client*.
+ *
+ * `check-release-config.mjs` validates the environment before the build, but the
+ * failure that actually shipped was the two guards disagreeing: `privacy@
+ * pathomitra.test` and `https://policy.pathomitra.test/` satisfied every static
+ * check (which only knew `example.invalid`) and were then inlined by Vite into
+ * the release JS — so the signed APK advertised a privacy policy that can never
+ * resolve. This is the second net: it reads the artifact rather than the config.
+ *
+ * The `set-VITE_*@example.invalid` literals are deliberately *not* flagged: they
+ * are the in-code fallbacks in src/lib/privacy-policy.ts, present by design, and
+ * `hasPlaceholderPrivacyContact()` treats them as the placeholder they are.
+ */
+const RESERVED_VALUE =
+  /(?:https?:\/\/[^"'\s]*|[A-Za-z0-9._%+-]+@)[A-Za-z0-9.-]*\.(?:test|invalid|example|localhost|local)\b/g;
+const KNOWN_FALLBACK = /set-VITE_[A-Z_]+@example\.invalid/;
+
+function findReservedValues(dir) {
+  if (!fs.existsSync(dir)) return [];
+  const findings = [];
+  for (const name of fs.readdirSync(dir)) {
+    if (!/\.(js|html|css|json)$/.test(name)) continue;
+    const file = path.join(dir, name);
+    if (!fs.statSync(file).isFile()) continue;
+    const text = fs.readFileSync(file, 'utf8');
+    // Strip the known fallback literals so they cannot match at all.
+    const scanned = text.replace(KNOWN_FALLBACK, 'FALLBACK_PLACEHOLDER');
+    const matches = [...scanned.matchAll(RESERVED_VALUE)].map(m => m[0]);
+    for (const value of [...new Set(matches)]) findings.push(`${name}: ${value}`);
+  }
+  return findings;
+}
+
+const bundleDirs = [path.join(outDir, 'assets'), outDir];
+if (checkSynced) {
+  bundleDirs.push(path.resolve(process.cwd(), 'android/app/src/main/assets/public/assets'));
+}
+
+const placeholderFindings = [];
+for (const dir of bundleDirs) {
+  for (const finding of findReservedValues(dir)) {
+    // dist/ and dist/assets are both scanned; dedupe so a file is not reported twice.
+    if (!placeholderFindings.includes(finding)) placeholderFindings.push(finding);
+  }
+}
+if (placeholderFindings.length > 0) {
+  // Same hatch as `check-release-config.mjs --allow-placeholder`, and the reason
+  // it has to be an explicit env var rather than a silent pass: a device test build
+  // is made before the real domain exists, so its bundle *does* contain the
+  // placeholder — that is expected, and must stay impossible for a release build.
+  if (process.env.PATHOMITRA_ALLOW_PLACEHOLDER_ASSETS === '1') {
+    console.warn(
+      '\n⚠ PATHOMITRA_ALLOW_PLACEHOLDER_ASSETS=1 — placeholder identity values left in the bundle:\n' +
+        placeholderFindings.map(f => `    - ${f}`).join('\n') +
+        '\n  TEST BUILD ONLY. This artifact cannot be submitted to Google Play.\n',
+    );
+  } else {
+    fail([
+      'the built bundle carries a placeholder privacy contact/policy URL on a reserved TLD —',
+      'Google requires a publicly reachable policy, and Play cross-checks it against the app:',
+      ...placeholderFindings.map(f => `    - ${f}`),
+      '    Fix VITE_SUPPORT_EMAIL / VITE_PRIVACY_URL in .env and rebuild with npm run build:android.',
+      '    (Device testing before the domain exists: npm run android:test-build)',
+    ]);
+  }
+}
+
 console.log('✓ Native asset check passed — dist/ carries no web-deployment artefacts.');

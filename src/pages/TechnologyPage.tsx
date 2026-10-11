@@ -21,7 +21,7 @@ export default function TechnologyPage() {
               Built for Trust, Speed, and Precision
             </h1>
             <p className="text-lg text-on-surface-variant font-medium">
-              PathLab OS is a local-first laboratory console: the records, the encryption and the
+              PathoMitra is a local-first laboratory console: the records, the encryption and the
               controls all live on the machine doing the work.
             </p>
           </motion.div>
@@ -29,10 +29,10 @@ export default function TechnologyPage() {
           {/* Benefits Grid */}
           <div className="mb-16">
             <span className="block text-[12px] font-semibold uppercase tracking-[0.12em] text-accent text-center mb-3">
-              Why PathLab OS
+              Why PathoMitra
             </span>
             <h2 className="text-3xl font-bold tracking-[-0.03em] text-on-surface mb-12 text-center">
-              The PathLab OS Advantage
+              The PathoMitra Advantage
             </h2>
             <div className="grid md:grid-cols-3 gap-8">
               {[
@@ -44,17 +44,17 @@ export default function TechnologyPage() {
                 {
                   icon: Lock,
                   title: 'Encrypted on the Device',
-                  desc: 'Records sit in a SQLCipher (AES-256) database whose key is held in the Android hardware keystore, never in the app bundle or plain preferences.',
+                  desc: 'In the Android app, records sit in a SQLCipher (AES-256) database whose key is held in the hardware keystore, never in the app bundle or plain preferences. The browser build runs the same console on unencrypted local storage.',
                 },
                 {
                   icon: Zap,
                   title: 'Built for Bench Speed',
-                  desc: 'Keyboard-first data entry, command search, cursor-paginated lists and an undo history — designed around typing hundreds of results a day.',
+                  desc: 'Keyboard-first data entry, command search, progressively-paged lists and an undo history — designed around typing hundreds of results a day.',
                 },
                 {
                   icon: Fingerprint,
                   title: 'Device-Bound Unlock',
-                  desc: 'A PBKDF2-hashed PIN plus optional biometric or screen-lock credential, verified by the operating system rather than by this app.',
+                  desc: 'A PBKDF2-hashed PIN everywhere, plus an optional biometric or screen-lock credential on Android, verified by the operating system rather than by this app.',
                 },
               ].map((benefit, i) => (
                 <motion.div

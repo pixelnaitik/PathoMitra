@@ -31,10 +31,18 @@ export type NotificationSeverity = 'critical' | 'warning' | 'info';
  */
 export interface NotificationPrefs {
   channels: {
+    /** Composes to the lab's own address via `mailto:`. */
     email: boolean;
+    /** Composes to the lab's own number via `sms:`. */
     sms: boolean;
+    /** Composes to the lab's own number via `wa.me`. */
     whatsapp: boolean;
-    /** Browser notifications via the Notification API (foreground only). */
+    /**
+     * System banners. Posted through `lib/desktop-notifications`, which uses the
+     * native plugin on the app and the Web Notifications API in a browser — the
+     * bare `new Notification()` this used to call is unavailable in WebView and
+     * throws from page context on Chrome for Android.
+     */
     desktop: boolean;
   };
   categories: Record<NotificationCategory, boolean>;
@@ -406,7 +414,7 @@ export function channelAvailability(
     ready,
     missingHint: ready
       ? undefined
-      : `Add a ${channel === 'email' ? 'lab email' : 'lab phone'} in Settings → Lab Organization to use ${channel.toUpperCase()}.`,
+      : `Add a ${channel === 'email' ? 'lab email' : 'lab phone'} in Settings → My Profile to use ${channel.toUpperCase()}.`,
   };
 }
 

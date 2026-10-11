@@ -124,7 +124,10 @@ describe('report legal lines — banned claims stay banned', () => {
 
   it('never lets the app itself be the named issuer', () => {
     for (const input of inputs) {
-      expect(legalLinesForPrint(input).join(' ')).not.toContain('PATHLAB OS DIAGNOSTICS SYSTEMS');
+      // Matched on the product name rather than a sample string, so the guard
+      // survives a rebrand: the issuer line belongs to the laboratory, never to
+      // the software that printed it.
+      expect(legalLinesForPrint(input).join(' ')).not.toMatch(/pathomitra/i);
     }
   });
 

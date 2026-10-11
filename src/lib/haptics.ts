@@ -53,8 +53,22 @@ async function run(fn: (m: HapticsModule) => Promise<unknown>): Promise<void> {
 export const hapticTap = () => run(m => m.Haptics.impact({ style: m.ImpactStyle.Light }));
 /** Firmer collision for confirmations and destructive presses. */
 export const hapticMedium = () => run(m => m.Haptics.impact({ style: m.ImpactStyle.Medium }));
-/** Subtle tick when a selection moves (segmented control, picker, list row). */
-export const hapticSelection = () => run(m => m.Haptics.selectionChanged());
+/**
+ * Subtle tick when a selection moves (segmented control, picker, list row).
+ *
+ * Android is stateful here: the plugin's `selectionChanged()` only fires when a
+ * selection session is open (`Haptics.java` guards it with a `selectionStarted`
+ * flag), while iOS has no such state. Calling `selectionChanged()` on its own —
+ * which is what this used to do — was therefore silently dropped on every
+ * Android device. Open the session, tick, close it again, so the same call
+ * behaves on both platforms.
+ */
+export const hapticSelection = () =>
+  run(async m => {
+    await m.Haptics.selectionStart();
+    await m.Haptics.selectionChanged();
+    await m.Haptics.selectionEnd();
+  });
 /** Platform "task done" pattern — pair with a success toast. */
 export const hapticSuccess = () =>
   run(m => m.Haptics.notification({ type: m.NotificationType.Success }));

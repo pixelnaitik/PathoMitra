@@ -1,5 +1,5 @@
 /**
- * Privacy-policy content for PathLab OS.
+ * Privacy-policy content for PathoMitra.
  *
  * Kept separate from `components/PrivacyPolicy.tsx` (which holds the React
  * components) so a component file does not also export plain constants — mixing
@@ -38,11 +38,47 @@ export const PRIVACY_POLICY_URL =
   (buildEnv.VITE_PRIVACY_URL ?? '').trim() || 'set-VITE_PRIVACY_URL@example.invalid';
 
 /** Bump this whenever a section changes, and re-date it at submission. */
-export const PRIVACY_LAST_UPDATED = '10 October 2026';
+export const PRIVACY_LAST_UPDATED = '11 October 2026';
+
+/**
+ * Reserved, never-resolvable top-level domains (RFC 2606 / RFC 6761).
+ * A contact or policy URL on one of these can never be reached, so it is a
+ * placeholder no matter how much it looks like a brand domain — `pathomitra.test`
+ * passed the previous `.invalid`-only test and shipped inside a signed APK.
+ */
+const RESERVED_TLD_SUFFIXES = ['.test', '.invalid', '.example', '.localhost', '.local'];
+
+/** Literal placeholder hosts, kept in step with scripts/check-release-config.mjs. */
+const PLACEHOLDER_HOSTS = ['your-domain', 'your-lab-domain', 'example.com', 'localhost'];
+
+/**
+ * True for a host that can never serve a real policy or receive mail.
+ *
+ * Exported (rather than folded into `hasPlaceholderPrivacyContact`) so it can be
+ * unit-tested without depending on whatever `.env` happens to contain — the
+ * detection itself is the thing that regressed.
+ */
+export function isPlaceholderAuthority(authority: string): boolean {
+  const host = authority.toLowerCase().replace(/^www\./, '');
+  return (
+    RESERVED_TLD_SUFFIXES.some(suffix => host.endsWith(suffix)) ||
+    PLACEHOLDER_HOSTS.some(placeholder => host.includes(placeholder))
+  );
+}
 
 /** True while either value is still a placeholder — used by the release guard. */
 export function hasPlaceholderPrivacyContact(): boolean {
-  return PRIVACY_CONTACT_EMAIL.endsWith('.invalid') || PRIVACY_POLICY_URL.endsWith('.invalid');
+  // Email: everything after the last @. URL: the hostname, port stripped.
+  const emailHost = PRIVACY_CONTACT_EMAIL.slice(PRIVACY_CONTACT_EMAIL.lastIndexOf('@') + 1);
+  const urlHost = PRIVACY_POLICY_URL.replace(/^https?:\/\//, '')
+    .split('/')[0]
+    .split(':')[0];
+  return (
+    PRIVACY_CONTACT_EMAIL.endsWith('.invalid') ||
+    PRIVACY_POLICY_URL.endsWith('.invalid') ||
+    isPlaceholderAuthority(emailHost) ||
+    isPlaceholderAuthority(urlHost)
+  );
 }
 
 export interface PrivacySection {
@@ -54,7 +90,7 @@ export const PRIVACY_SECTIONS: PrivacySection[] = [
   {
     heading: '1. Who we are and what this policy covers',
     body: [
-      'PathLab OS ("the app") is a laboratory information console for professional use by pathology labs and their authorised staff. It is not a consumer health app, it is not offered to patients directly, and it is not a diagnostic device — it stores, formats and prints the data a laboratory enters into it.',
+      'PathoMitra ("the app") is a laboratory information console for professional use by pathology labs and their authorised staff. It is not a consumer health app, it is not offered to patients directly, and it is not a diagnostic device — it stores, formats and prints the data a laboratory enters into it.',
       'The app is built to run entirely offline. The Android release does not request the INTERNET permission, so it has no ability to send your data, or your patients\u2019 data, over a network.',
       'This policy covers personal and health information processed by the software. It does not cover the laboratory\u2019s own professional obligations, which remain yours.',
     ],
@@ -70,10 +106,12 @@ export const PRIVACY_SECTIONS: PrivacySection[] = [
   {
     heading: '3. Where data is stored, and how it is protected',
     body: [
-      'All records are kept on your own device in a local SQLite database encrypted with SQLCipher (AES-256). The encryption key is randomly generated on first run and stored in the Android keystore, which is backed by hardware. Because the key is held by the device rather than derived from your passcode, the database stays encrypted even when the app is locked.',
+      'Every clinical record — patients, referring doctors, reports, notes and invoices — is kept on your own device in a local SQLite database encrypted with SQLCipher (AES-256). The encryption key is randomly generated on first run and stored in the Android keystore, which is backed by hardware. Because the key is held by the device rather than derived from your passcode, the database stays encrypted even when the app is locked.',
+      'Your lab settings, any custom tests you add, and which alerts you have already read are held in the app\u2019s own private storage area rather than in that encrypted database. They are still unreachable by any other app on an un-rooted device, and they hold no patient results — but they are not AES-256 encrypted, and this policy says so rather than implying that every byte in the app sits inside SQLCipher.',
       'Your unlock credential is stored as a PBKDF2-SHA256 hash with a random per-account salt — never as plaintext. Biometric or screen-lock unlock is performed by the Android operating system; no biometric sample is read by, or transmitted to, this app.',
       'The passcode and biometric unlock gate access to the app\u2019s interface. After five consecutive failed attempts the app enforces a rising lockout delay, and it re-locks automatically when you leave the app or after a period of inactivity you can set yourself.',
-      'Two things deliberately leave the encrypted database, and only when you ask for them: exported report PDFs, CSVs and diagnostics logs, which the app writes to its own private storage by default; and any file you hand to another app through the Android share sheet, which is then governed by that app\u2019s policy. If you turn on Settings \u2192 Data \u2192 "Save exports to Documents", those exported files become readable by other apps and file managers on the device.',
+      'The following deliberately leave the encrypted database, and only when you ask for them: exported report PDFs, CSVs and diagnostics logs, which the app writes to its own private storage by default; and any file you hand to another app through the Android share sheet, which is then governed by that app\u2019s policy. If you turn on Settings \u2192 Data \u2192 "Save exports to Documents", those exported files become readable by other apps and file managers on the device.',
+      'The notification centre can also hand you off to a third-party app on purpose. Its Email, SMS and WhatsApp buttons build a mailto:, sms: or wa.me message that already contains the alert text \u2014 which can name a patient \u2014 and open it in whichever app the device resolves. Nothing is sent by this app and nothing is sent without you pressing that button, but once the composed message is in your mail, messaging or WhatsApp app it is that app\u2019s data, under that app\u2019s policy.',
       'Android auto-backup is disabled and device-to-device transfer is excluded for every storage domain, so the clinical database is not copied to Google One or to a replacement phone by a setup wizard.',
     ],
   },
@@ -98,7 +136,7 @@ export const PRIVACY_SECTIONS: PrivacySection[] = [
     heading: '6. Retention, export and deletion',
     body: [
       'The app sets no retention period and never deletes records on its own: your data lives on the device until you act. There is no server-side copy that could outlive it.',
-      'You can export the data you entered at any time — per-report PDFs, list CSVs, and full JSON database snapshots from Settings \u2192 Data \u2192 Backup — and restore a snapshot onto a device.',
+      'You can export the data you entered at any time — per-report PDFs, list CSVs, and full database snapshots from Settings → Data → Backup — and restore a snapshot onto a device. A snapshot is sealed with a passphrase you choose (PBKDF2-SHA256 + AES-256-GCM) before it is written, so a copy that leaves this device does not carry readable patient records. There is no recovery: the passphrase is never stored on the device and cannot be reset, and a snapshot you have lost the passphrase for cannot be opened. Backing up unencrypted is still available as an explicit, per-backup choice — the app does not quietly make that decision for you.',
       'To remove everything permanently, use Settings \u2192 Security \u2192 "Erase all data & delete account". It wipes the local clinical database and the account in one action, and cannot be undone. Individual patients, reports and invoices can also be deleted separately.',
       'Uninstalling the app removes the local database. Because Android backup is disabled, no copy survives in the cloud.',
     ],

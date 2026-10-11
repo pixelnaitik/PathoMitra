@@ -1,12 +1,14 @@
 import { Link } from 'react-router-dom';
 import { Mail } from 'lucide-react';
 
-const SUPPORT_EMAIL = 'support@pathlab.io';
+const SUPPORT_EMAIL = 'support@pathomitra.app';
 
 const PRODUCT_LINKS = [
   { label: 'Technology', to: '/technology' },
   { label: 'Solutions', to: '/solutions' },
-  { label: 'Live Demo Portal', to: '/auth' },
+  // "Console", not a remote-access word — same reason index.html changed it: the
+  // thing it implies (a server to reach) does not exist in this build.
+  { label: 'Open the Console', to: '/auth' },
 ];
 
 const RESOURCE_LINKS = [
@@ -28,10 +30,11 @@ export default function Footer() {
         <div className="grid grid-cols-1 md:grid-cols-4 gap-12 mb-16">
           <div className="col-span-1">
             <span className="font-black text-primary text-xl block mb-6 tracking-tighter">
-              PathLab OS
+              PathoMitra
             </span>
             <p className="text-sm text-on-surface-variant mb-6 leading-relaxed">
-              Leading the transition to AI-native digital pathology laboratories worldwide.
+              Offline digital pathology for clinical laboratories — patient records, reports,
+              referring-doctor details and lab analytics kept on the lab’s own machine.
             </p>
             <a
               href={`mailto:${SUPPORT_EMAIL}`}
@@ -93,7 +96,7 @@ export default function Footer() {
 
         <div className="border-t border-outline-variant/30 pt-8 flex flex-col md:flex-row justify-between items-center gap-4">
           <span className="text-xs text-on-surface-variant opacity-70">
-            © 2026 PathLab OS Diagnostic Systems. Clinical Grade Precision.
+            © 2026 PathoMitra Diagnostic Systems. Clinical Grade Precision.
           </span>
           <div className="flex items-center gap-4">
             <Link

@@ -23,9 +23,9 @@ export default function SolutionsPage() {
               A Seamless Technology Platform for Your Lab
             </h1>
             <p className="text-lg text-on-surface-variant font-medium">
-              PathLab OS provides modern, fast, and secure tools designed specifically for
-              pathologists and clinical laboratories to manage digital diagnostics seamlessly from
-              anywhere.
+              PathoMitra provides modern, fast, and secure tools designed specifically for
+              pathologists and clinical laboratories to manage patient records, reports and
+              analytics on the laboratory’s own machine.
             </p>
           </motion.div>
 
@@ -55,9 +55,9 @@ export default function SolutionsPage() {
                 <ul className="space-y-3 mb-8">
                   {[
                     'No server to buy, install or maintain',
-                    'Records stored encrypted on the lab’s own device',
+                    'Encrypted on-device records in the Android app',
                     'Lightning-fast data entry',
-                    'PIN and biometric lock on the console',
+                    'PIN lock everywhere, biometric unlock on Android',
                   ].map((item, i) => (
                     <li
                       key={i}
@@ -117,11 +117,12 @@ export default function SolutionsPage() {
           {/* CTA embedded */}
           <div className="bg-surface-container-low rounded-3xl p-12 text-center border border-outline-variant/30">
             <h2 className="text-3xl font-bold tracking-[-0.03em] text-on-surface mb-4">
-              Ready to explore PathLab OS?
+              Ready to explore PathoMitra?
             </h2>
             <p className="text-on-surface-variant mb-8 max-w-2xl mx-auto">
-              Access the secure, clinical-grade pathology sandbox right now to experience modern,
-              AI-assisted laboratory workflows.
+              Open the same patient, report and analytics console that runs on the bench. The first
+              account you create is the only one, everything is stored locally, and the app sends
+              nothing to a server.
             </p>
             <Link to="/auth">
               <Button
@@ -130,7 +131,7 @@ export default function SolutionsPage() {
                 shine
                 className="h-auto rounded-full px-8 py-4 text-lg shadow-raised"
               >
-                Enter Live Demo Portal
+                Open the Console
               </Button>
             </Link>
           </div>

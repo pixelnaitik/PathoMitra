@@ -1,4 +1,4 @@
-// PathLab OS — Service Worker (web build only; stripped from the APK)
+// PathoMitra — Service Worker (web build only; stripped from the APK)
 // Strategy:
 //   Static assets (.js, .css, fonts, images) → Cache-First (instant after first visit)
 //   HTML navigation → Network-First with Cache fallback
@@ -8,7 +8,7 @@
 // bundle makes no cross-origin requests, so anything cross-origin is left to the
 // browser and never cached here.
 
-const CACHE_NAME = 'healthcareos-cache-v2';
+const CACHE_NAME = 'pathomitra-cache-v2';
 
 const STATIC_EXTENSIONS = ['.js', '.css', '.woff', '.woff2', '.ttf', '.png', '.jpg', '.jpeg', '.svg', '.ico', '.webp'];
 

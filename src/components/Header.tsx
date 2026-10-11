@@ -16,7 +16,7 @@ function Brand({ onNavigate }: { onNavigate?: () => void }) {
     <Link
       to="/"
       onClick={onNavigate}
-      aria-label="PathLab OS — home"
+      aria-label="PathoMitra — home"
       className="group flex min-w-0 shrink-0 items-center gap-2.5"
     >
       <span className="relative flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-[14px] bg-primary text-on-primary shadow-card transition-transform duration-300 group-hover:scale-105">
@@ -32,7 +32,7 @@ function Brand({ onNavigate }: { onNavigate?: () => void }) {
         <Microscope className="h-[18px] w-[18px]" aria-hidden="true" />
       </span>
       <span className="truncate text-[15px] font-bold tracking-[-0.02em] text-on-surface">
-        PathLab OS
+        PathoMitra
       </span>
     </Link>
   );

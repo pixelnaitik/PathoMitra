@@ -180,7 +180,7 @@ export function resolveReportLayout(
     notesFont: clamp(safeNum(s.notesFontSize, 9), 4, 40),
     footerFont: clamp(safeNum(s.footerFontSize, 10), 4, 40),
     themeId: s.themeId || 'navy',
-    labName: s.labName || 'PathLab OS Lab',
+    labName: s.labName || 'PathoMitra Lab',
     legal: buildReportLegalLines({
       accreditationBody: s.accreditationBody,
       accreditationNumber: s.accreditationNumber,

@@ -92,6 +92,17 @@ describe('migrateSettings', () => {
     expect(m.cornerStyle).toBe('rounded');
   });
 
+  it('keeps screen-capture protection on when the stored value is missing or corrupt', () => {
+    // The native window starts protected (MainActivity sets FLAG_SECURE before the
+    // WebView loads), so a stale or hand-edited settings object must not silently
+    // downgrade it — the same fail-closed rule as allowPublicExports.
+    expect(migrateSettings({}).screenshotsAllowed).toBe(false);
+    expect(migrateSettings({ screenshotsAllowed: 'true' }).screenshotsAllowed).toBe(false);
+    expect(migrateSettings({ screenshotsAllowed: 1 }).screenshotsAllowed).toBe(false);
+    // An explicit true is the lab opting out, and is honoured.
+    expect(migrateSettings({ screenshotsAllowed: true }).screenshotsAllowed).toBe(true);
+  });
+
   it('grows notification prefs out of the two legacy toggles', () => {
     const m = migrateSettings({ emailNotifications: false, smsNotifications: true });
     const prefs = m.notificationPrefs as ReturnType<typeof sanitizeNotificationPrefs>;

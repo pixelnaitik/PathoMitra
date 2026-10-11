@@ -12,9 +12,11 @@ import {
   db,
 } from '../../data/fs';
 import { handleFirestoreError, OperationType } from '../../lib/firestore-errors';
+import { cn } from '../../lib/utils';
 import { Plus, Stethoscope, Users, Trash2, Edit2 } from 'lucide-react';
 import { DEFAULT_DOCTORS } from '../../lib/doctors';
 import { readDoctors, readPatients, type DoctorRecord, type PatientRecord } from '../../lib/models';
+import { DoctorDetailSheet, type DoctorDetailTarget } from '../../components/DoctorDetailSheet';
 import { useAuth } from '../../contexts/AuthContext';
 import {
   Button,
@@ -45,6 +47,7 @@ export default function DoctorsPage() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingDoctor, setEditingDoctor] = useState<DoctorRecord | null>(null);
   const [doctorToDelete, setDoctorToDelete] = useState<DoctorListItem | null>(null);
+  const [selectedDoctor, setSelectedDoctor] = useState<DoctorDetailTarget | null>(null);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -240,7 +243,19 @@ export default function DoctorsPage() {
                     return (
                       <tr
                         key={docItem.id}
-                        className="transition-colors hover:bg-surface-container-low"
+                        aria-selected={selectedDoctor?.id === docItem.id}
+                        className={cn(
+                          'cursor-pointer transition-colors hover:bg-surface-container-low',
+                          selectedDoctor?.id === docItem.id &&
+                            'bg-accent/8 ring-1 ring-inset ring-accent/40',
+                        )}
+                        onClick={() =>
+                          setSelectedDoctor({
+                            id: docItem.id,
+                            name: docItem.name,
+                            phone: docItem.phone,
+                          })
+                        }
                       >
                         <td className="px-6 py-4">
                           <div className="flex items-center gap-3">
@@ -266,14 +281,20 @@ export default function DoctorsPage() {
                               {!docItem.isDefault && (
                                 <>
                                   <button
-                                    onClick={() => openEditForm(docItem)}
+                                    onClick={e => {
+                                      e.stopPropagation();
+                                      openEditForm(docItem);
+                                    }}
                                     aria-label={`Edit ${docItem.name}`}
                                     className="rounded-full p-2 text-on-surface-variant transition-colors hover:bg-accent/12 hover:text-accent"
                                   >
                                     <Edit2 className="w-4 h-4" />
                                   </button>
                                   <button
-                                    onClick={() => setDoctorToDelete(docItem)}
+                                    onClick={e => {
+                                      e.stopPropagation();
+                                      setDoctorToDelete(docItem);
+                                    }}
                                     aria-label={`Delete ${docItem.name}`}
                                     className="rounded-full p-2 text-on-surface-variant transition-colors hover:bg-error-container hover:text-error"
                                   >
@@ -303,6 +324,30 @@ export default function DoctorsPage() {
                     initial={{ opacity: 0, y: 8 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: Math.min(dIdx * 0.045, 0.45), duration: 0.25 }}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`View ${docItem.name}'s referrals`}
+                    onClick={() =>
+                      setSelectedDoctor({
+                        id: docItem.id,
+                        name: docItem.name,
+                        phone: docItem.phone,
+                      })
+                    }
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setSelectedDoctor({
+                          id: docItem.id,
+                          name: docItem.name,
+                          phone: docItem.phone,
+                        });
+                      }
+                    }}
+                    className={cn(
+                      'cursor-pointer transition-colors active:bg-surface-container-high',
+                      selectedDoctor?.id === docItem.id && 'bg-accent/8',
+                    )}
                   >
                     <ListRow
                       leading={
@@ -319,7 +364,10 @@ export default function DoctorsPage() {
                               label={`Edit ${docItem.name}`}
                               size="sm"
                               className="text-on-surface-variant hover:bg-accent/12 hover:text-accent"
-                              onClick={() => openEditForm(docItem)}
+                              onClick={e => {
+                                e.stopPropagation();
+                                openEditForm(docItem);
+                              }}
                             >
                               <Edit2 className="w-4 h-4" />
                             </IconButton>
@@ -327,7 +375,10 @@ export default function DoctorsPage() {
                               label={`Delete ${docItem.name}`}
                               size="sm"
                               className="text-on-surface-variant hover:bg-error-container hover:text-error"
-                              onClick={() => setDoctorToDelete(docItem)}
+                              onClick={e => {
+                                e.stopPropagation();
+                                setDoctorToDelete(docItem);
+                              }}
                             >
                               <Trash2 className="w-4 h-4" />
                             </IconButton>
@@ -407,6 +458,16 @@ export default function DoctorsPage() {
             handleFirestoreError(err, OperationType.DELETE, path);
           }
         }}
+      />
+
+      {/* Date-filtered referral profile for the selected doctor */}
+      <DoctorDetailSheet
+        key={selectedDoctor?.id ?? 'none'}
+        doctor={selectedDoctor}
+        patients={patients}
+        initialFrom={fromDate}
+        initialTo={toDate}
+        onClose={() => setSelectedDoctor(null)}
       />
     </div>
   );

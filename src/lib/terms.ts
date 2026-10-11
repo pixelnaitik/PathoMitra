@@ -1,5 +1,5 @@
 /**
- * Terms of use / acceptable-use content for PathLab OS.
+ * Terms of use / acceptable-use content for PathoMitra.
  *
  * Separate from `lib/privacy-policy.ts` because they answer different questions
  * and are accepted separately: the policy describes what happens to data, the
@@ -27,7 +27,7 @@ export const TERMS_SECTIONS: TermsSection[] = [
   {
     heading: '1. Who may use this software',
     body: [
-      'PathLab OS is a laboratory information console for professionals operating a pathology laboratory, and for staff authorised by that laboratory. It is not for self-diagnosis, is not a patient-facing app, and is not a substitute for a qualified clinician\u2019s judgement.',
+      'PathoMitra is a laboratory information console for professionals operating a pathology laboratory, and for staff authorised by that laboratory. It is not for self-diagnosis, is not a patient-facing app, and is not a substitute for a qualified clinician\u2019s judgement.',
       'You confirm you are lawfully permitted to operate this laboratory and to process the patient information you enter, including under India\u2019s Digital Personal Data Protection Act, 2023 and any clinical-establishment or laboratory-licensing rules that apply to you.',
     ],
   },
@@ -42,13 +42,13 @@ export const TERMS_SECTIONS: TermsSection[] = [
     heading: '3. Claims made on your reports',
     body: [
       'Any accreditation, certification, licence number or registration printed on a report comes from what you entered in Settings \u2192 Lab Organization, and only prints after you tick the statement that the laboratory personally holds it.',
-      'You must not enter an accreditation you do not hold. PathLab OS asserts none of its own and is not HIPAA-compliant, NABL-accredited, ISO-certified, CE-marked or SOC 2 audited. Issuing a document that carries a false accreditation mark may be a criminal offence in your jurisdiction, and puts patients and referring doctors at risk.',
+      'You must not enter an accreditation you do not hold. PathoMitra asserts none of its own and is not HIPAA-compliant, NABL-accredited, ISO-certified, CE-marked or SOC 2 audited. Issuing a document that carries a false accreditation mark may be a criminal offence in your jurisdiction, and puts patients and referring doctors at risk.',
     ],
   },
   {
     heading: '4. Not a diagnostic device',
     body: [
-      'PathLab OS formats, stores and prints results entered by a human. It performs arithmetic on entered values for derived indices only. It does not interpret images, does not analyse specimens, does not generate findings and does not offer clinical advice.',
+      'PathoMitra formats, stores and prints results entered by a human. It performs arithmetic on entered values for derived indices only. It does not interpret images, does not analyse specimens, does not generate findings and does not offer clinical advice.',
       'Report content must be verified by qualified staff before issue. A report is a record of what your laboratory entered at the time it was issued.',
     ],
   },
@@ -69,7 +69,7 @@ export const TERMS_SECTIONS: TermsSection[] = [
   {
     heading: '7. No prohibited uses',
     body: [
-      'Do not use PathLab OS to fabricate, falsify or backdate laboratory results, to issue reports for specimens that were not analysed, or to misrepresent the identity or qualification of a signer.',
+      'Do not use PathoMitra to fabricate, falsify or backdate laboratory results, to issue reports for specimens that were not analysed, or to misrepresent the identity or qualification of a signer.',
     ],
   },
   {

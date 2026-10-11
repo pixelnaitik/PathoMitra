@@ -66,7 +66,7 @@ export function unwindOneLayer(): boolean {
       if (entry.handler()) return true;
     } catch (err) {
       // A broken handler must not trap the user on a screen they cannot leave.
-      console.error('PathLab OS: back handler threw', err);
+      console.error('PathoMitra: back handler threw', err);
     }
   }
   return false;
@@ -139,7 +139,7 @@ export async function installAndroidBackButton(options: BackButtonOptions): Prom
       return;
     }
     lastPressAt = now;
-    options.onExitHint('Press back again to close PathLab OS');
+    options.onExitHint('Press back again to close PathoMitra');
   });
 
   return () => {

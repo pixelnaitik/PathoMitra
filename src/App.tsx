@@ -19,6 +19,8 @@ import ErrorBoundary from './components/ErrorBoundary';
 import TermsGate from './components/TermsGate';
 import { isNative } from './data';
 import { installAndroidBackButton } from './lib/back-button';
+import { readSettings, SETTINGS_UPDATED_EVENT } from './lib/settings';
+import { applyScreenshotProtection } from './lib/screenshot-protection';
 import { useToast } from './components/ui';
 import NProgress from 'nprogress';
 
@@ -233,6 +235,29 @@ function BackButtonController() {
 }
 
 /**
+ * Keeps the native window's capture protection in step with the saved setting.
+ *
+ * Renders nothing. The flag starts set on device (MainActivity applies it before
+ * the WebView loads), so this only has to *clear* it — on first mount, and again
+ * whenever Settings saves (`writeSettings` dispatches the event). Mounted at the
+ * app root rather than inside the dashboard so the lock screen and the onboarding
+ * flow, which both show the lab's name and account, are covered too.
+ */
+function ScreenshotProtectionController() {
+  useEffect(() => {
+    if (!isNative) return undefined;
+    const apply = () => {
+      void applyScreenshotProtection(readSettings().screenshotsAllowed);
+    };
+    apply();
+    window.addEventListener(SETTINGS_UPDATED_EVENT, apply);
+    return () => window.removeEventListener(SETTINGS_UPDATED_EVENT, apply);
+  }, []);
+
+  return null;
+}
+
+/**
  * Route-level page transition — each page fades through a short rise.
  * The dashboard is keyed as a single unit so its own tab transition
  * (inside DashboardShell) keeps working without remounting the shell.
@@ -302,6 +327,7 @@ export default function App({ onReady }: AppProps) {
         <AuthProvider>
           <BrowserRouter>
             <BackButtonController />
+            <ScreenshotProtectionController />
             {/* Accessibility: keyboard users can jump straight to the content */}
             <a
               href="#main-content"

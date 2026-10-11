@@ -1,4 +1,4 @@
-package com.healthcareos.app;
+package com.pathomitra.app;
 
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
@@ -28,7 +28,7 @@ import java.io.File;
  * Android 7+ (file:// extras are rejected outright), so the URI is converted
  * through the FileProvider declared in AndroidManifest — the same provider the
  * Share plugin uses — which issues a content:// URI carrying a one-shot read
- * grant. The provider's paths table only exposes the app's `PathLab OS/`
+ * grant. The provider's paths table only exposes the app's `PathoMitra/`
  * folder, so the grant cannot leak anything else.
  *
  * Threading: Capacitor 8 posts plugin method calls onto its own "CapacitorHandler"

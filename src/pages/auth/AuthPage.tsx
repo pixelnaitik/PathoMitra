@@ -15,6 +15,7 @@ import { TermsSheet } from '../../components/Terms';
 import { PrivacyPolicySheet } from '../../components/PrivacyPolicy';
 import { ONBOARDING_ATTESTATION, TERMS_VERSION } from '../../lib/terms';
 import { isNative } from '../../data';
+import { cn } from '../../lib/utils';
 
 /**
  * Offline authentication screen — no Google, no Firebase.
@@ -72,18 +73,15 @@ function Shell({ children }: { children: React.ReactNode }) {
         className="relative z-10 my-auto w-full max-w-md overflow-hidden rounded-4xl border border-[var(--elevated-border)] bg-surface-container-lowest shadow-float"
       >
         <div className="flex flex-col p-8 md:p-10">
-          <div className="relative mb-6 self-center">
-            <div className="absolute inset-0 scale-125 rounded-full bg-accent/20 blur-xl animate-soft-pulse" />
-            <div className="relative z-10 flex h-16 w-16 items-center justify-center rounded-[22px] bg-primary text-on-primary shadow-raised">
-              <Microscope className="h-8 w-8" />
+          <div className="relative mb-5 self-center">
+            {/* Static halo. The old perpetual pulse turned a screen people hold a
+                finger against into a loading animation — stillness reads calmer. */}
+            <div className="absolute inset-0 scale-125 rounded-full bg-accent/15 blur-xl" />
+            <div className="relative z-10 flex h-14 w-14 items-center justify-center rounded-[20px] bg-primary text-on-primary shadow-raised">
+              <Microscope className="h-7 w-7" />
             </div>
           </div>
           {children}
-        </div>
-        <div className="border-t border-outline-variant/40 bg-surface-container-low px-8 py-3.5 text-center">
-          <p className="font-mono text-[10.5px] font-medium tracking-wide text-on-surface-variant">
-            PATHLAB.OS // OFFLINE CLINICAL SYSTEM
-          </p>
         </div>
       </motion.div>
     </div>
@@ -95,7 +93,7 @@ function ErrorNote({ message }: { message: string | null }) {
   return (
     <div
       role="alert"
-      className="mb-4 flex items-start gap-2.5 rounded-2xl bg-error-container p-3.5 text-xs font-semibold leading-relaxed text-on-error-container"
+      className="mb-4 flex items-start gap-2.5 rounded-xl bg-error-container px-3 py-2.5 text-[13px] font-medium leading-snug text-on-error-container"
     >
       <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-error" />
       <span>{message}</span>
@@ -103,11 +101,22 @@ function ErrorNote({ message }: { message: string | null }) {
   );
 }
 
-function FieldLabel({ htmlFor, children }: { htmlFor: string; children: React.ReactNode }) {
+function FieldLabel({
+  htmlFor,
+  children,
+  className,
+}: {
+  htmlFor: string;
+  children: React.ReactNode;
+  className?: string;
+}) {
   return (
     <label
       htmlFor={htmlFor}
-      className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-on-surface-variant"
+      className={cn(
+        'mb-1.5 block text-[11px] font-bold uppercase tracking-[0.08em] text-on-surface-variant',
+        className,
+      )}
     >
       {children}
     </label>
@@ -124,7 +133,7 @@ function KeypadToggle({ mode, onChange }: { mode: KeypadMode; onChange: (m: Keyp
     <button
       type="button"
       onClick={() => onChange(mode === 'digits' ? 'letters' : 'digits')}
-      className="text-xs font-semibold text-accent underline-offset-2 transition hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+      className="shrink-0 rounded-full px-2 py-1 text-[11px] font-semibold text-accent transition hover:bg-accent/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
     >
       {mode === 'digits' ? 'Use letters too' : 'Digits only'}
     </button>
@@ -143,6 +152,7 @@ function PasswordField({
   maxLength = 12,
   invalid = false,
   hint,
+  action,
 }: {
   id: string;
   label: string;
@@ -157,6 +167,8 @@ function PasswordField({
   invalid?: boolean;
   /** Visible helper text, also wired to the field via aria-describedby. */
   hint?: string;
+  /** Sits on the label row opposite the label — keypad mode switch, etc. */
+  action?: React.ReactNode;
 }) {
   const [reveal, setReveal] = useState(false);
   // A masked field can't be a plain number input, so we keep password/text type
@@ -168,10 +180,17 @@ function PasswordField({
     <div>
       <div className="flex items-baseline justify-between gap-3">
         <FieldLabel htmlFor={id}>{label}</FieldLabel>
-        {hintId && (
-          <span id={hintId} className="text-[11px] leading-snug text-on-surface-variant">
-            {hint}
-          </span>
+        {(action || hintId) && (
+          // Wraps rather than overflows: label + mode switch + hint already fill
+          // the row at 390px, and a 320px phone would push the hint off the card.
+          <div className="flex min-w-0 flex-1 flex-wrap items-baseline justify-end gap-x-2 gap-y-0.5">
+            {action}
+            {hintId && (
+              <span id={hintId} className="text-[11px] leading-snug text-on-surface-variant">
+                {hint}
+              </span>
+            )}
+          </div>
         )}
       </div>
       <div className="relative">
@@ -199,7 +218,16 @@ function PasswordField({
             if (e.key === 'Enter' && onEnter) onEnter();
           }}
           placeholder={placeholder}
-          className={`${inputClass} ${numeric ? 'pr-12 text-center text-2xl font-bold tracking-[0.6em]' : 'pr-12'}`}
+          className={cn(
+            inputClass,
+            'pr-12',
+            // The wide tracking is here to breathe space between the masked
+            // bullets — but it also applied to the placeholder, which rendered it
+            // as "E n t e r  y o u r  P I N". Keep the spacing for the value,
+            // drop it for the prompt.
+            numeric &&
+              'text-center text-xl font-semibold tracking-[0.3em] placeholder:text-[15px] placeholder:font-normal placeholder:tracking-normal',
+          )}
         />
         <button
           type="button"
@@ -252,7 +280,7 @@ function CreateAccountForm() {
     <Shell>
       <div className="mb-7 text-center">
         <h2 className="mb-1.5 text-[28px] font-bold leading-none tracking-[-0.03em] text-on-surface">
-          Set up PathLab OS
+          Set up PathoMitra
         </h2>
         <p className="px-2 text-sm font-medium leading-relaxed text-on-surface-variant">
           Create the passcode that protects this device. Everything stays on-device — no account, no
@@ -275,9 +303,6 @@ function CreateAccountForm() {
             className={inputClass}
           />
         </div>
-        <div className="flex justify-end">
-          <KeypadToggle mode={mode} onChange={setMode} />
-        </div>
         <PasswordField
           id="create-passcode"
           label="Passcode"
@@ -290,6 +315,7 @@ function CreateAccountForm() {
           mode={mode}
           maxLength={MAX_PIN_LENGTH}
           hint={`${MIN_PIN_LENGTH}–12 digits, or 6+ characters`}
+          action={<KeypadToggle mode={mode} onChange={setMode} />}
         />
         <PasswordField
           id="confirm-passcode"
@@ -465,10 +491,7 @@ function UnlockForm() {
 
       <ErrorNote message={error} />
 
-      <div className="space-y-3.5">
-        <div className="flex justify-end">
-          <KeypadToggle mode={mode} onChange={setMode} />
-        </div>
+      <div className="space-y-4">
         <PasswordField
           id="unlock-passcode"
           label="Passcode"
@@ -481,6 +504,7 @@ function UnlockForm() {
           maxLength={MAX_PIN_LENGTH}
           invalid={Boolean(error)}
           hint={locked ? `Locked for ${formatWait(waitSeconds)}` : undefined}
+          action={<KeypadToggle mode={mode} onChange={setMode} />}
         />
 
         <motion.button
@@ -488,7 +512,14 @@ function UnlockForm() {
           type="button"
           onClick={doPassword}
           disabled={busy || locked || !isValidPasscode(password)}
-          className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-primary text-[15px] font-semibold text-on-primary shadow-card transition hover:brightness-110 disabled:opacity-50"
+          className={cn(
+            'flex h-12 w-full items-center justify-center gap-2 rounded-full text-[15px] font-semibold transition',
+            // A 50%-opacity brand button reads as a rendering fault. A neutral
+            // resting state reads as "waiting for your passcode" instead.
+            busy || locked || !isValidPasscode(password)
+              ? 'cursor-not-allowed bg-surface-container-high text-on-surface-variant'
+              : 'bg-primary text-on-primary shadow-raised hover:brightness-110',
+          )}
         >
           {busy ? <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" /> : null}
           {busy ? 'Unlocking…' : locked ? `Locked · ${formatWait(waitSeconds)}` : 'Unlock'}
@@ -500,9 +531,16 @@ function UnlockForm() {
             type="button"
             onClick={doBiometric}
             disabled={locked}
-            className="flex h-12 w-full items-center justify-center gap-2.5 rounded-full border border-outline-variant/70 bg-surface text-[15px] font-semibold text-on-surface shadow-card transition hover:bg-surface-container-low disabled:opacity-50"
+            className={cn(
+              // Quiet text action: a second full-size pill competed with Unlock
+              // for the same "press me" signal.
+              'mx-auto flex h-10 items-center justify-center gap-2 rounded-full px-4 text-[13.5px] font-semibold transition',
+              locked
+                ? 'cursor-not-allowed text-on-surface-variant/60'
+                : 'text-on-surface-variant hover:bg-surface-container hover:text-on-surface',
+            )}
           >
-            <Fingerprint className="h-5 w-5 shrink-0 text-accent" aria-hidden="true" />
+            <Fingerprint className="h-[18px] w-[18px] shrink-0 text-accent" aria-hidden="true" />
             Use biometric / screen lock
           </motion.button>
         )}

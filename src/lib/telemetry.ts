@@ -103,7 +103,7 @@ export function captureError(error: unknown, context: ErrorContext = {}): void {
 
   // Always keep a console trace: vite.config.ts preserves console.error in the
   // production build precisely so this line survives.
-  console.error(`[PathLab OS]${context.scope ? ` ${String(context.scope)}:` : ''}`, error);
+  console.error(`[PathoMitra]${context.scope ? ` ${String(context.scope)}:` : ''}`, error);
 
   if (seen.has(fingerprint) || reportsSent >= MAX_REPORTS_PER_SESSION) return;
   seen.add(fingerprint);
@@ -112,7 +112,7 @@ export function captureError(error: unknown, context: ErrorContext = {}): void {
   try {
     reportTo(buildCrashPayload(error, context));
   } catch (reportingError) {
-    console.error('PathLab OS: error reporting failed', reportingError);
+    console.error('PathoMitra: error reporting failed', reportingError);
   }
 }
 

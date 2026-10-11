@@ -173,7 +173,7 @@ export default function OverviewPage({
               </div>
               <div>
                 <h2 className="text-lg font-bold tracking-[-0.02em] text-on-surface">
-                  Welcome to PathLab OS
+                  Welcome to PathoMitra
                 </h2>
                 <p className="mx-auto mt-1 max-w-md text-[13px] leading-relaxed text-on-surface-variant">
                   Your lab is set up and ready. Get started by registering your first patient, then
@@ -181,15 +181,11 @@ export default function OverviewPage({
                 </p>
               </div>
               <div className="mt-1 flex flex-wrap items-center justify-center gap-3">
-                {role !== 'guest' ? (
-                  <Button size="lg" shine onClick={() => onAddPatient && onAddPatient()}>
-                    <Plus className="h-4 w-4" aria-hidden="true" /> Register first patient
-                  </Button>
-                ) : (
-                  <p className="text-[13px] font-medium text-on-surface-variant">
-                    Unlock staff access above to start adding records.
-                  </p>
-                )}
+                {/* Single local operator: there is no guest tier to unlock, so this
+                    is always the action rather than a prompt for an access code. */}
+                <Button size="lg" shine onClick={() => onAddPatient && onAddPatient()}>
+                  <Plus className="h-4 w-4" aria-hidden="true" /> Register first patient
+                </Button>
               </div>
             </div>
           </Card>

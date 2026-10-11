@@ -7,11 +7,11 @@ import type { CapacitorConfig } from '@capacitor/cli';
  * before `npx cap sync android` so the native project receives fresh assets.
  */
 const config: CapacitorConfig = {
-  appId: 'com.healthcareos.app',
+  appId: 'com.pathomitra.app',
   // Launcher label + the app-name line the OS shows in the biometric / print
-  // sheets. Kept identical to the in-app brand ("PathLab OS"); the `appId` is
+  // sheets. Kept identical to the in-app brand ("PathoMitra"); the `appId` is
   // left as-is because changing it would orphan existing installs on upgrade.
-  appName: 'PathLab OS',
+  appName: 'PathoMitra',
   webDir: 'dist',
   backgroundColor: '#f5f5f7',
   server: {

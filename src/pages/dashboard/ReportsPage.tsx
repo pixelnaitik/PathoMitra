@@ -51,8 +51,7 @@ import {
 
 import {
   getSearchableTests,
-  getReferenceRangeLabel,
-  getReferenceRangeValues,
+  resolveReferenceRange,
   findTestInfo,
   searchPathologyTests,
   isNumericTest,
@@ -65,6 +64,7 @@ import { getPrintableArea, getColumnWidths } from '../../lib/report-layout';
 import { buildReportLegalLines, type ReportLegalInput } from '../../lib/report-compliance';
 import { printPdf, previewPdf, savePdf, sharePdf } from '../../lib/native-print';
 import { ReportViewerDashboard } from '../../components/ReportViewerDashboard';
+import { ReportResultsEditor } from '../../components/ReportResultsEditor';
 import { createdAtRangeFilters } from '../../lib/date-range';
 import { generateDefaultTemplateImage } from '../../lib/default-template';
 import {
@@ -498,7 +498,7 @@ export default function ReportsPage({
       ? template === 'classic'
         ? s.labName.toUpperCase()
         : s.labName
-      : 'PathLab OS Report';
+      : 'PathoMitra Report';
 
     // Credential / issuance wording for this document. Derived, never typed
     // inline: an accreditation only prints when the operator has attested it,
@@ -1006,12 +1006,13 @@ export default function ReportsPage({
             }
 
             const result = report.resultData[testName] || '';
-            const refRangeLabel = testInfo
-              ? getReferenceRangeLabel(testInfo.ranges, ageAsNumber(patient), patient.gender)
-              : '';
-            const refValues = testInfo
-              ? getReferenceRangeValues(testInfo.ranges, ageAsNumber(patient), patient.gender)
-              : null;
+            const range = resolveReferenceRange(
+              testInfo?.ranges,
+              ageAsNumber(patient),
+              patient.gender,
+            );
+            const refRangeLabel = range.label;
+            const refValues = range.values;
             const unit = testInfo?.unit || '';
             const method = testInfo?.method ? `\nMethod: ${testInfo.method}` : '';
 
@@ -1445,7 +1446,7 @@ export default function ReportsPage({
       filteredCombinedList,
     );
     try {
-      const message = await downloadCsv(`pathlab-reports-${toIsoDay(new Date())}.csv`, csv);
+      const message = await downloadCsv(`pathomitra-reports-${toIsoDay(new Date())}.csv`, csv);
       toast.success(message ?? `Exported ${filteredCombinedList.length} records to CSV.`);
     } catch (err) {
       console.error('Error writing the CSV export:', err);
@@ -2124,20 +2125,15 @@ export default function ReportsPage({
 
                   // Try to get patient to determine reference range
                   const patient = patients.find(p => p.id === newReport.patientId);
-                  const rangeLabel = testInfo
-                    ? getReferenceRangeLabel(
-                        testInfo.ranges,
-                        patient ? ageAsNumber(patient) : undefined,
-                        patient?.gender,
-                      )
-                    : '';
-                  const refValues = testInfo
-                    ? getReferenceRangeValues(
+                  const resolvedRange = testInfo
+                    ? resolveReferenceRange(
                         testInfo.ranges,
                         patient ? ageAsNumber(patient) : undefined,
                         patient?.gender,
                       )
                     : null;
+                  const rangeLabel = resolvedRange?.label ?? '';
+                  const refValues = resolvedRange?.values ?? null;
                   const enteredValue = newReport.results[testName] || '';
 
                   let valueStatus: 'normal' | 'low' | 'high' | null = null;
@@ -2183,21 +2179,18 @@ export default function ReportsPage({
                           {testInfo && (
                             <div className="text-xs text-on-surface-variant mt-0.5">
                               <span className="font-medium">Ref:</span> {rangeLabel} {testInfo.unit}
-                              {patient &&
-                                testInfo.ranges &&
-                                (testInfo.ranges.child ||
-                                  testInfo.ranges.male ||
-                                  testInfo.ranges.female) && (
-                                  <span className="ml-1 text-xs bg-secondary-container/10 text-secondary px-1 rounded font-medium">
-                                    (Adjusted for{' '}
-                                    {patient.gender === 'male'
-                                      ? 'Male'
-                                      : patient.gender === 'female'
-                                        ? 'Female'
-                                        : patient.gender}{' '}
-                                    • {patient.age} Yrs)
-                                  </span>
-                                )}
+                              {patient && resolvedRange && resolvedRange.kind !== 'none' && (
+                                <span className="ml-1 text-xs bg-secondary-container/10 text-secondary px-1 rounded font-medium">
+                                  (Adjusted for{' '}
+                                  {patient.gender === 'male'
+                                    ? 'Male'
+                                    : patient.gender === 'female'
+                                      ? 'Female'
+                                      : patient.gender}
+                                  {' • '}
+                                  {patient.age} Yrs)
+                                </span>
+                              )}
                             </div>
                           )}
                         </div>
@@ -2319,82 +2312,23 @@ export default function ReportsPage({
         {selectedReport && (
           <div className="space-y-6">
             <div>
-              <h4 className="text-xs font-black text-primary uppercase mb-2">Test Info</h4>
-              <p className="text-on-surface">
-                {(selectedReport.testSelection || []).join(', ') || selectedReport.testType}
-              </p>
-            </div>
-
-            <div>
-              <h4 className="text-xs font-black text-primary uppercase mb-2">Results</h4>
-              <div className="bg-surface-container-low rounded-xl p-4 border border-outline-variant/30 space-y-3">
-                {(selectedReport.testSelection || []).map((testName: string) => {
-                  const testInfo = findTestInfo(testName);
-                  if (testInfo?.isGroup || testInfo?.isHeader) return null;
-
-                  const value = selectedReport.resultData?.[testName] || '';
-
-                  return (
-                    <div
-                      key={testName}
-                      className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-outline-variant/10 pb-3 last:border-0 last:pb-0"
-                    >
-                      <span className="text-xs font-medium text-on-surface-variant flex-1">
-                        {testName}
-                      </span>
-                      {(() => {
-                        if (testInfo?.options) {
-                          return (
-                            <Combobox
-                              className="w-full min-w-0 sm:w-1/2"
-                              inputClassName="test-result-input w-full px-3 py-2 bg-surface-container-lowest border border-outline-variant/30 rounded-lg focus:border-accent focus:outline-none transition text-xs font-bold text-primary"
-                              value={String(value)}
-                              options={testInfo.options}
-                              placeholder="Select or type result..."
-                              ariaLabel={`Result for ${testName}`}
-                              readOnly={!canEdit}
-                              onChange={next => {
-                                const nextResults = recalculateCBC(
-                                  asResultMap(selectedReport.resultData),
-                                  testName,
-                                  next,
-                                );
-                                setSelectedReport({
-                                  ...selectedReport,
-                                  resultData: nextResults,
-                                });
-                              }}
-                              onNavigate={handleInputKeyDown}
-                            />
-                          );
-                        }
-                        return (
-                          <input
-                            type="text"
-                            inputMode={isNumericTest(testInfo) ? 'decimal' : undefined}
-                            aria-label={`Result for ${testName}`}
-                            value={String(value)}
-                            readOnly={!canEdit}
-                            onChange={e => {
-                              const nextResults = recalculateCBC(
-                                asResultMap(selectedReport.resultData),
-                                testName,
-                                e.target.value,
-                              );
-                              setSelectedReport({
-                                ...selectedReport,
-                                resultData: nextResults,
-                              });
-                            }}
-                            onKeyDown={handleInputKeyDown}
-                            className="test-result-input w-full sm:w-1/2 px-3 py-2 bg-surface-container-lowest border border-outline-variant/30 rounded-lg focus:border-accent focus:outline-none transition text-sm font-bold text-primary"
-                          />
-                        );
-                      })()}
-                    </div>
-                  );
-                })}
-              </div>
+              <ReportResultsEditor
+                testSelection={selectedReport.testSelection || []}
+                testType={selectedReport.testType}
+                results={asResultMap(selectedReport.resultData)}
+                readOnly={!canEdit}
+                onChange={(testName, next) =>
+                  setSelectedReport({
+                    ...selectedReport,
+                    resultData: recalculateCBC(
+                      asResultMap(selectedReport.resultData),
+                      testName,
+                      next,
+                    ),
+                  })
+                }
+                onNavigate={handleInputKeyDown}
+              />
               {canEdit && (
                 <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
                   <button

@@ -20,6 +20,17 @@
    choice in Settings always wins. */
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
+/* Keyboard affordances — the ↵ / ↑↓ / ESC chips in the search palette. They teach
+   a shortcut that cannot be used without a physical keyboard, and on the APK or a
+   phone browser they are dead weight in the way of the result list. A touch input
+   reports `(pointer: coarse)`, so tag the element `hidden keyboard-only:flex` (or
+   `:block`) to show it only where a real keyboard is plausible. */
+@custom-variant keyboard-only {
+  @media (hover: hover) and (pointer: fine) {
+    @slot;
+  }
+}
+
 /* ==========================================================================
    DESIGN TOKENS
    Two orthogonal axes:

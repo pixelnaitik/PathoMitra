@@ -1,5 +1,5 @@
-# robots.txt — Healthcare OS / PathLab OS
-# https://healthcare-os.pages.dev
+# robots.txt — PathoMitra / PathoMitra
+# https://pathomitra.pages.dev
 
 User-agent: *
 Allow: /
@@ -10,4 +10,4 @@ Allow: /solutions
 Disallow: /dashboard
 Disallow: /auth
 
-Sitemap: https://healthcare-os.pages.dev/sitemap.xml
+Sitemap: https://pathomitra.pages.dev/sitemap.xml

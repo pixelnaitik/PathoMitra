@@ -66,9 +66,21 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
             Your saved data is safe — the view just could not be rendered. Try again, or reload if
             it keeps happening.
           </p>
-          <p className="mt-3 break-words font-mono text-xs text-on-surface-variant/70">
-            {error.message}
-          </p>
+          {/* The raw message can echo a value from the record that was being
+              rendered, and this screen is shown at the bench with people around —
+              so it is collapsed by default and only a support conversation opens
+              it. Nothing here is transmitted; the same text goes to the local
+              crash log (Settings → Diagnostics). */}
+          {error.message && (
+            <details className="mt-3 text-left">
+              <summary className="cursor-pointer font-mono text-xs text-on-surface-variant/70">
+                Technical details
+              </summary>
+              <p className="mt-1.5 break-words font-mono text-xs text-on-surface-variant/70">
+                {error.message}
+              </p>
+            </details>
+          )}
           <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
             <button
               type="button"

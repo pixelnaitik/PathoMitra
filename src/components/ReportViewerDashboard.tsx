@@ -27,11 +27,7 @@ import {
 } from 'lucide-react';
 import { Button, Sheet, StatusPill } from './ui';
 import { cn } from '../lib/utils';
-import {
-  findTestInfo,
-  getReferenceRangeLabel,
-  getReferenceRangeValues,
-} from '../lib/pathology-tests';
+import { findTestInfo, resolveReferenceRange } from '../lib/pathology-tests';
 import { ageAsNumber, type PatientRecord, type ReportRecord } from '../lib/models';
 import { buildReportLegalLines } from '../lib/report-compliance';
 import { readSettings } from '../lib/settings';
@@ -154,7 +150,7 @@ export function ReportViewerDashboard({
         return { name, category, value: '', unit: '', refLabel: '', flag: null, group: true };
       }
       const value = String(shown.resultData?.[name] ?? '').trim();
-      const refValues = info ? getReferenceRangeValues(info.ranges, age, gender) : null;
+      const range = resolveReferenceRange(info?.ranges, age, gender);
       const notes = [...(info?.notes || []), info?.clinicalSignificance || '']
         .filter(Boolean)
         .join(' ');
@@ -163,8 +159,8 @@ export function ReportViewerDashboard({
         category,
         value,
         unit: info?.unit || '',
-        refLabel: info ? getReferenceRangeLabel(info.ranges, age, gender) : '',
-        flag: value ? flagFor(value, refValues) : null,
+        refLabel: range.label,
+        flag: value ? flagFor(value, range.values) : null,
         group: false,
         notes,
       };
@@ -210,7 +206,7 @@ export function ReportViewerDashboard({
       .filter(info => info?.isGroup)
       .map(info => info?.name || '');
     return {
-      labName: s.labName || 'PathLab OS Lab',
+      labName: s.labName || 'PathoMitra Lab',
       title: shown.testType || (groups.length ? groups.join(' + ') : 'Pathology Report'),
       signer,
       legalLines: [legal.accreditation, legal.licence, legal.disclaimer].filter(Boolean),

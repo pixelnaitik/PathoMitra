@@ -242,7 +242,9 @@ export function CommandSearch({
                   <X className="h-4 w-4" aria-hidden="true" />
                 </button>
               ) : (
-                <kbd className="hidden shrink-0 rounded-md border border-outline-variant px-1.5 py-0.5 text-[10px] font-bold text-on-surface-variant sm:block">
+                /* Both gates have to hold: a keyboard must be plausible, and the row
+                   must be wide enough to spare the chip next to the placeholder. */
+                <kbd className="hidden shrink-0 rounded-md border border-outline-variant px-1.5 py-0.5 text-[10px] font-bold text-on-surface-variant sm:keyboard-only:block">
                   ESC
                 </kbd>
               )}
@@ -312,11 +314,13 @@ export function CommandSearch({
                       <span className="shrink-0 rounded-md bg-surface-container-high px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-on-surface-variant">
                         {TYPE_LABELS[result.type]}
                       </span>
-                      {/* Slot is always present — toggling visibility instead of
-                        mounting keeps the badge from jumping on the active row. */}
+                      {/* The "press Enter" slot is always present on a keyboard —
+                        toggling visibility instead of mounting keeps the badge from
+                        jumping on the active row. On touch it is gone for every row,
+                        so the badge stays put either way. */}
                       <CornerDownLeft
                         className={cn(
-                          'h-3.5 w-3.5 shrink-0 text-accent transition-opacity',
+                          'hidden keyboard-only:block h-3.5 w-3.5 shrink-0 text-accent transition-opacity',
                           idx === activeIdx ? 'opacity-100' : 'opacity-0',
                         )}
                         aria-hidden="true"
@@ -326,15 +330,16 @@ export function CommandSearch({
                 })}
             </div>
 
-            {/* Footer hints */}
+            {/* Footer hints. The keyboard half of the row only means something with
+                a physical keyboard; on touch the row keeps the result count alone. */}
             <div className="flex shrink-0 items-center gap-4 border-t border-outline-variant/60 px-5 py-2.5">
-              <span className="flex items-center gap-1.5 text-[11px] text-on-surface-variant">
+              <span className="hidden keyboard-only:flex items-center gap-1.5 text-[11px] text-on-surface-variant">
                 <kbd className="rounded border border-outline-variant px-1 py-0.5 text-[9px] font-bold">
                   ↑↓
                 </kbd>{' '}
                 navigate
               </span>
-              <span className="flex items-center gap-1.5 text-[11px] text-on-surface-variant">
+              <span className="hidden keyboard-only:flex items-center gap-1.5 text-[11px] text-on-surface-variant">
                 <kbd className="rounded border border-outline-variant px-1 py-0.5 text-[9px] font-bold">
                   ↵
                 </kbd>{' '}

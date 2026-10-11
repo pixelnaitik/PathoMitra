@@ -23,7 +23,7 @@ import type { Directory as DirectoryKind } from '@capacitor/filesystem';
 import { readSettings } from './settings';
 
 /** Sub-folder inside the app's storage area that generated documents land in. */
-const OUTPUT_SUBDIR = 'PathLab OS';
+const OUTPUT_SUBDIR = 'PathoMitra';
 
 /** A file that now exists on the device. */
 export interface SavedFile {
@@ -111,7 +111,7 @@ async function writeOnDevice(
         path,
         data,
         directory: byName[candidate],
-        // Create `PathLab OS/` on the first save.
+        // Create `PathoMitra/` on the first save.
         recursive: true,
         ...(encoding === 'utf8' ? { encoding: Encoding.UTF8 } : {}),
       });
@@ -121,7 +121,7 @@ async function writeOnDevice(
       // Reached only when public exports have been switched on and a scoped-
       // storage rule refused the write — falling through to the app-private
       // directory is the intended path, not an error.
-      console.warn(`PathLab OS: could not write to ${candidate}, trying the next directory`, err);
+      console.warn(`PathoMitra: could not write to ${candidate}, trying the next directory`, err);
     }
   }
   throw lastError instanceof Error

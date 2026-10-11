@@ -57,10 +57,10 @@ def hasReleaseSigning = keystoreFileExists &&
         releaseKeyAlias != null && releaseKeyPassword != null && releaseStorePassword != null
 
 android {
-    namespace = "com.healthcareos.app"
+    namespace = "com.pathomitra.app"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "com.healthcareos.app"
+        applicationId "com.pathomitra.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode appVersionCode
@@ -120,7 +120,7 @@ android.applicationVariants.all { variant ->
 
 if (!hasReleaseSigning) {
     logger.warn("")
-    logger.warn("  PathLab OS: no release keystore configured.")
+    logger.warn("  PathoMitra: no release keystore configured.")
     logger.warn("  assembleRelease will produce an UNSIGNED APK/AAB that Android refuses")
     logger.warn("  to install. Copy android/keystore.properties.example to")
     logger.warn("  android/keystore.properties (git-ignored) or set KEYSTORE_FILE /")

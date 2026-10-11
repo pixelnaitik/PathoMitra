@@ -494,7 +494,7 @@ export function ReportSettingsPanel({
         <Disclosure
           title="Background artwork"
           icon={<ImageIcon className="h-4 w-4" />}
-          summary={settings.sharingTemplateImage ? 'Custom image' : 'Built-in PathLab template'}
+          summary={settings.sharingTemplateImage ? 'Custom image' : 'Built-in PathoMitra template'}
         >
           <input
             ref={fileRef}
@@ -537,7 +537,7 @@ export function ReportSettingsPanel({
               <Upload className="h-5 w-5 text-on-surface-variant" aria-hidden="true" />
               <span className="text-sm font-bold text-on-surface">Upload A4 background</span>
               <span className="text-xs text-on-surface-variant">
-                PNG or JPG up to 4 MB. Falls back to the built-in PathLab artwork.
+                PNG or JPG up to 4 MB. Falls back to the built-in PathoMitra artwork.
               </span>
             </button>
           )}

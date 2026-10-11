@@ -155,7 +155,7 @@ export async function clearCrashLog(): Promise<void> {
 /** Plain-text form for the export file — readable without a parser. */
 export function formatCrashLog(entries: CrashEntry[]): string {
   const header = [
-    'PathLab OS — on-device diagnostics log',
+    'PathoMitra — on-device diagnostics log',
     `Exported ${new Date().toISOString()}`,
     `${entries.length} entr${entries.length === 1 ? 'y' : 'ies'} (newest last)`,
     '',

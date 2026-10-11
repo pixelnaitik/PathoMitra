@@ -1,34 +1,112 @@
 import { describe, it, expect } from 'vitest';
 import {
   getReferenceRangeLabel,
+  resolveReferenceRange,
   getLevenshteinDistance,
+  normalizeSearchTerm,
   searchPathologyTests,
   findTestInfo,
   resolveTestKind,
   isNumericTest,
   getSearchableTests,
+  auditPathologyCatalogue,
   DEFAULT_PATHOLOGY_TESTS,
+  ADULT_MIN_AGE_YEARS,
+  INFANT_MAX_AGE_YEARS,
   type PathologyTest,
+  type ReferenceRange,
 } from './pathology-tests';
 
-describe('getReferenceRangeLabel', () => {
-  const ranges = {
+describe('resolveReferenceRange — Adult male / Adult female / Infant bands', () => {
+  const ranges: ReferenceRange = {
     male: { min: 13, max: 17 },
     female: { min: 12, max: 16 },
-    child: { text: 'Age dependent' },
+    infant: { min: 9.5, max: 13.5 },
     general: { min: 10, max: 20 },
   };
 
-  it('prefers child range for children under 12', () => {
-    expect(getReferenceRangeLabel(ranges, 8, 'male')).toBe('Age dependent');
+  it('gives an under-24-month patient the infant band, unflagged', () => {
+    const r = resolveReferenceRange(ranges, 1, 'male');
+    expect(r.kind).toBe('infant');
+    expect(r.label).toBe('9.5 - 13.5');
+    expect(r.unverifiedForPatient).toBe(false);
   });
 
-  it('uses gender-specific ranges for adults', () => {
+  it('stops applying the infant band at the boundary', () => {
+    expect(resolveReferenceRange(ranges, INFANT_MAX_AGE_YEARS - 1, 'male').kind).toBe('infant');
+    expect(resolveReferenceRange(ranges, INFANT_MAX_AGE_YEARS, 'male').kind).toBe('adult-male');
+  });
+
+  it('applies the gender bands from the adult cut-off up', () => {
+    expect(resolveReferenceRange(ranges, ADULT_MIN_AGE_YEARS, 'female').label).toBe('12.0 - 16.0');
+    expect(resolveReferenceRange(ranges, 30, 'male').label).toBe('13.0 - 17.0');
+    expect(resolveReferenceRange(ranges, 30, 'male').unverifiedForPatient).toBe(false);
+  });
+
+  it('shows a 2–11 year old the adult range and says it is not age-validated', () => {
+    const r = resolveReferenceRange(ranges, 8, 'male');
+    expect(r.label).toBe('13.0 - 17.0');
+    expect(r.unverifiedForPatient).toBe(true);
+    expect(r.reason).toMatch(/paediatric/i);
+  });
+
+  it('flags an infant with no infant interval rather than passing the adult one off', () => {
+    const adultOnly: ReferenceRange = { male: ranges.male, female: ranges.female };
+    const r = resolveReferenceRange(adultOnly, 0, 'female');
+    expect(r.kind).toBe('adult-female');
+    expect(r.unverifiedForPatient).toBe(true);
+    expect(r.reason).toMatch(/infant/i);
+  });
+
+  it('honours a band the catalogue itself marks as awaiting verification', () => {
+    const r = resolveReferenceRange(
+      { male: { min: 4, max: 11, verification: 'requires-lab-verification' } },
+      40,
+      'male',
+    );
+    expect(r.unverifiedForPatient).toBe(true);
+    expect(r.reason).toMatch(/awaiting laboratory verification/);
+  });
+
+  it('falls back to general when the gender is unknown, and to nothing when there is no band', () => {
+    expect(resolveReferenceRange(ranges, 30).label).toBe('10.0 - 20.0');
+    expect(resolveReferenceRange({}, 30, 'male').kind).toBe('none');
+    expect(resolveReferenceRange(undefined, 30).label).toBe('');
+  });
+
+  it('keeps a text band verbatim and still digs out numeric bounds from the chain', () => {
+    const textual: ReferenceRange = {
+      infant: { text: 'Age dependent' },
+      male: { min: 13, max: 17 },
+    };
+    const r = resolveReferenceRange(textual, 1, 'male');
+    expect(r.label).toBe('Age dependent');
+    expect(r.values).toEqual({ min: 13, max: 17 });
+  });
+
+  it('never lets a child inherit an adult range silently anywhere in the catalogue', () => {
+    // The safety net for the removed `child` band: for every test that has adult
+    // bands but no infant band, a 5-year-old must come back flagged.
+    const offenders = DEFAULT_PATHOLOGY_TESTS.filter(t => {
+      const r = resolveReferenceRange(t.ranges, 5, 'male');
+      return r.label !== '' && !r.unverifiedForPatient && r.kind !== 'general';
+    }).map(t => t.name);
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe('getReferenceRangeLabel', () => {
+  const ranges: ReferenceRange = {
+    male: { min: 13, max: 17 },
+    female: { min: 12, max: 16 },
+    infant: { text: 'Age dependent' },
+    general: { min: 10, max: 20 },
+  };
+
+  it('is the label of the resolved band', () => {
+    expect(getReferenceRangeLabel(ranges, 1, 'male')).toBe('Age dependent');
     expect(getReferenceRangeLabel(ranges, 30, 'male')).toBe('13.0 - 17.0');
     expect(getReferenceRangeLabel(ranges, 30, 'female')).toBe('12.0 - 16.0');
-  });
-
-  it('falls back to general range when gender is missing', () => {
     expect(getReferenceRangeLabel(ranges, 30)).toBe('10.0 - 20.0');
   });
 
@@ -144,5 +222,149 @@ describe('searchPathologyTests — Indian disease→test relevance', () => {
     const typed = getSearchableTests([], 'typhi');
     expect(browse.some(t => t.name === "S. typhi 'o'")).toBe(false);
     expect(typed.some(t => t.name === "S. typhi 'o'")).toBe(true);
+  });
+});
+
+describe('normalizeSearchTerm — spelling tolerance', () => {
+  it('folds punctuation, spacing, case, plurals and British / American spellings', () => {
+    expect(normalizeSearchTerm('H.D.L.')).toBe(normalizeSearchTerm('hdl'));
+    expect(normalizeSearchTerm('haemoglobin')).toBe(normalizeSearchTerm('hemoglobin'));
+    expect(normalizeSearchTerm('oedema')).toBe(normalizeSearchTerm('edema'));
+    expect(normalizeSearchTerm('platelets')).toBe(normalizeSearchTerm('platelet'));
+    expect(normalizeSearchTerm('Complete Blood Count')).toBe(
+      normalizeSearchTerm('completebloodcount'),
+    );
+  });
+});
+
+describe('searchPathologyTests — how lab staff actually type', () => {
+  const names = (query: string) =>
+    searchPathologyTests(query, DEFAULT_PATHOLOGY_TESTS).map(t => t.name);
+
+  it('reaches the Hb record from either spelling', () => {
+    expect(names('haemoglobin')).toContain('HB (HAEMOGLOBIN)');
+    expect(names('hemoglobin')).toContain('HB (HAEMOGLOBIN)');
+  });
+
+  it('matches dotted abbreviations and plurals', () => {
+    expect(names('hdl')).toContain('H.D.L.');
+    expect(names('platelets')).toContain('PLATELET COUNT');
+  });
+
+  it('ignores word order in a multi-word query', () => {
+    expect(names('sugar fasting')).toContain('Blood Sugar Fasting');
+    expect(names('liver function panel')).toContain('LIVER FUNCTION TEST (LFT)');
+  });
+
+  it('finds tests by the Hinglish phrase typed at the counter', () => {
+    expect(names('khali pet sugar')).toContain('Blood Sugar Fasting');
+    expect(names('khoon ki kami')).toContain('HB (HAEMOGLOBIN)');
+    expect(names('peshab')).toContain('URINE ANALYSIS');
+  });
+
+  it('keeps clinically distinct tests separate for an ambiguous term', () => {
+    const results = names('sugar');
+    for (const expected of ['Blood Sugar Fasting', 'Blood Sugar (PP)', 'Blood Sugar Random']) {
+      expect(results).toContain(expected);
+    }
+  });
+
+  it('surfaces a profile and its components without merging them', () => {
+    const results = names('thyroid');
+    expect(results).toContain('THYROID PROFILE');
+    expect(results).toContain('T.S.H.');
+  });
+});
+
+describe('auditPathologyCatalogue', () => {
+  const issues = auditPathologyCatalogue();
+
+  it('ships without duplicate ids or dangling profile members', () => {
+    expect(issues.filter(i => i.kind === 'duplicate-id')).toEqual([]);
+    expect(issues.filter(i => i.kind === 'unknown-group-member')).toEqual([]);
+  });
+
+  it('reports the known "Albumin" name collision instead of letting it pass', () => {
+    // Serum albumin (LFT) and urine albumin share one lookup key, and
+    // findTestInfo returns the first match — so the LFT row reads the urine
+    // record's '+' options. Renaming either would rewrite historical reports,
+    // so it is reported for the lab to decide rather than fixed silently.
+    const collisions = issues.filter(i => i.kind === 'duplicate-name').map(i => i.detail);
+    expect(collisions.some(d => /Albumin/.test(d))).toBe(true);
+  });
+});
+
+describe('catalogue coverage after the 2026-10 expansion', () => {
+  it('gives every numeric test an interval an adult can be reported against', () => {
+    const missing = DEFAULT_PATHOLOGY_TESTS.filter(
+      t => isNumericTest(t) && resolveReferenceRange(t.ranges, 30, 'male').label === '',
+    ).map(t => t.name);
+    expect(missing).toEqual([]);
+  });
+
+  it('marks every interval in a newly added category as awaiting lab verification', () => {
+    // Nothing new may claim an approval it has not earned.
+    const NEW_CATEGORIES = ['HORMONES', 'VITAMINS', 'ELECTROLYTES', 'CARDIAC MARKERS'];
+    const unmarked = DEFAULT_PATHOLOGY_TESTS.filter(
+      t =>
+        NEW_CATEGORIES.includes(t.category) &&
+        Object.values(t.ranges ?? {}).some(band => band !== undefined && !band.verification),
+    ).map(t => t.name);
+    expect(unmarked).toEqual([]);
+  });
+
+  it('adds the profiles the audit found missing', () => {
+    const groups = DEFAULT_PATHOLOGY_TESTS.filter(t => t.isGroup).map(t => t.name);
+    for (const expected of [
+      'THYROID PROFILE',
+      'KIDNEY FUNCTION TEST (KFT)',
+      'LIVER FUNCTION TEST (LFT)',
+      'BLOOD SUGAR PROFILE',
+      'ELECTROLYTE PROFILE',
+      'IRON STUDIES',
+      'ANAEMIA PROFILE',
+      'VITAMIN PROFILE',
+      'FEVER PROFILE',
+      'ANTENATAL PROFILE',
+      'CARDIAC MARKERS',
+      'RHEUMATOID ARTHRITIS PROFILE',
+      'PANCREAS PROFILE',
+      'STOOL EXAMINATION',
+    ]) {
+      expect(groups).toContain(expected);
+    }
+  });
+
+  it('keeps every new-profile component individually orderable', () => {
+    // A profile must not remove an existing way to order a test.
+    const browse = getSearchableTests([], '').map(t => t.name);
+    for (const stillOrderable of [
+      'S. creatinine',
+      'HbA1c',
+      'Total Serum Bilirubin',
+      'Sodium',
+      'Serum Ferritin',
+      'T.S.H.',
+    ]) {
+      expect(browse).toContain(stillOrderable);
+    }
+    // …and the panels that always hid their members must still hide them:
+    // Hb is ordered through the CBC panel, before and after this expansion.
+    expect(browse).not.toContain('HB (HAEMOGLOBIN)');
+    expect(browse).not.toContain("S. typhi 'o'");
+  });
+
+  it('preserves the original catalogue order ahead of the additions', () => {
+    // Historical reports resolve rows by name, and the picker shows this order.
+    const names = DEFAULT_PATHOLOGY_TESTS.map(t => t.name);
+    expect(names.slice(0, 3)).toEqual([
+      'CBC (COMPLETE BLOOD COUNT)',
+      'WHITE CELL COUNT(TC)',
+      'DIFFERENTIAL COUNT WBC',
+    ]);
+    expect(names.indexOf('CBC (COMPLETE BLOOD COUNT)')).toBeLessThan(
+      names.indexOf('THYROID PROFILE'),
+    );
+    expect(names.indexOf('PREGNANCY TEST')).toBeLessThan(names.indexOf('T.S.H.'));
   });
 });

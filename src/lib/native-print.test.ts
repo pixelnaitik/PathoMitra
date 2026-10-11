@@ -78,7 +78,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.clearAllMocks();
   vi.mocked(Capacitor.isNativePlatform).mockReturnValue(false);
-  writeFile.mockResolvedValue({ uri: 'file:///sdcard/PathLab OS/report-42.pdf' });
+  writeFile.mockResolvedValue({ uri: 'file:///sdcard/PathoMitra/report-42.pdf' });
   share.mockResolvedValue({ activityType: '' });
   openFile.mockResolvedValue(undefined);
 });
@@ -155,7 +155,7 @@ describe('printPdf', () => {
     expect(await previewPdf(asDoc(doc), 'report-A4.pdf')).toBeNull();
     expect(writeFile).toHaveBeenCalledWith(expect.objectContaining({ data: 'JVBERi0xLg==' }));
     expect(openFile).toHaveBeenCalledWith({
-      uri: 'file:///sdcard/PathLab OS/report-42.pdf',
+      uri: 'file:///sdcard/PathoMitra/report-42.pdf',
       mimeType: 'application/pdf',
     });
     expect(printBase64).not.toHaveBeenCalled();
@@ -204,7 +204,7 @@ describe('savePdf', () => {
       .mockRejectedValueOnce(new Error('Failed to write file: EACCES (Permission denied)'))
       .mockRejectedValueOnce(new Error('Failed to write file: EACCES (Permission denied)'))
       .mockResolvedValueOnce({
-        uri: 'file:///sdcard/Android/data/com.healthcareos.app/files/PathLab OS/report-42.pdf',
+        uri: 'file:///sdcard/Android/data/com.pathomitra.app/files/PathoMitra/report-42.pdf',
       });
 
     expect(await savePdf(asDoc(fakeDoc()), 'report-42.pdf')).toContain('report-42.pdf');
@@ -222,7 +222,7 @@ describe('savePdf', () => {
     storagePolicy.allowPublicExports = false;
     vi.mocked(Capacitor.isNativePlatform).mockReturnValue(true);
     writeFile.mockResolvedValueOnce({
-      uri: 'file:///data/user/0/com.healthcareos.app/files/PathLab OS/report-42.pdf',
+      uri: 'file:///data/user/0/com.pathomitra.app/files/PathoMitra/report-42.pdf',
     });
 
     const message = await savePdf(asDoc(fakeDoc()), 'report-42.pdf');
@@ -256,7 +256,7 @@ describe('sharePdf', () => {
     expect(message).toBeNull();
     expect(share).toHaveBeenCalledWith(
       expect.objectContaining({
-        files: ['file:///sdcard/PathLab OS/report-42.pdf'],
+        files: ['file:///sdcard/PathoMitra/report-42.pdf'],
         title: 'Diagnostic Report',
         text: 'For John Doe',
       }),

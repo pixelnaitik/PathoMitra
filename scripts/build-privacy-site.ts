@@ -138,12 +138,12 @@ const outputs = [
   {
     file: path.join(OUT_DIR, 'index.html'),
     html: page({
-      title: 'Privacy Policy — PathLab OS',
+      title: 'Privacy Policy — PathoMitra',
       eyebrow: 'Legal',
       heading: 'Privacy Policy',
       updated: PRIVACY_LAST_UPDATED,
       intro:
-        'How PathLab OS, an offline laboratory console, handles patient and health information: what it stores, where it is kept, what it never collects, and how to delete everything.',
+        'How PathoMitra, an offline laboratory console, handles patient and health information: what it stores, where it is kept, what it never collects, and how to delete everything.',
       sections: renderSections(PRIVACY_SECTIONS),
       otherHref: 'terms.html',
       otherLabel: 'Terms &amp; Conditions of Use',
@@ -153,12 +153,12 @@ const outputs = [
   {
     file: path.join(OUT_DIR, 'terms.html'),
     html: page({
-      title: 'Terms & Conditions of Use — PathLab OS',
+      title: 'Terms & Conditions of Use — PathoMitra',
       eyebrow: 'Legal',
       heading: 'Terms & Conditions of Use',
       updated: `${TERMS_LAST_UPDATED} (v${TERMS_VERSION})`,
       intro:
-        'The undertakings a laboratory operator accepts when using PathLab OS: professional use only, responsibility for patient data and for any accreditation printed on a report, and no diagnostic claims.',
+        'The undertakings a laboratory operator accepts when using PathoMitra: professional use only, responsibility for patient data and for any accreditation printed on a report, and no diagnostic claims.',
       sections: renderSections(TERMS_SECTIONS),
       otherHref: 'index.html',
       otherLabel: 'Privacy Policy',

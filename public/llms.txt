@@ -1,11 +1,11 @@
-# PathLab OS — LLM Context File
+# PathoMitra — LLM Context File
 # https://llmstxt.org
 
-# PathLab OS is an offline-first digital pathology laboratory management system.
+# PathoMitra is an offline-first digital pathology laboratory management system.
 # It provides patient record management, laboratory test reporting, doctor management,
 # invoicing and revenue analytics — entirely on-device, with no server and no accounts.
 
-> PathLab OS is an offline, local-first digital pathology lab management system for
+> PathoMitra is an offline, local-first digital pathology lab management system for
 > clinical laboratories. All data is stored in an encrypted on-device database
 > (SQLCipher, AES-256, key in the Android hardware keystore). The Android build requests
 > no INTERNET permission, ships no analytics or crash reporting, and never transmits
@@ -31,9 +31,9 @@
 
 ## Public Pages
 
-- [Home](https://healthcare-os.pages.dev/) — Landing page with product overview
-- [Technology](https://healthcare-os.pages.dev/technology) — Technology and security overview
-- [Solutions](https://healthcare-os.pages.dev/solutions) — Feature descriptions and use cases
+- [Home](https://pathomitra.pages.dev/) — Landing page with product overview
+- [Technology](https://pathomitra.pages.dev/technology) — Technology and security overview
+- [Solutions](https://pathomitra.pages.dev/solutions) — Feature descriptions and use cases
 
 ## Private Pages (local operator unlock required)
 
@@ -56,5 +56,5 @@
 
 ## Optional
 
-- [robots.txt](https://healthcare-os.pages.dev/robots.txt)
-- [manifest.json](https://healthcare-os.pages.dev/manifest.json)
+- [robots.txt](https://pathomitra.pages.dev/robots.txt)
+- [manifest.json](https://pathomitra.pages.dev/manifest.json)

@@ -1,6 +1,6 @@
 {
-  "name": "PathLab OS",
-  "short_name": "PathLabOS",
+  "name": "PathoMitra",
+  "short_name": "PathoMitra",
   "description": "Clinical Digital Pathology Laboratory Portal",
   "start_url": "/dashboard",
   "display": "standalone",

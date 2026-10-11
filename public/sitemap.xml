@@ -9,17 +9,17 @@
 -->
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>https://healthcare-os.pages.dev/</loc>
+    <loc>https://pathomitra.pages.dev/</loc>
     <changefreq>monthly</changefreq>
     <priority>1.0</priority>
   </url>
   <url>
-    <loc>https://healthcare-os.pages.dev/technology</loc>
+    <loc>https://pathomitra.pages.dev/technology</loc>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://healthcare-os.pages.dev/solutions</loc>
+    <loc>https://pathomitra.pages.dev/solutions</loc>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>

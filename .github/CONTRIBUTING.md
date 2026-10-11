@@ -1,6 +1,6 @@
-# Contributing to PathLab OS
+# Contributing to PathoMitra
 
-Thanks for your interest in improving PathLab OS! This guide covers
+Thanks for your interest in improving PathoMitra! This guide covers
 everything you need to set up a development environment, follow the project's
 conventions, and get your pull request merged.
 

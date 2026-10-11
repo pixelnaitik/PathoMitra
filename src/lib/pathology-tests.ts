@@ -1,10 +1,66 @@
 import { readCustomTests } from './settings';
 
+/**
+ * The three populations a report may carry an interval for:
+ * **Adult male**, **Adult female** and **Infant**.
+ *
+ * The boundaries are a product decision, not clinical law, so they live here as
+ * named constants rather than magic numbers:
+ *
+ *  • Infant            — 0 up to `INFANT_MAX_AGE_YEARS` (the 0–24 month band).
+ *                        Patient ages are whole years (`ageAsNumber` in
+ *                        lib/models.ts — the registration form has no month
+ *                        field), so `age < 2` is the closest representable
+ *                        "0–24 months". A 24-month-old is therefore already on
+ *                        the adult band; give the patient record a month unit
+ *                        before that boundary starts to matter clinically.
+ *  • Adult male/female — `ADULT_MIN_AGE_YEARS` and above.
+ *  • 2 – 11 years      — deliberately has no band of its own. The adult
+ *                        interval is used and the row comes back
+ *                        `unverifiedForPatient`, so the report says the range
+ *                        is not age-validated instead of implying one. Restore
+ *                        a paediatric band the day the lab establishes it.
+ *
+ * Neonates (0–28 days) are not a separate population either — a newborn lands
+ * in the Infant band. That is a known simplification and is called out in the
+ * implementation report for the lab director to accept or reject.
+ */
+export const INFANT_MAX_AGE_YEARS = 2;
+export const ADULT_MIN_AGE_YEARS = 12;
+
+/** Whether a lab has signed off on an interval. Absent means "no claim made". */
+export type RangeVerification = 'approved' | 'requires-lab-verification';
+
+export interface RangeBand {
+  min?: number;
+  max?: number;
+  /** Free-text form, used verbatim when it is what the lab reports. */
+  text?: string;
+  /** Where the interval came from (ICMR guideline, Tietz, in-house study…). */
+  source?: string;
+  /**
+   * `requires-lab-verification` is rendered as a badge on the report and must
+   * never be presented as an approved interval. Leave unset for ranges the
+   * catalogue has always shipped (no claim either way).
+   */
+  verification?: RangeVerification;
+  /** ISO date the band was last reviewed. */
+  lastReviewed?: string;
+}
+
 export interface ReferenceRange {
-  male?: { min?: number; max?: number; text?: string };
-  female?: { min?: number; max?: number; text?: string };
-  child?: { min?: number; max?: number; text?: string };
-  general?: { min?: number; max?: number; text?: string };
+  /** Adult male — `ADULT_MIN_AGE_YEARS` and above. */
+  male?: RangeBand;
+  /** Adult female — `ADULT_MIN_AGE_YEARS` and above. */
+  female?: RangeBand;
+  /** Infant — 0 to 24 months. */
+  infant?: RangeBand;
+  /**
+   * Interval that does not vary by sex or age: qualitative results, titers,
+   * urine microscopy, and every test the lab reports as one number for all.
+   * Not a fourth population — it is the absence of a split.
+   */
+  general?: RangeBand;
 }
 
 export interface PathologyTest {
@@ -20,9 +76,27 @@ export interface PathologyTest {
   kind?: TestKind;
   ranges?: ReferenceRange;
   method?: string;
+  /** Specimen the test runs on — printed on the requisition (Serum, Urine, Stool…). */
+  specimen?: string;
+  /** Collection container / handling the lab has to supply (EDTA, citrate, fluoride…). */
+  container?: string;
+  /** Patient preparation the result depends on (fasting, 75 g glucose load, timing). */
+  preparation?: string;
+  /** ISO date this record's clinical data was last reviewed against a source. */
+  lastReviewed?: string;
   notes?: string[];
   clinicalSignificance?: string;
   isGroup?: boolean;
+  /**
+   * Whether this panel's components disappear from the individual-test browse
+   * list. `undefined`/true is the long-standing behaviour (CBC, WIDAL, URINE
+   * ANALYSIS — their members are only added through the parent panel). New
+   * profiles set it to false so that tests which were always pickable on their
+   * own — creatinine, bilirubin, HbA1c — stay pickable after a profile is
+   * introduced. Adding a profile must never remove an existing way to order a
+   * test.
+   */
+  hideMembersFromBrowse?: boolean;
   isHeader?: boolean;
   includedTests?: string[];
   options?: string[];
@@ -55,7 +129,7 @@ const QUALITATIVE_TEXTS = [
 const TITER_PATTERN = /\d+\s*[:/]\s*\d+/;
 
 const rangeEntries = (ranges?: ReferenceRange) =>
-  ranges ? [ranges.general, ranges.male, ranges.female, ranges.child] : [];
+  ranges ? [ranges.general, ranges.male, ranges.female, ranges.infant] : [];
 
 /**
  * Determine how a test's result should be treated.
@@ -97,6 +171,34 @@ export function resolveTestKind(test?: PathologyTest | null): TestKind {
 export const isNumericTest = (test?: PathologyTest | null): boolean =>
   resolveTestKind(test) === 'numeric';
 
+/**
+ * Every `infant` band in the catalogue below was inherited verbatim from the
+ * old `child` band, which covered 0–12 years and was never established for
+ * 0–24 months. It is still closer to a paediatric interval than the adult one
+ * is, so it is kept — but marked, so no report can present it as an approved
+ * infant range. Replace band by band as the lab validates each, then drop the
+ * marker (and this comment) once none of them are inherited.
+ */
+const INHERITED_PAEDIATRIC_BAND = {
+  verification: 'requires-lab-verification' as const,
+  source: 'Inherited from the legacy 0–12 yr band; not validated for 0–24 months',
+};
+
+/**
+ * Marker on every interval added by the 2026-10 catalogue expansion. These are
+ * conventional values seen in Indian practice, not this laboratory's approved
+ * ranges: no method validation was done here and no Indian authority was
+ * quoted, because doing either would be a claim the code cannot support. They
+ * render with the report caveat until the lab confirms or replaces them.
+ */
+const UNVERIFIED_INTERVAL = {
+  verification: 'requires-lab-verification' as const,
+  source: 'Added 2026-10 as a conventional value — awaiting laboratory verification',
+};
+
+/** Shorthand for the common single-interval case: one range, every patient. */
+const generalText = (text: string) => ({ general: { text, ...UNVERIFIED_INTERVAL } });
+
 export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
   // Full Group CBC
   {
@@ -104,7 +206,15 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     name: 'CBC (COMPLETE BLOOD COUNT)',
     category: 'HAEMATOLOGY',
     isGroup: true,
-    synonyms: ['cbc', 'complete blood count', 'hemogram'],
+    synonyms: [
+      'cbc',
+      'complete blood count',
+      'hemogram',
+      'cbp',
+      'complete blood picture',
+      'blood test',
+      'khoon ki report',
+    ],
     includedTests: [
       'WHITE CELL COUNT(TC)',
       'DIFFERENTIAL COUNT WBC',
@@ -142,7 +252,7 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     category: 'HAEMATOLOGY',
     unit: 'x10³/Cu.mm',
     ranges: {
-      child: { min: 5.0, max: 14.5, text: '5.0 - 14.5' },
+      infant: { min: 5.0, max: 14.5, text: '5.0 - 14.5', ...INHERITED_PAEDIATRIC_BAND },
       male: { min: 4.0, max: 11.0, text: '4.0 - 11.0' },
       female: { min: 4.0, max: 11.0, text: '4.0 - 11.0' },
       general: { min: 4.0, max: 11.0, text: '4.0 - 11.0' },
@@ -238,7 +348,7 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     category: 'HAEMATOLOGY',
     unit: 'mill/cumm',
     ranges: {
-      child: { min: 4.0, max: 5.2, text: '4.0 - 5.2' },
+      infant: { min: 4.0, max: 5.2, text: '4.0 - 5.2', ...INHERITED_PAEDIATRIC_BAND },
       male: { min: 4.5, max: 5.5, text: '4.5 - 5.5' },
       female: { min: 3.8, max: 4.8, text: '3.8 - 4.8' },
       general: { min: 3.8, max: 5.5, text: '3.8 - 5.5' },
@@ -250,12 +360,12 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     category: 'HAEMATOLOGY',
     unit: 'gm/dl',
     ranges: {
-      child: { min: 11.0, max: 14.5, text: '11.0 - 14.5' },
+      infant: { min: 11.0, max: 14.5, text: '11.0 - 14.5', ...INHERITED_PAEDIATRIC_BAND },
       male: { min: 13.5, max: 17.5, text: '13.5 - 17.5' },
       female: { min: 12.0, max: 15.0, text: '12.0 - 15.0' },
       general: { min: 12.0, max: 17.5, text: '12.0 - 17.5' },
     },
-    synonyms: ['hemoglobin (hb)', 'hemoglobin', 'haemoglobin'],
+    synonyms: ['hemoglobin (hb)', 'hemoglobin', 'haemoglobin', 'hb', 'khoon ki kami test'],
   },
   {
     id: 'hct',
@@ -263,7 +373,7 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     category: 'HAEMATOLOGY',
     unit: '%',
     ranges: {
-      child: { min: 35.0, max: 43.0, text: '35 - 43' },
+      infant: { min: 35.0, max: 43.0, text: '35 - 43', ...INHERITED_PAEDIATRIC_BAND },
       male: { min: 40.0, max: 50.0, text: '40 - 50' },
       female: { min: 36.0, max: 46.0, text: '36 - 46' },
       general: { min: 36.0, max: 50.0, text: '36 - 50' },
@@ -311,6 +421,7 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     category: 'HAEMATOLOGY',
     unit: 'lakh/cumm',
     ranges: { general: { text: '1.5-4.5' } },
+    synonyms: ['platelets', 'thrombocyte count', 'platelet test'],
   },
   {
     id: 'mpv',
@@ -423,6 +534,15 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     name: 'URINE ANALYSIS',
     category: 'CLINICAL PATHOLOGY',
     isGroup: true,
+    synonyms: [
+      'urine routine',
+      'urine microscopy',
+      'urine r/e',
+      'urine re',
+      'urine examination',
+      'peshab test',
+      'mosa',
+    ],
     includedTests: [
       'PHYSICAL EXAMINATION',
       'Quantity',
@@ -615,7 +735,7 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     category: 'BIO CHEMISTRY',
     unit: 'unit/l',
     ranges: {
-      child: { min: 15, max: 55, text: '15 - 55' },
+      infant: { min: 15, max: 55, text: '15 - 55', ...INHERITED_PAEDIATRIC_BAND },
       male: { max: 40, text: '5 - 40' },
       female: { max: 35, text: '5 - 35' },
       general: { min: 5, max: 35, text: '5 - 35' },
@@ -628,7 +748,7 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     category: 'BIO CHEMISTRY',
     unit: 'unit/l',
     ranges: {
-      child: { min: 10, max: 40, text: '10 - 40' },
+      infant: { min: 10, max: 40, text: '10 - 40', ...INHERITED_PAEDIATRIC_BAND },
       male: { max: 45, text: '7 - 45' },
       female: { max: 35, text: '7 - 35' },
       general: { min: 1, max: 40, text: '1 - 40' },
@@ -656,7 +776,7 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     category: 'BIO CHEMISTRY',
     unit: 'U/L',
     ranges: {
-      child: { min: 100, max: 350, text: '100 - 350' },
+      infant: { min: 100, max: 350, text: '100 - 350', ...INHERITED_PAEDIATRIC_BAND },
       male: { min: 53, max: 128, text: '53 - 128' },
       female: { min: 42, max: 98, text: '42 - 98' },
       general: { min: 44, max: 147, text: '44 - 147' },
@@ -671,7 +791,7 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     category: 'BIO CHEMISTRY',
     unit: 'mg/dl',
     ranges: {
-      child: { min: 5, max: 36, text: '5 - 36' },
+      infant: { min: 5, max: 36, text: '5 - 36', ...INHERITED_PAEDIATRIC_BAND },
       male: { min: 15, max: 45, text: '15 - 45' },
       female: { min: 10, max: 40, text: '10 - 40' },
       general: { min: 20, max: 40, text: '20 - 40' },
@@ -684,7 +804,7 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     category: 'BIO CHEMISTRY',
     unit: 'mg/dl',
     ranges: {
-      child: { min: 2.0, max: 5.5, text: '2.0 - 5.5' },
+      infant: { min: 2.0, max: 5.5, text: '2.0 - 5.5', ...INHERITED_PAEDIATRIC_BAND },
       male: { min: 3.5, max: 7.2, text: '3.5 - 7.2' },
       female: { min: 2.6, max: 6.0, text: '2.6 - 6.0' },
       general: { min: 2.6, max: 7.2, text: '2.6 - 7.2' },
@@ -697,7 +817,7 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     category: 'BIO CHEMISTRY',
     unit: 'mg/dl',
     ranges: {
-      child: { min: 0.3, max: 0.7, text: '0.3 - 0.7' },
+      infant: { min: 0.3, max: 0.7, text: '0.3 - 0.7', ...INHERITED_PAEDIATRIC_BAND },
       male: { min: 0.7, max: 1.3, text: '0.7 - 1.3' },
       female: { min: 0.6, max: 1.1, text: '0.6 - 1.1' },
       general: { min: 0.6, max: 1.3, text: '0.6 - 1.3' },
@@ -711,7 +831,7 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     name: 'LIPID PROFILE',
     category: 'BIO CHEMISTRY',
     isGroup: true,
-    synonyms: ['lipid', 'cholesterol profile'],
+    synonyms: ['lipid', 'cholesterol profile', 'lipid profile', 'lipid panel', 'cholesterol test'],
     includedTests: ['Total cholestrol', 'H.D.L.', 'L.D.L.', 'Triglyceride'],
   },
   {
@@ -720,7 +840,7 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     category: 'BIO CHEMISTRY',
     unit: 'mg/dl',
     ranges: {
-      child: { min: 100, max: 170, text: '100 - 170' },
+      infant: { min: 100, max: 170, text: '100 - 170', ...INHERITED_PAEDIATRIC_BAND },
       male: { min: 130, max: 200, text: '130 - 200' },
       female: { min: 130, max: 200, text: '130 - 200' },
       general: { min: 130, max: 200, text: '130 - 200' },
@@ -733,7 +853,7 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     category: 'BIO CHEMISTRY',
     unit: 'mg/dL',
     ranges: {
-      child: { min: 45, text: '>= 45' },
+      infant: { min: 45, text: '>= 45', ...INHERITED_PAEDIATRIC_BAND },
       male: { min: 40, text: '>= 40' },
       female: { min: 50, text: '>= 50' },
       general: { min: 40, text: 'M: >= 40, F: >= 50' },
@@ -746,7 +866,7 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     category: 'BIO CHEMISTRY',
     unit: 'mg/dL',
     ranges: {
-      child: { max: 110, text: '< 110' },
+      infant: { max: 110, text: '< 110', ...INHERITED_PAEDIATRIC_BAND },
       male: { max: 100, text: '< 100' },
       female: { max: 100, text: '< 100' },
       general: { max: 100, text: '< 100' },
@@ -769,7 +889,7 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     category: 'BIO CHEMISTRY',
     unit: 'mg/dl',
     ranges: { general: { text: '60-100' } },
-    synonyms: ['fbs', 'bsf', 'glucose fasting'],
+    synonyms: ['fbs', 'bsf', 'glucose fasting', 'fasting sugar', 'khali pet sugar'],
   },
   {
     id: 'bs_pp',
@@ -777,7 +897,7 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     category: 'BIO CHEMISTRY',
     unit: 'mg/dl',
     ranges: { general: { text: 'up to 140' } },
-    synonyms: ['ppbs', 'bspp', 'glucose pp'],
+    synonyms: ['ppbs', 'bspp', 'glucose pp', 'post meal sugar', 'khane ke baad ki sugar'],
   },
   {
     id: 'bs_r',
@@ -785,7 +905,7 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     category: 'BIO CHEMISTRY',
     unit: 'mg/dl',
     ranges: { general: { text: '60-130' } },
-    synonyms: ['rbs', 'bsr', 'glucose random'],
+    synonyms: ['rbs', 'bsr', 'glucose random', 'random sugar', 'sugar test'],
   },
   {
     id: 'hba1c',
@@ -802,6 +922,8 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
       'hb a1c',
       'glycohemoglobin',
       'diabetes test',
+      'three month sugar',
+      '3 mahine ki sugar',
     ],
   },
 
@@ -811,7 +933,7 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     name: 'Parasites MP / MF',
     category: 'HEMOTOLOGY',
     options: ['Negative', 'Positive'],
-    synonyms: ['malaria', 'mp', 'mf'],
+    synonyms: ['malaria', 'mp', 'mf', 'malaria test', 'tavabuk test'],
   },
   {
     id: 'esr_1st_hr',
@@ -819,12 +941,12 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     category: 'HEMOTOLOGY',
     unit: 'mm',
     ranges: {
-      child: { min: 0, max: 10, text: '0 - 10' },
+      infant: { min: 0, max: 10, text: '0 - 10', ...INHERITED_PAEDIATRIC_BAND },
       male: { min: 0, max: 15, text: '0 - 15' },
       female: { min: 0, max: 20, text: '0 - 20' },
       general: { min: 0, max: 15, text: '0 - 15' },
     },
-    synonyms: ['esr', 'erythrocyte sedimentation rate'],
+    synonyms: ['esr', 'erythrocyte sedimentation rate', 'sed rate', 'sedimentation rate'],
   },
   {
     id: 'bleeding_time',
@@ -867,7 +989,7 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     name: 'Hbs Ag',
     category: 'HEMOTOLOGY',
     options: ['Negative', 'Positive'],
-    synonyms: ['hbsag', 'hepatitis b'],
+    synonyms: ['hbsag', 'hepatitis b', 'australian antigen'],
   },
   {
     id: 'ra_test',
@@ -875,7 +997,7 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     category: 'HEMOTOLOGY',
     unit: 'IU/mL',
     ranges: { general: { text: '<14' } },
-    synonyms: ['ra factor', 'rheumatoid arthritis'],
+    synonyms: ['ra factor', 'rheumatoid arthritis', 'rheumatoid factor'],
   },
   {
     id: 'vdrl',
@@ -941,6 +1063,7 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     name: 'Dengue',
     category: 'HEMOTOLOGY',
     options: ['Negative', 'Positive NS1', 'Positive IgM', 'Positive IgG'],
+    synonyms: ['dengu', 'dengue test', 'ns1 antigen', 'break bone fever'],
   },
   {
     id: 'chikungunya',
@@ -960,7 +1083,756 @@ export const DEFAULT_PATHOLOGY_TESTS: PathologyTest[] = [
     name: 'PREGNANCY TEST',
     category: 'CLINICAL PATHOLOGY',
     options: ['Negative', 'Positive'],
-    synonyms: ['upt'],
+    synonyms: ['upt', 'pregnancy test', 'urine pregnancy test', 'pt test'],
+  },
+
+  // ===========================================================================
+  // Catalogue additions — 2026-10 audit against a standard Indian diagnostic
+  // lab's menu. Appended below the original list on purpose: no existing id,
+  // name, unit or interval was reordered or rewritten, so reports that were
+  // already signed still resolve the rows they were printed with.
+  //
+  // Every interval here carries UNVERIFIED_INTERVAL, which means the report
+  // shows it with a caveat until the lab confirms it against its own method.
+  // Nothing below was copied from a named Indian authority, and no range should
+  // be presented as one until that review happens.
+  // ===========================================================================
+
+  // THYROID & HORMONES
+  {
+    id: 'tsh',
+    name: 'T.S.H.',
+    category: 'HORMONES',
+    unit: 'µIU/mL',
+    specimen: 'Serum',
+    method: 'CLIA',
+    ranges: generalText('0.27 - 4.20'),
+    lastReviewed: '2026-10-11',
+    synonyms: ['tsh', 'thyroid stimulating hormone', 'thyrotropin', 'thyroid test'],
+  },
+  {
+    id: 'total_t3',
+    name: 'Total T3',
+    category: 'HORMONES',
+    unit: 'ng/mL',
+    specimen: 'Serum',
+    ranges: generalText('0.80 - 2.00'),
+    synonyms: ['t3', 'triiodothyronine', 'total triiodothyronine'],
+  },
+  {
+    id: 'total_t4',
+    name: 'Total T4',
+    category: 'HORMONES',
+    unit: 'µg/dL',
+    specimen: 'Serum',
+    ranges: generalText('5.1 - 12.0'),
+    synonyms: ['t4', 'thyroxine', 'total thyroxine'],
+  },
+  {
+    id: 'free_t3',
+    name: 'Free T3 (FT3)',
+    category: 'HORMONES',
+    unit: 'pg/mL',
+    specimen: 'Serum',
+    ranges: generalText('2.0 - 4.4'),
+    synonyms: ['ft3', 'free triiodothyronine'],
+  },
+  {
+    id: 'free_t4',
+    name: 'Free T4 (FT4)',
+    category: 'HORMONES',
+    unit: 'ng/dL',
+    specimen: 'Serum',
+    ranges: generalText('0.93 - 1.70'),
+    synonyms: ['ft4', 'free thyroxine'],
+  },
+  {
+    id: 'anti_tpo',
+    name: 'Anti-TPO Antibodies',
+    category: 'HORMONES',
+    unit: 'IU/mL',
+    specimen: 'Serum',
+    ranges: generalText('< 5.61'),
+    synonyms: ['antitpo', 'tpo', 'thyroid antibodies', 'hashimoto'],
+  },
+  {
+    id: 'testosterone',
+    name: 'Serum Testosterone',
+    category: 'HORMONES',
+    unit: 'ng/dL',
+    specimen: 'Serum',
+    preparation: 'Morning sample (8–10 am)',
+    ranges: {
+      male: { text: '270 - 1070', ...UNVERIFIED_INTERVAL },
+      female: { text: '15 - 70', ...UNVERIFIED_INTERVAL },
+    },
+    synonyms: ['testosterone', 'total testosterone'],
+  },
+  {
+    id: 'prolactin',
+    name: 'Serum Prolactin',
+    category: 'HORMONES',
+    unit: 'ng/mL',
+    specimen: 'Serum',
+    preparation: 'Avoid breast stimulation and stress before sampling',
+    ranges: {
+      male: { text: '4.0 - 15.2', ...UNVERIFIED_INTERVAL },
+      female: { text: '4.8 - 23.3', ...UNVERIFIED_INTERVAL },
+    },
+    synonyms: ['prolactin', 'serum prolactin'],
+  },
+  {
+    id: 'fsh',
+    name: 'F.S.H.',
+    category: 'HORMONES',
+    unit: 'mIU/mL',
+    specimen: 'Serum',
+    ranges: {
+      male: { text: '1.5 - 12.4', ...UNVERIFIED_INTERVAL },
+      female: { text: '3.5 - 12.5 (follicular)', ...UNVERIFIED_INTERVAL },
+    },
+    synonyms: ['fsh', 'follicle stimulating hormone', 'follicle-stimulating'],
+  },
+  {
+    id: 'lh',
+    name: 'L.H.',
+    category: 'HORMONES',
+    unit: 'mIU/mL',
+    specimen: 'Serum',
+    ranges: {
+      male: { text: '1.7 - 8.6', ...UNVERIFIED_INTERVAL },
+      female: { text: '2.4 - 12.6 (follicular)', ...UNVERIFIED_INTERVAL },
+    },
+    synonyms: ['lh', 'luteinizing hormone', 'luteinising'],
+  },
+
+  // VITAMINS, IRON & NUTRITION
+  {
+    id: 'vitamin_d',
+    name: 'Vitamin D (25-OH)',
+    category: 'VITAMINS',
+    unit: 'ng/mL',
+    specimen: 'Serum',
+    ranges: generalText('30.0 - 100.0'),
+    notes: ['Deficiency and insufficiency cut-offs are thresholds, not a reference interval.'],
+    synonyms: ['vitamin d', '25-hydroxy vitamin d', 'vit d', 'vitamin d total', 'vitamin d3'],
+  },
+  {
+    id: 'vitamin_b12',
+    name: 'Vitamin B12',
+    category: 'VITAMINS',
+    unit: 'pg/mL',
+    specimen: 'Serum',
+    ranges: generalText('200 - 900'),
+    synonyms: ['b12', 'cobalamin', 'vitamin b-12', 'cyanocobalamin'],
+  },
+  {
+    id: 'folic_acid',
+    name: 'Folic Acid',
+    category: 'VITAMINS',
+    unit: 'ng/mL',
+    specimen: 'Serum',
+    ranges: generalText('3.1 - 20.5'),
+    synonyms: ['folate', 'folic acid test'],
+  },
+  {
+    id: 'serum_iron',
+    name: 'Serum Iron',
+    category: 'VITAMINS',
+    unit: 'µg/dL',
+    specimen: 'Serum',
+    preparation: 'Morning fasting sample preferred',
+    ranges: {
+      male: { text: '65 - 175', ...UNVERIFIED_INTERVAL },
+      female: { text: '43 - 157', ...UNVERIFIED_INTERVAL },
+    },
+    synonyms: ['iron', 'serum iron test'],
+  },
+  {
+    id: 'tibc',
+    name: 'T.I.B.C.',
+    category: 'VITAMINS',
+    unit: 'µg/dL',
+    specimen: 'Serum',
+    ranges: generalText('250 - 370'),
+    synonyms: ['tibc', 'total iron binding capacity', 'iron binding capacity'],
+  },
+  {
+    id: 'ferritin',
+    name: 'Serum Ferritin',
+    category: 'VITAMINS',
+    unit: 'ng/mL',
+    specimen: 'Serum',
+    ranges: {
+      male: { text: '20 - 250', ...UNVERIFIED_INTERVAL },
+      female: { text: '10 - 120', ...UNVERIFIED_INTERVAL },
+    },
+    synonyms: ['ferritin', 'iron stores'],
+  },
+
+  // ELECTROLYTES & MINERALS
+  {
+    id: 'sodium',
+    name: 'Sodium',
+    category: 'ELECTROLYTES',
+    unit: 'mmol/L',
+    specimen: 'Plasma / Serum',
+    container: 'Lithium heparin or plain vial',
+    ranges: generalText('135 - 145'),
+    synonyms: ['na', 'serum sodium', 'salt test'],
+  },
+  {
+    id: 'potassium',
+    name: 'Potassium',
+    category: 'ELECTROLYTES',
+    unit: 'mmol/L',
+    specimen: 'Plasma / Serum',
+    container: 'Lithium heparin — do not use a tourniquet-heavy draw',
+    ranges: generalText('3.5 - 5.0'),
+    synonyms: ['k', 'serum potassium'],
+  },
+  {
+    id: 'chloride',
+    name: 'Chloride',
+    category: 'ELECTROLYTES',
+    unit: 'mmol/L',
+    specimen: 'Plasma / Serum',
+    ranges: generalText('97 - 107'),
+    synonyms: ['cl', 'serum chloride'],
+  },
+  {
+    id: 'calcium',
+    name: 'Calcium (Total)',
+    category: 'ELECTROLYTES',
+    unit: 'mg/dL',
+    specimen: 'Serum',
+    ranges: generalText('8.6 - 10.3'),
+    synonyms: ['calcium', 'serum calcium', 'ca'],
+  },
+  {
+    id: 'phosphorus',
+    name: 'Phosphorus (Inorganic)',
+    category: 'ELECTROLYTES',
+    unit: 'mg/dL',
+    specimen: 'Serum',
+    ranges: generalText('2.5 - 4.5'),
+    synonyms: ['phosphorus', 'serum phosphate', 'inorganic phosphorus'],
+  },
+  {
+    id: 'magnesium',
+    name: 'Magnesium',
+    category: 'ELECTROLYTES',
+    unit: 'mg/dL',
+    specimen: 'Serum',
+    ranges: generalText('1.7 - 2.2'),
+    synonyms: ['magnesium', 'mg serum'],
+  },
+
+  // BIO CHEMISTRY — kidney, liver, pancreas, muscle, cardiac
+  {
+    id: 'egfr',
+    name: 'eGFR (CKD-EPI)',
+    category: 'BIO CHEMISTRY',
+    unit: 'mL/min/1.73m²',
+    specimen: 'Serum',
+    ranges: generalText('> 60'),
+    notes: ['Derived from serum creatinine with the patient age and sex.'],
+    synonyms: ['egfr', 'glomerular filtration rate', 'kidney filter rate'],
+  },
+  {
+    id: 'microalbumin',
+    name: 'Microalbuminuria',
+    category: 'BIO CHEMISTRY',
+    unit: 'mg/L',
+    specimen: 'Urine',
+    ranges: generalText('< 30'),
+    synonyms: ['microalbumin', 'urine albumin', 'micro albuminuria'],
+  },
+  {
+    id: 'ggt',
+    name: 'Gamma GT (G.G.T.)',
+    category: 'BIO CHEMISTRY',
+    unit: 'U/L',
+    specimen: 'Serum',
+    ranges: {
+      male: { text: '10 - 71', ...UNVERIFIED_INTERVAL },
+      female: { text: '5 - 40', ...UNVERIFIED_INTERVAL },
+    },
+    synonyms: ['ggt', 'gamma gt', 'gamma glutamyl transferase'],
+  },
+  {
+    id: 'ldh',
+    name: 'L.D.H.',
+    category: 'BIO CHEMISTRY',
+    unit: 'U/L',
+    specimen: 'Serum',
+    ranges: generalText('120 - 246'),
+    synonyms: ['ldh', 'lactate dehydrogenase'],
+  },
+  {
+    id: 'amylase',
+    name: 'Serum Amylase',
+    category: 'BIO CHEMISTRY',
+    unit: 'U/L',
+    specimen: 'Serum',
+    ranges: generalText('25 - 125'),
+    synonyms: ['amylase', 'pancreas amylase'],
+  },
+  {
+    id: 'lipase',
+    name: 'Serum Lipase',
+    category: 'BIO CHEMISTRY',
+    unit: 'U/L',
+    specimen: 'Serum',
+    ranges: generalText('0 - 160'),
+    synonyms: ['lipase'],
+  },
+  {
+    id: 'cpk',
+    name: 'C.P.K. (Creatine Phosphokinase)',
+    category: 'BIO CHEMISTRY',
+    unit: 'U/L',
+    specimen: 'Serum',
+    ranges: {
+      male: { text: '38 - 174', ...UNVERIFIED_INTERVAL },
+      female: { text: '26 - 140', ...UNVERIFIED_INTERVAL },
+    },
+    synonyms: ['cpk', 'ck', 'creatine kinase', 'muscle enzyme'],
+  },
+  {
+    id: 'ckmb',
+    name: 'C.K.-M.B.',
+    category: 'CARDIAC MARKERS',
+    unit: 'U/L',
+    specimen: 'Serum',
+    ranges: generalText('0 - 24'),
+    synonyms: ['ckmb', 'ck mb', 'cardiac ck'],
+  },
+  {
+    id: 'troponin_i',
+    name: 'Troponin I (Serum)',
+    category: 'CARDIAC MARKERS',
+    unit: 'ng/mL',
+    specimen: 'Serum',
+    ranges: generalText('< 0.04'),
+    synonyms: ['troponin', 'trop i', 'cardiac troponin', 'heart attack test'],
+  },
+  {
+    id: 'd_dimer',
+    name: 'D-Dimer',
+    category: 'CARDIAC MARKERS',
+    unit: 'µg/L FEU',
+    specimen: 'Plasma',
+    container: 'Sodium citrate vial',
+    ranges: generalText('< 500'),
+    synonyms: ['dimer', 'ddimer', 'clot marker'],
+  },
+  {
+    id: 'vldl',
+    name: 'V.L.D.L. Cholesterol',
+    category: 'BIO CHEMISTRY',
+    unit: 'mg/dL',
+    specimen: 'Serum',
+    preparation: '10–12 hours fasting',
+    ranges: generalText('0 - 40'),
+    notes: ['Usually calculated as Triglyceride / 5; confirm the lab formula.'],
+    synonyms: ['vldl', 'very low density lipoprotein'],
+  },
+  {
+    id: 'crp',
+    name: 'C-Reactive Protein',
+    category: 'SEROLOGY',
+    unit: 'mg/L',
+    specimen: 'Serum',
+    ranges: generalText('< 5.0'),
+    synonyms: ['crp', 'c reactive protein', 'inflammatory marker'],
+  },
+  {
+    id: 'hs_crp',
+    name: 'High Sensitivity C.R.P.',
+    category: 'SEROLOGY',
+    unit: 'mg/L',
+    specimen: 'Serum',
+    ranges: generalText('< 1.0'),
+    synonyms: ['hs crp', 'hscrp', 'high sensitivity crp'],
+  },
+  {
+    id: 'ogtt_2hr',
+    name: 'O.G.T.T. (2 Hour)',
+    category: 'BIO CHEMISTRY',
+    unit: 'mg/dL',
+    specimen: 'Plasma',
+    container: 'Sodium fluoride oxalate vial',
+    preparation: '75 g anhydrous glucose load; sample exactly 2 hours after',
+    ranges: generalText('up to 140'),
+    synonyms: [
+      'ogtt',
+      'glucose tolerance test',
+      'sugar tolerance test',
+      'gestational diabetes test',
+    ],
+  },
+  {
+    id: 'fasting_insulin',
+    name: 'Serum Insulin (Fasting)',
+    category: 'HORMONES',
+    unit: 'µIU/mL',
+    specimen: 'Serum',
+    preparation: 'Fasting sample',
+    ranges: generalText('2.6 - 24.9'),
+    synonyms: ['insulin', 'fasting insulin', 'serum insulin'],
+  },
+
+  // HAEMATOLOGY & PARASITOLOGY additions
+  {
+    id: 'peripheral_smear',
+    name: 'Peripheral Smear Examination',
+    category: 'HAEMATOLOGY',
+    unit: '',
+    kind: 'text',
+    specimen: 'Blood',
+    container: 'EDTA vial — slide within 2 hours',
+    ranges: { general: { text: 'Normal haemogram', ...UNVERIFIED_INTERVAL } },
+    synonyms: ['psm', 'peripheral smear', 'blood smear', 'smear for malaria', 'haemogram'],
+  },
+  {
+    id: 'malaria_ag',
+    name: 'Malaria Antigen (PF/PAN)',
+    category: 'SEROLOGY',
+    unit: '',
+    kind: 'text',
+    specimen: 'Blood',
+    options: ['Negative', 'Positive (PF)', 'Positive (PAN)'],
+    ranges: { general: { text: 'Negative', ...UNVERIFIED_INTERVAL } },
+    synonyms: ['pf antigen', 'pan antigen', 'malaria rapid test', 'malaria antigen'],
+  },
+  {
+    id: 'g6pd',
+    name: 'G6PD Assay',
+    category: 'HAEMATOLOGY',
+    unit: 'U/g Hb',
+    specimen: 'Blood',
+    container: 'EDTA vial',
+    ranges: generalText('7.6 - 13.3'),
+    synonyms: ['g6pd', 'glucose 6 phosphate dehydrogenase', 'favism test'],
+  },
+
+  // STOOL EXAMINATION — the whole category was absent from the catalogue.
+  // Members carry a `Stool` prefix on purpose: the urine panel already owns the
+  // bare names 'Pus Cells' and 'Epithelial Cells', and `findTestInfo` resolves
+  // by name, so unprefixed duplicates would have read each other's ranges.
+  {
+    id: 'stool_group',
+    name: 'STOOL EXAMINATION',
+    category: 'CLINICAL PATHOLOGY',
+    isGroup: true,
+    hideMembersFromBrowse: false,
+    specimen: 'Stool',
+    includedTests: [
+      'Stool Appearance',
+      'Stool Pus Cells',
+      'Stool RBC',
+      'Stool Epithelial Cells',
+      'Stool Ova / Cyst',
+      'Stool Fat Globules',
+      'Stool Reducing Substances',
+      'Stool Occult Blood',
+    ],
+    synonyms: ['stool', 'stool routine', 'stool microscopy', 'motion test', 'occult blood'],
+  },
+  {
+    id: 'stool_appearance',
+    name: 'Stool Appearance',
+    category: 'CLINICAL PATHOLOGY',
+    kind: 'text',
+    options: ['Formed', 'Semi-formed', 'Liquid', 'Mucus present'],
+    ranges: { general: { text: 'Formed', ...UNVERIFIED_INTERVAL } },
+    synonyms: ['stool consistency'],
+  },
+  {
+    id: 'stool_pus',
+    name: 'Stool Pus Cells',
+    category: 'CLINICAL PATHOLOGY',
+    unit: '/HPF',
+    ranges: generalText('0 - 2'),
+  },
+  {
+    id: 'stool_rbc',
+    name: 'Stool RBC',
+    category: 'CLINICAL PATHOLOGY',
+    unit: '/HPF',
+    ranges: generalText('0 - 2'),
+  },
+  {
+    id: 'stool_epi',
+    name: 'Stool Epithelial Cells',
+    category: 'CLINICAL PATHOLOGY',
+    unit: '/HPF',
+    ranges: { general: { text: 'Few', ...UNVERIFIED_INTERVAL } },
+  },
+  {
+    id: 'stool_ova',
+    name: 'Stool Ova / Cyst',
+    category: 'CLINICAL PATHOLOGY',
+    kind: 'text',
+    options: ['Absent', 'Present'],
+    ranges: { general: { text: 'Absent', ...UNVERIFIED_INTERVAL } },
+    synonyms: ['ova and cyst', 'parasite cyst', 'stool parasite'],
+  },
+  {
+    id: 'stool_fat',
+    name: 'Stool Fat Globules',
+    category: 'CLINICAL PATHOLOGY',
+    kind: 'text',
+    options: ['Absent', 'Present'],
+    synonyms: ['fat globules', 'steatorrhoea'],
+  },
+  {
+    id: 'stool_reducing',
+    name: 'Stool Reducing Substances',
+    category: 'CLINICAL PATHOLOGY',
+    kind: 'text',
+    options: ['Negative', 'Positive'],
+    synonyms: ['reducing substance', 'stool sugar'],
+  },
+  {
+    id: 'stool_occult',
+    name: 'Stool Occult Blood',
+    category: 'CLINICAL PATHOLOGY',
+    kind: 'text',
+    options: ['Negative', 'Positive'],
+    preparation: 'Avoid red meat and vitamin C for 3 days before the sample',
+    ranges: { general: { text: 'Negative', ...UNVERIFIED_INTERVAL } },
+    synonyms: ['occult blood', 'ob test', 'benzedine test'],
+  },
+
+  // CULTURES — reported descriptively, so `kind: 'text'` stops any numeric
+  // flagging being attempted on a sensitivity table.
+  {
+    id: 'blood_culture',
+    name: 'Blood Culture & Sensitivity',
+    category: 'SEROLOGY',
+    kind: 'text',
+    specimen: 'Blood',
+    preparation: 'Before antibiotics, ideally two sets',
+    ranges: { general: { text: 'No growth', ...UNVERIFIED_INTERVAL } },
+    synonyms: ['blood culture', 'culture sensitivity', 'c/s test'],
+  },
+  {
+    id: 'urine_culture',
+    name: 'Urine Culture & Sensitivity',
+    category: 'SEROLOGY',
+    kind: 'text',
+    specimen: 'Urine',
+    preparation: 'Mid-stream early morning sample',
+    ranges: { general: { text: 'No growth', ...UNVERIFIED_INTERVAL } },
+    synonyms: ['urine culture', 'cs urine', 'uti test'],
+  },
+  {
+    id: 'sputum_culture',
+    name: 'Sputum Culture & Sensitivity',
+    category: 'SEROLOGY',
+    kind: 'text',
+    specimen: 'Sputum',
+    ranges: { general: { text: 'No growth', ...UNVERIFIED_INTERVAL } },
+    synonyms: ['sputum culture', 'throat swab culture'],
+  },
+
+  // ===========================================================================
+  // Profiles. Every one of these reuses the individual test records above (or
+  // the pre-existing ones) by exact name — no component is redefined, so a
+  // profile and the same test ordered alone resolve to one record, one unit and
+  // one reference interval. `hideMembersFromBrowse: false` keeps each component
+  // individually orderable, exactly as it was before the profile existed.
+  // Compositions follow common Indian lab practice, not a published standard:
+  // the lab director should confirm each panel before it is priced or used.
+  // ===========================================================================
+  {
+    id: 'thyroid_profile',
+    name: 'THYROID PROFILE',
+    category: 'HORMONES',
+    isGroup: true,
+    hideMembersFromBrowse: false,
+    includedTests: ['T.S.H.', 'Total T3', 'Total T4'],
+    synonyms: ['thyroid profile', 'thyroid panel', 'thy', 'thyroid'],
+  },
+  {
+    id: 'thyroid_extended',
+    name: 'THYROID PROFILE (EXTENDED)',
+    category: 'HORMONES',
+    isGroup: true,
+    hideMembersFromBrowse: false,
+    includedTests: ['T.S.H.', 'Free T3 (FT3)', 'Free T4 (FT4)', 'Anti-TPO Antibodies'],
+    synonyms: ['extended thyroid profile', 'thyroid antibodies profile', 'thyroid complete'],
+  },
+  {
+    id: 'kft_profile',
+    name: 'KIDNEY FUNCTION TEST (KFT)',
+    category: 'BIO CHEMISTRY',
+    isGroup: true,
+    hideMembersFromBrowse: false,
+    includedTests: [
+      'Blood Urea',
+      'S. creatinine',
+      'Uric Acid',
+      'Sodium',
+      'Potassium',
+      'Chloride',
+      'Calcium (Total)',
+      'Phosphorus (Inorganic)',
+      'eGFR (CKD-EPI)',
+    ],
+    synonyms: ['kft', 'rft', 'renal function test', 'kidney profile', 'kidney test'],
+  },
+  {
+    id: 'lft_profile',
+    name: 'LIVER FUNCTION TEST (LFT)',
+    category: 'BIO CHEMISTRY',
+    isGroup: true,
+    hideMembersFromBrowse: false,
+    // 'Albumin' is deliberately absent: the URINE ANALYSIS panel already owns
+    // that exact name, and the catalogue resolves tests by name, so listing it
+    // here would pull the urine row (with its '+' options) into the LFT printout
+    // and hide the serum one. Needs a rename decision by the lab — see the
+    // audit report.
+    includedTests: [
+      'Total Serum Bilirubin',
+      'Direct Bilirubin',
+      'Indirect Bilirubin',
+      'S.G.O.T.',
+      'S.G.P.T.',
+      'Alkaline Phosphaphates',
+      'Total Protein',
+      'Gamma GT (G.G.T.)',
+    ],
+    synonyms: ['lft', 'liver profile', 'liver function panel', 'liver test', 'liver'],
+  },
+  {
+    id: 'sugar_profile',
+    name: 'BLOOD SUGAR PROFILE',
+    category: 'BIO CHEMISTRY',
+    isGroup: true,
+    hideMembersFromBrowse: false,
+    includedTests: ['Blood Sugar Fasting', 'Blood Sugar (PP)', 'HbA1c'],
+    synonyms: ['sugar profile', 'blood sugar profile', 'bs profile', 'diabetes profile'],
+  },
+  {
+    id: 'electrolyte_profile',
+    name: 'ELECTROLYTE PROFILE',
+    category: 'ELECTROLYTES',
+    isGroup: true,
+    hideMembersFromBrowse: false,
+    includedTests: ['Sodium', 'Potassium', 'Chloride', 'Calcium (Total)', 'Magnesium'],
+    synonyms: ['electrolyte profile', 'electrolytes', 'salt and water test'],
+  },
+  {
+    id: 'iron_studies',
+    name: 'IRON STUDIES',
+    category: 'VITAMINS',
+    isGroup: true,
+    hideMembersFromBrowse: false,
+    includedTests: ['Serum Iron', 'T.I.B.C.', 'Serum Ferritin'],
+    synonyms: ['iron studies', 'iron profile', 'iron deficiency test'],
+  },
+  {
+    id: 'anaemia_profile',
+    name: 'ANAEMIA PROFILE',
+    category: 'HAEMATOLOGY',
+    isGroup: true,
+    hideMembersFromBrowse: false,
+    includedTests: [
+      'HB (HAEMOGLOBIN)',
+      'HCT(PCV)',
+      'MCV',
+      'MCH',
+      'MCHC',
+      'RDW%',
+      'Reticulocytes',
+      'Serum Iron',
+      'T.I.B.C.',
+      'Serum Ferritin',
+    ],
+    synonyms: ['anaemia profile', 'anemia profile', 'kan ki kami test', 'haemoglobin profile'],
+  },
+  {
+    id: 'vitamin_profile',
+    name: 'VITAMIN PROFILE',
+    category: 'VITAMINS',
+    isGroup: true,
+    hideMembersFromBrowse: false,
+    includedTests: ['Vitamin D (25-OH)', 'Vitamin B12', 'Folic Acid'],
+    synonyms: ['vitamin profile', 'vitamins test', 'b12 d profile'],
+  },
+  {
+    id: 'fever_profile',
+    name: 'FEVER PROFILE',
+    category: 'SEROLOGY',
+    isGroup: true,
+    hideMembersFromBrowse: false,
+    includedTests: [
+      'WHITE CELL COUNT(TC)',
+      'PLATELET COUNT',
+      'E.S.R. 1st Hor',
+      'C-Reactive Protein',
+      'Dengue',
+      'Malaria Antigen (PF/PAN)',
+      'Parasites MP / MF',
+    ],
+    synonyms: ['fever profile', 'fever test', 'pyrexia profile', 'bukhar test'],
+  },
+  {
+    id: 'antenatal_profile',
+    name: 'ANTENATAL PROFILE',
+    category: 'HAEMATOLOGY',
+    isGroup: true,
+    hideMembersFromBrowse: false,
+    includedTests: [
+      'HB (HAEMOGLOBIN)',
+      'ABO Typing',
+      'RH Typing',
+      'Blood Sugar Fasting',
+      'Total Serum Bilirubin',
+      'S. creatinine',
+      'Hbs Ag',
+      'Anti HCV',
+      'H.I.V.',
+      'V.D.R.L',
+      'T.S.H.',
+    ],
+    synonyms: ['antenatal profile', 'a/n profile', 'pregnancy profile', 'maternal profile'],
+  },
+  {
+    id: 'cardiac_profile',
+    name: 'CARDIAC MARKERS',
+    category: 'CARDIAC MARKERS',
+    isGroup: true,
+    hideMembersFromBrowse: false,
+    includedTests: [
+      'Troponin I (Serum)',
+      'C.K.-M.B.',
+      'C.P.K. (Creatine Phosphokinase)',
+      'L.D.H.',
+      'D-Dimer',
+    ],
+    synonyms: ['cardiac profile', 'cardiac markers', 'heart test', 'troponin profile'],
+  },
+  {
+    id: 'ra_profile',
+    name: 'RHEUMATOID ARTHRITIS PROFILE',
+    category: 'SEROLOGY',
+    isGroup: true,
+    hideMembersFromBrowse: false,
+    includedTests: ['R.A. Test', 'Aso Titre', 'C-Reactive Protein', 'E.S.R. 1st Hor'],
+    synonyms: ['ra profile', 'arthritis profile', 'rheumatoid profile'],
+  },
+  {
+    id: 'pancreas_profile',
+    name: 'PANCREAS PROFILE',
+    category: 'BIO CHEMISTRY',
+    isGroup: true,
+    hideMembersFromBrowse: false,
+    includedTests: ['Serum Amylase', 'Serum Lipase'],
+    synonyms: ['pancreas profile', 'amylase lipase test', 'pancreatitis test'],
   },
 ];
 
@@ -982,12 +1854,22 @@ export const getPathologyTests = (): PathologyTest[] => {
  */
 export const getStandaloneTests = (selected: readonly string[] = []): PathologyTest[] => {
   const all = getPathologyTests();
-  const grouped = new Set<string>();
-  for (const test of all) {
-    if (test.includedTests) for (const member of test.includedTests) grouped.add(member);
-  }
+  const grouped = hiddenGroupMembers(all);
   const selectedSet = new Set(selected);
   return all.filter(t => !t.isHeader && !selectedSet.has(t.name) && !grouped.has(t.name));
+};
+
+/**
+ * Names owned by a panel that hides its members from the browse list. Opt-out
+ * per panel via `hideMembersFromBrowse: false` — see that field.
+ */
+const hiddenGroupMembers = (all: PathologyTest[]): Set<string> => {
+  const grouped = new Set<string>();
+  for (const t of all) {
+    if (t.hideMembersFromBrowse === false) continue;
+    if (t.includedTests) for (const m of t.includedTests) grouped.add(m);
+  }
+  return grouped;
 };
 
 /**
@@ -1005,53 +1887,109 @@ export const getSearchableTests = (
   const selectedSet = new Set(selected);
   const candidates = all.filter(t => !t.isHeader && !selectedSet.has(t.name));
   if (query.trim()) return candidates;
-  const grouped = new Set<string>();
-  for (const t of all) if (t.includedTests) for (const m of t.includedTests) grouped.add(m);
+  const grouped = hiddenGroupMembers(all);
   return candidates.filter(t => !grouped.has(t.name));
+};
+
+/** Which population the band a patient was matched to actually belongs to. */
+export type RangeBandKind = 'infant' | 'adult-male' | 'adult-female' | 'general' | 'none';
+
+export interface ResolvedRange {
+  kind: RangeBandKind;
+  /** What the report prints in the reference-range column. */
+  label: string;
+  /** Bounds for high/low flagging, or null when the interval is not numeric. */
+  values: { min?: number; max?: number } | null;
+  /**
+   * The interval shown is not established for this patient: a 2–11 year old on
+   * the adult band, an infant with no infant band, or a band the catalogue
+   * itself marks `requires-lab-verification`. Every caller that renders a range
+   * must surface this — a silently-inherited adult range on a child's report is
+   * the one failure mode this model cannot be allowed to hide.
+   */
+  unverifiedForPatient: boolean;
+  /** Why `unverifiedForPatient` is set, for the badge / PDF footnote. */
+  reason?: string;
+}
+
+/** `text` wins; otherwise the numeric bounds are formatted the way they always were. */
+const formatBand = (band: RangeBand): string =>
+  band.text || `${band.min?.toFixed(1) || 0} - ${band.max?.toFixed(1) || 0}`;
+
+/** Numeric bounds of a band, read from `min`/`max` or parsed out of its text. */
+const bandBounds = (band: RangeBand): { min?: number; max?: number } | null => {
+  if (band.min !== undefined || band.max !== undefined) return { min: band.min, max: band.max };
+  if (!band.text) return null;
+
+  const match = band.text.match(/([0-9.]+)\s*-\s*([0-9.]+)/);
+  if (match) return { min: parseFloat(match[1]), max: parseFloat(match[2]) };
+
+  const gteMatch = band.text.match(/>=\s*([0-9.]+)/);
+  if (gteMatch) return { min: parseFloat(gteMatch[1]) };
+
+  const ltMatch = band.text.match(/<\s*([0-9.]+)/);
+  if (ltMatch) return { max: parseFloat(ltMatch[1]) };
+
+  const upToMatch = band.text.match(/up to\s*([0-9.]+)/i);
+  if (upToMatch) return { max: parseFloat(upToMatch[1]) };
+
+  return null;
+};
+
+/**
+ * Pick the reference band for one patient. Single source of truth for the
+ * editor, the A4 report, the PDF table and the timeline flags, so a range can
+ * never read one way on screen and another way on the signed printout.
+ */
+export const resolveReferenceRange = (
+  ranges: ReferenceRange | undefined,
+  age?: number,
+  gender?: string,
+): ResolvedRange => {
+  if (!ranges) return { kind: 'none', label: '', values: null, unverifiedForPatient: false };
+
+  const isInfant = age !== undefined && age < INFANT_MAX_AGE_YEARS;
+  const isChild = age !== undefined && age >= INFANT_MAX_AGE_YEARS && age < ADULT_MIN_AGE_YEARS;
+
+  const g = (gender || '').toLowerCase();
+  const chain: { band: RangeBand; kind: RangeBandKind }[] = [];
+  // Order matters: the first entry is the band the report shows. An infant only
+  // claims the first slot when the lab actually has an infant interval for this
+  // test; otherwise the adult band is shown and marked, rather than nothing.
+  if (isInfant && ranges.infant) chain.push({ band: ranges.infant, kind: 'infant' });
+  if (g.startsWith('m') && ranges.male) chain.push({ band: ranges.male, kind: 'adult-male' });
+  if (g.startsWith('f') && ranges.female) chain.push({ band: ranges.female, kind: 'adult-female' });
+  if (ranges.general) chain.push({ band: ranges.general, kind: 'general' });
+
+  const chosen = chain[0];
+  if (!chosen) return { kind: 'none', label: '', values: null, unverifiedForPatient: false };
+
+  // A text-only band ("Age dependent", "Few") carries no bounds; walk the rest
+  // of the chain for numbers instead of losing the flagging the old cascade gave.
+  const values = chain.map(c => bandBounds(c.band)).find(v => v !== null) ?? null;
+
+  const outsidePopulation = (isInfant || isChild) && chosen.kind !== 'infant';
+  const awaitingLab = chosen.band.verification === 'requires-lab-verification';
+  return {
+    kind: chosen.kind,
+    label: formatBand(chosen.band),
+    values,
+    unverifiedForPatient: outsidePopulation || awaitingLab,
+    reason: outsidePopulation
+      ? isInfant
+        ? 'No infant (0–24 months) interval — adult range applied'
+        : 'No paediatric interval for this age — adult range applied'
+      : awaitingLab
+        ? 'Interval awaiting laboratory verification'
+        : undefined,
+  };
 };
 
 export const getReferenceRangeLabel = (
   ranges: ReferenceRange | undefined,
   age?: number,
   gender?: string,
-): string => {
-  if (!ranges) return '';
-
-  if (age !== undefined && age < 12 && ranges.child) {
-    return (
-      ranges.child.text ||
-      `${ranges.child.min?.toFixed(1) || 0} - ${ranges.child.max?.toFixed(1) || 0}`
-    );
-  }
-
-  if (gender) {
-    const isMale = gender.toLowerCase().startsWith('m');
-    const isFemale = gender.toLowerCase().startsWith('f');
-
-    if (isMale && ranges.male) {
-      return (
-        ranges.male.text ||
-        `${ranges.male.min?.toFixed(1) || 0} - ${ranges.male.max?.toFixed(1) || 0}`
-      );
-    }
-
-    if (isFemale && ranges.female) {
-      return (
-        ranges.female.text ||
-        `${ranges.female.min?.toFixed(1) || 0} - ${ranges.female.max?.toFixed(1) || 0}`
-      );
-    }
-  }
-
-  if (ranges.general) {
-    return (
-      ranges.general.text ||
-      `${ranges.general.min?.toFixed(1) || 0} - ${ranges.general.max?.toFixed(1) || 0}`
-    );
-  }
-
-  return '';
-};
+): string => resolveReferenceRange(ranges, age, gender).label;
 
 export const findTestInfo = (query: string): PathologyTest | undefined => {
   if (!query) return undefined;
@@ -1060,6 +1998,30 @@ export const findTestInfo = (query: string): PathologyTest | undefined => {
     t => t.name.toLowerCase() === q || t.synonyms?.some(s => s.toLowerCase() === q),
   );
 };
+
+/**
+ * Fold the ways the same test gets typed into one comparable form, so a lab
+ * assistant doesn't need to know the catalogue's spelling:
+ *
+ *  • punctuation and spaces — `H.D.L.`, `h d l` and `hdl` are one word
+ *  • British / American    — `haemoglobin` and `hemoglobin` (ae→e, oe→e)
+ *  • plurals               — `platelets` finds `PLATELET COUNT`
+ *  • accents               — typed Hindi transliterations (`hämoglobin`)
+ *
+ * Used as an extra tier over the raw comparisons below, never instead of them:
+ * an exact raw match still outranks a normalised one, so adding aliases can't
+ * demote a test someone typed perfectly.
+ */
+export function normalizeSearchTerm(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/g, '')
+    .replace(/oe/g, 'e')
+    .replace(/ae/g, 'e')
+    .replace(/s$/, '');
+}
 
 export function getLevenshteinDistance(a: string, b: string): number {
   if (a === b) return 0;
@@ -1147,6 +2109,36 @@ export function searchPathologyTests(query: string, tests: PathologyTest[]): Pat
       }
     });
 
+    // 8b. Normalised tiers — same shapes as 1/2/3/4/7/8, one point of rank
+    // below the raw version, so `haemoglobin` reaches the Hb record without
+    // beating somebody who typed the catalogue name exactly.
+    const nQuery = normalizeSearchTerm(cleanQuery);
+    if (nQuery.length >= 2) {
+      const nName = normalizeSearchTerm(nameLower);
+      const nSyns = synonymsLower.map(normalizeSearchTerm);
+      if (nName === nQuery) score = Math.max(score, 99);
+      if (nSyns.some(s => s === nQuery)) score = Math.max(score, 94);
+      if (nName.startsWith(nQuery)) score = Math.max(score, 84);
+      if (nSyns.some(s => s.startsWith(nQuery))) score = Math.max(score, 79);
+      if (nName.includes(nQuery)) score = Math.max(score, 64);
+      if (nSyns.some(s => s.includes(nQuery))) score = Math.max(score, 59);
+    }
+
+    // 8c. Every word of a multi-word query is present — 'sugar fasting',
+    // 'liver function panel', 'three month sugar test'. Word order in the
+    // catalogue rarely matches how staff type it, and substring matching
+    // cannot bridge the gap.
+    const queryWords = cleanQuery.split(/[\s/()_.-]+/).filter(w => w.length >= 2);
+    if (queryWords.length >= 2) {
+      const coveredBy = (tokens: string[]) => {
+        const normalised = tokens.map(normalizeSearchTerm).filter(Boolean);
+        return queryWords.every(w => normalised.some(t => t.startsWith(normalizeSearchTerm(w))));
+      };
+      if (coveredBy(nameWords)) score = Math.max(score, 76);
+      else if (synonymsLower.some(s => coveredBy(s.split(/[\s/()_.-]+/))))
+        score = Math.max(score, 72);
+    }
+
     // 9. Length-restricted mild fuzzy fallback.
     //
     // Only reached when no cheaper tier matched: every fuzzy score below is
@@ -1210,55 +2202,175 @@ export function searchPathologyTests(query: string, tests: PathologyTest[]): Pat
     .map(item => item.test);
 }
 
+/**
+ * Reduce a stored `testSelection` to the *profiles* the user actually picked.
+ *
+ * When a group (e.g. CBC) is selected, `addTest` also stores every member
+ * parameter alongside it, so the raw array length is the number of individual
+ * results, not the number of ordered tests. This drops any entry that is a
+ * member of another *selected* group, so a lone CBC selection collapses to
+ * `['CBC (COMPLETE BLOOD COUNT)']` — one test — while standalone picks and
+ * members ordered on their own are preserved.
+ */
+export function collapseToProfiles(testSelection: readonly string[] | undefined): string[] {
+  if (!testSelection || testSelection.length === 0) return [];
+  const infoByName = new Map(getPathologyTests().map(t => [t.name, t]));
+  const selected = Array.from(
+    new Set(testSelection.map(name => (name ?? '').trim()).filter(Boolean)),
+  );
+  const members = new Set<string>();
+  for (const name of selected) {
+    const info = infoByName.get(name);
+    if (info?.isGroup && info.includedTests) {
+      for (const member of info.includedTests) {
+        const m = (member ?? '').trim();
+        if (m) members.add(m);
+      }
+    }
+  }
+  return selected.filter(name => !members.has(name));
+}
+
+/**
+ * Where a numeric result sits relative to the patient-adjusted reference range.
+ * `null` means the value can't be compared (qualitative test, no range, or a
+ * non-numeric entry) — callers render those without a coloured flag.
+ */
+export type ValueStatus = 'normal' | 'low' | 'high';
+
+export interface ResolvedValue {
+  status: ValueStatus | null;
+  /** Human reference-range label for this patient (age/gender adjusted). */
+  rangeLabel: string;
+  unit: string;
+  /** Band `rangeLabel` came from — 'none' when there is no interval at all. */
+  rangeKind: RangeBandKind;
+  /** `rangeLabel` is not established for this patient; show the caveat. */
+  unverifiedForPatient: boolean;
+}
+
+/**
+ * Compare a stored result value against the reference range for a given
+ * patient. Mirrors the exact low/high/normal decision the report editor and
+ * PDF renderer already make (see ReportsPage), so a timeline flag never
+ * disagrees with the signed report it came from. Accepts the raw test name as
+ * it appears in `resultData`.
+ */
+export function resolveValueStatus(
+  testName: string,
+  value: unknown,
+  age?: number,
+  gender?: string,
+): ResolvedValue {
+  const testInfo = findTestInfo(testName);
+  const resolved = resolveReferenceRange(testInfo?.ranges, age, gender);
+  const { label: rangeLabel, values: refValues } = resolved;
+  const unit = testInfo?.unit ?? '';
+
+  const raw =
+    typeof value === 'number' ? String(value) : typeof value === 'string' ? value.trim() : '';
+  const verdict = {
+    rangeLabel,
+    unit,
+    rangeKind: resolved.kind,
+    unverifiedForPatient: resolved.unverifiedForPatient,
+  };
+  if (!testInfo || !raw) return { status: null, ...verdict };
+
+  const num = Number(raw);
+  if (!refValues || Number.isNaN(num)) return { status: null, ...verdict };
+
+  if (refValues.min !== undefined && num < refValues.min) {
+    return { status: 'low', ...verdict };
+  }
+  if (refValues.max !== undefined && num > refValues.max) {
+    return { status: 'high', ...verdict };
+  }
+  return { status: 'normal', ...verdict };
+}
+
 export const getReferenceRangeValues = (
   ranges: ReferenceRange | undefined,
   age?: number,
   gender?: string,
-): { min?: number; max?: number } | null => {
-  if (!ranges) return null;
+): { min?: number; max?: number } | null => resolveReferenceRange(ranges, age, gender).values;
 
-  const extract = (obj: any): { min?: number; max?: number } | null => {
-    if (!obj) return null;
-    if (obj.min !== undefined || obj.max !== undefined) return { min: obj.min, max: obj.max };
-    if (obj.text) {
-      const match = obj.text.match(/([0-9.]+)\s*-\s*([0-9.]+)/);
-      if (match) return { min: parseFloat(match[1]), max: parseFloat(match[2]) };
+/** Data-integrity problems the catalogue can be audited for. */
+export type CatalogueIssueKind =
+  | 'duplicate-id'
+  | 'duplicate-name'
+  | 'duplicate-synonym'
+  | 'synonym-collision'
+  | 'unknown-group-member';
 
-      const gteMatch = obj.text.match(/>=\s*([0-9.]+)/);
-      if (gteMatch) return { min: parseFloat(gteMatch[1]) };
+export interface CatalogueIssue {
+  kind: CatalogueIssueKind;
+  id: string;
+  detail: string;
+}
 
-      const ltMatch = obj.text.match(/<\s*([0-9.]+)/);
-      if (ltMatch) return { max: parseFloat(ltMatch[1]) };
+/**
+ * Integrity sweep over the test catalogue. Two records that share a lookup key
+ * are the dangerous case — `findTestInfo` returns the first match, so a report
+ * row can silently read the other record's unit and reference range — which is
+ * why duplicate names are reported rather than merely logged. Run it in the
+ * test suite so a new entry can't land on top of an existing name.
+ */
+export function auditPathologyCatalogue(
+  tests: PathologyTest[] = DEFAULT_PATHOLOGY_TESTS,
+): CatalogueIssue[] {
+  const issues: CatalogueIssue[] = [];
+  const idCount = new Map<string, number>();
+  const nameKeys = new Map<string, string[]>();
+  const synonymOwner = new Map<string, string>();
 
-      const upToMatch = obj.text.match(/up to\s*([0-9.]+)/i);
-      if (upToMatch) return { max: parseFloat(upToMatch[1]) };
+  for (const test of tests) {
+    idCount.set(test.id, (idCount.get(test.id) || 0) + 1);
+    const nameKey = normalizeSearchTerm(test.name);
+    nameKeys.set(nameKey, [...(nameKeys.get(nameKey) || []), test.name]);
+
+    const seen = new Set<string>();
+    for (const synonym of test.synonyms || []) {
+      const key = normalizeSearchTerm(synonym);
+      if (!key) continue;
+      if (seen.has(key)) {
+        issues.push({ kind: 'duplicate-synonym', id: test.id, detail: synonym });
+      }
+      seen.add(key);
+      const owner = synonymOwner.get(key);
+      if (owner && owner !== test.id) {
+        issues.push({
+          kind: 'synonym-collision',
+          id: test.id,
+          detail: `${synonym} (also on ${owner})`,
+        });
+      } else {
+        synonymOwner.set(key, test.id);
+      }
     }
-    return null;
-  };
-
-  if (age !== undefined && age < 12 && ranges.child) {
-    const res = extract(ranges.child);
-    if (res) return res;
   }
 
-  if (gender) {
-    const isMale = gender.toLowerCase().startsWith('m');
-    const isFemale = gender.toLowerCase().startsWith('f');
-
-    if (isMale && ranges.male) {
-      const res = extract(ranges.male);
-      if (res) return res;
-    }
-
-    if (isFemale && ranges.female) {
-      const res = extract(ranges.female);
-      if (res) return res;
+  for (const [id, count] of idCount) {
+    if (count > 1) issues.push({ kind: 'duplicate-id', id, detail: `${count} records` });
+  }
+  for (const [, names] of nameKeys) {
+    if (names.length > 1) {
+      issues.push({
+        kind: 'duplicate-name',
+        id: names[0],
+        detail: `${names.join(' / ')} — one lookup key, first record wins`,
+      });
     }
   }
 
-  if (ranges.general) {
-    return extract(ranges.general);
+  const names = new Set(tests.map(t => t.name));
+  for (const group of tests) {
+    for (const member of group.includedTests || []) {
+      if (!names.has(member)) {
+        issues.push({ kind: 'unknown-group-member', id: group.id, detail: member });
+      }
+    }
   }
 
-  return null;
-};
+  return issues;
+}

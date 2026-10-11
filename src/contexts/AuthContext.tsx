@@ -156,7 +156,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setStatus('onboarding');
         }
       } catch (error) {
-        console.error('PathLab OS: auth bootstrap failed', error);
+        console.error('PathoMitra: auth bootstrap failed', error);
         if (active) setStatus('onboarding');
       }
     })();
@@ -202,7 +202,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           createdAt: account.createdAt,
         });
       } catch (error) {
-        console.error('PathLab OS: failed to seed local user profile', error);
+        console.error('PathoMitra: failed to seed local user profile', error);
       }
 
       setBiometricAvailable(useBiometric ? true : biometricAvailable);
@@ -226,7 +226,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   );
 
   const unlockWithBiometric = useCallback(async (): Promise<boolean> => {
-    const result = await authenticate('Unlock PathLab OS');
+    const result = await authenticate('Unlock PathoMitra');
     if (result.ok) {
       const account = await getAccount();
       enterUnlocked(account?.name ?? userName);
@@ -279,7 +279,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       await getRepository().clearAll();
     } catch (error) {
-      console.error('PathLab OS: failed to clear local data', error);
+      console.error('PathoMitra: failed to clear local data', error);
     }
     await deleteAccount();
     setUserName('');

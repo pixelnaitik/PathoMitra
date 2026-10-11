@@ -210,19 +210,25 @@ export default function Features() {
                   Offline-ready, installs like an app
                 </h3>
                 <p className="mt-2.5 text-[15px] leading-relaxed text-on-surface-variant">
-                  A service-worker-backed PWA that keeps the bench running through network drops,
-                  then replays queued writes the moment the connection returns. Add it to the home
-                  screen of any tablet or workstation.
+                  A service-worker-backed PWA that keeps the app shell cached, so a reload at the
+                  bench still works when the network is down. Records are written straight to local
+                  storage — there is no queue and no server to replay to. Add it to the home screen
+                  of any tablet or workstation.
                 </p>
               </div>
+              {/* Static facts, not simulated state. The badges here used to be a
+                  fabricated live-sync readout and a fabricated queue depth — hardcoded
+                  numbers that looked like telemetry for a data path that does not exist.
+                  The in-app banner making the same promise (ConnectionBanner) was deleted
+                  for being false; this decorative copy has to match that decision, because
+                  `sw.js` caches static assets only and `data/index.ts` writes to SQLite or
+                  localStorage and stops. */}
               <div className="flex flex-wrap items-center gap-2.5 lg:justify-end">
                 <StatusPill tone="success" dot>
-                  Synced 12s ago
+                  App shell cached
                 </StatusPill>
-                <StatusPill tone="warning" dot>
-                  2 queued writes
-                </StatusPill>
-                <StatusPill tone="neutral">Installable · iOS / Android / Desktop</StatusPill>
+                <StatusPill tone="neutral">No server required</StatusPill>
+                <StatusPill tone="neutral">Installable · Android + browser</StatusPill>
               </div>
             </Card>
           </div>

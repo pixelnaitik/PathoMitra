@@ -8,6 +8,8 @@ coverage/
 !.env.example
 
 # Tooling scratch directories (safe to delete)
+# .tmp/ receives TEMP when builds are run in a workspace-restricted shell
+.tmp/
 .tmp-build/
 .build-tmp/
 .npm-cache/

@@ -51,6 +51,7 @@ import {
   searchPathologyTests,
 } from '../../lib/pathology-tests';
 import { DEFAULT_DOCTORS } from '../../lib/doctors';
+import { PatientDetailSheet } from '../../components/PatientDetailSheet';
 
 /** Ceiling for how far a name search walks into older pages. */
 const SEARCH_SCAN_CEILING = 250;
@@ -70,6 +71,7 @@ export default function PatientsPage({
   const [toDate, setToDate] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingPatient, setEditingPatient] = useState<any>(null);
+  const [selectedPatient, setSelectedPatient] = useState<PatientRecord | null>(null);
 
   useEffect(() => {
     if (initialAction === 'add') {
@@ -303,7 +305,7 @@ export default function PatientsPage({
     }
     try {
       const message = await downloadCsv(
-        `pathlab-patients-${toIsoDay(new Date())}.csv`,
+        `pathomitra-patients-${toIsoDay(new Date())}.csv`,
         toCsv(CSV_COLUMNS, filteredPatients),
       );
       toast.success(message ?? `Exported ${filteredPatients.length} patients to CSV.`);
@@ -543,14 +545,13 @@ export default function PatientsPage({
                     <motion.tr
                       key={patient.id}
                       {...listStaggerProps(idx)}
+                      aria-selected={selectedPatient?.id === patient.id}
                       className={cn(
-                        'transition-colors',
-                        role !== 'guest' && 'hover:bg-surface-container-low cursor-pointer',
+                        'cursor-pointer transition-colors hover:bg-surface-container-low',
+                        selectedPatient?.id === patient.id &&
+                          'bg-accent/8 ring-1 ring-inset ring-accent/40',
                       )}
-                      onClick={() => {
-                        if (role === 'guest') return;
-                        openEditForm(patient);
-                      }}
+                      onClick={() => setSelectedPatient(patient)}
                     >
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-3">
@@ -610,7 +611,24 @@ export default function PatientsPage({
           <div className="md:hidden">
             <ListGroup>
               {filteredPatients.map((patient, pIdx) => (
-                <motion.div key={patient.id} {...listStaggerProps(pIdx)}>
+                <motion.div
+                  key={patient.id}
+                  {...listStaggerProps(pIdx)}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`View ${patient.name}'s history`}
+                  onClick={() => setSelectedPatient(patient)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setSelectedPatient(patient);
+                    }
+                  }}
+                  className={cn(
+                    'cursor-pointer transition-colors active:bg-surface-container-high',
+                    selectedPatient?.id === patient.id && 'bg-accent/8',
+                  )}
+                >
                   <ListRow
                     leading={
                       <span className="flex h-10 w-10 items-center justify-center rounded-full bg-accent/12 text-[15px] font-bold text-accent">
@@ -626,7 +644,10 @@ export default function PatientsPage({
                             label={`Edit ${patient.name}`}
                             size="sm"
                             className="text-on-surface-variant hover:bg-accent/12 hover:text-accent"
-                            onClick={() => openEditForm(patient)}
+                            onClick={e => {
+                              e.stopPropagation();
+                              openEditForm(patient);
+                            }}
                           >
                             <Edit2 className="w-4 h-4" />
                           </IconButton>
@@ -634,7 +655,10 @@ export default function PatientsPage({
                             label={`Delete ${patient.name}`}
                             size="sm"
                             className="text-on-surface-variant hover:bg-error-container hover:text-error"
-                            onClick={() => setPatientToDelete(patient)}
+                            onClick={e => {
+                              e.stopPropagation();
+                              setPatientToDelete(patient);
+                            }}
                           >
                             <Trash2 className="w-4 h-4" />
                           </IconButton>
@@ -919,6 +943,14 @@ export default function PatientsPage({
             toast.error('Delete failed — nothing was removed.');
           }
         }}
+      />
+
+      {/* Read-only timeline: every report for the patient, grouped by day */}
+      <PatientDetailSheet
+        key={selectedPatient?.id ?? 'none'}
+        patient={selectedPatient}
+        onClose={() => setSelectedPatient(null)}
+        onEdit={role !== 'guest' ? openEditForm : undefined}
       />
     </div>
   );

@@ -416,8 +416,8 @@ describe('delivery helpers', () => {
   })[0];
 
   it('describes an alert without any clinical result value', () => {
-    const text = buildAlertText(item, 'PathLab OS Lab');
-    expect(text).toContain('PathLab OS Lab');
+    const text = buildAlertText(item, 'PathoMitra Lab');
+    expect(text).toContain('PathoMitra Lab');
     expect(text).toContain('Awaiting report');
     expect(text).not.toMatch(/HB|mg\/dL/);
   });
@@ -449,8 +449,13 @@ describe('delivery helpers', () => {
     expect(channelAvailability('email', DEFAULT_NOTIFICATION_PREFS, '   ')).toEqual({
       enabled: true,
       ready: false,
-      missingHint: expect.stringContaining('Lab Organization'),
+      // The hint must name the tab that actually holds the field. It used to
+      // say "Lab Organization", where no email or phone can be entered.
+      missingHint: expect.stringContaining('My Profile'),
     });
+    expect(
+      channelAvailability('sms', resolvePrefs({ channels: { sms: true } }), '')?.missingHint,
+    ).not.toContain('Lab Organization');
   });
 
   it('short-circuits a disabled channel before checking the destination', () => {
@@ -468,14 +473,14 @@ describe('buildDailySummaryText', () => {
       invoices: [invoice()],
       now: NOW,
     });
-    const text = buildDailySummaryText(items, 'PathLab OS Lab');
+    const text = buildDailySummaryText(items, 'PathoMitra Lab');
     expect(text).toContain('Awaiting report (1)');
     expect(text).toContain('Payment due (1)');
     expect(text).toContain('Outstanding payments: ₹1,200');
   });
 
   it('says the lab is clear when nothing is open', () => {
-    expect(buildDailySummaryText([], 'PathLab OS Lab')).toContain('The lab is clear');
+    expect(buildDailySummaryText([], 'PathoMitra Lab')).toContain('The lab is clear');
   });
 });
 

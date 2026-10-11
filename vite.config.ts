@@ -33,7 +33,7 @@ const WEB_ONLY_ASSETS = [
  */
 function omitWebOnlyAssets(enabled: boolean): Plugin {
   return {
-    name: 'pathlab:omit-web-only-assets',
+    name: 'pathomitra:omit-web-only-assets',
     apply: 'build',
     transformIndexHtml(html) {
       if (!enabled) return html;

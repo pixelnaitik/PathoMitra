@@ -1,6 +1,6 @@
-# PathLab OS — Design System (UI/UX)
+# PathoMitra — Design System (UI/UX)
 
-This document describes the visual and interaction system of PathLab OS: the
+This document describes the visual and interaction system of PathoMitra: the
 aesthetic intent, the token architecture, typography, component primitives,
 motion, and accessibility rules.
 

@@ -1,6 +1,6 @@
 # Google Play Store Listing & Console Configuration
 
-Authoritative submission text for **PathLab OS** (`com.healthcareos.app`). Every claim
+Authoritative submission text for **PathoMitra** (`com.pathomitra.app`). Every claim
 here is traceable to the source in this repo; nothing here is aspirational. If a line
 below is not true of the build being uploaded, delete the line rather than soften it —
 the rejections this app is exposed to come from _claims_, not from architecture.
@@ -12,12 +12,12 @@ the rejections this app is exposed to come from _claims_, not from architecture.
 ### App name (30 char max)
 
 ```
-PathLab OS
+PathoMitra
 ```
 
-Package name is `com.healthcareos.app` while the brand is "PathLab OS". That mismatch is
+Package name is `com.pathomitra.app` while the brand is "PathoMitra". That mismatch is
 deliberate (changing an `applicationId` orphans existing installs) but expect a query;
-the answer is that it predates the rename. Confirm "PathLab" is not already a registered
+the answer is that it predates the rename. Confirm "PathoMitra" is not already a registered
 pathology brand in your target markets before committing to it.
 
 ### Tagline / short description (80 char max)
@@ -31,7 +31,7 @@ Offline pathology lab records, reports and billing - stored encrypted on your de
 ### Full description
 
 ```
-PathLab OS is an offline laboratory console for pathology labs and their authorised
+PathoMitra is an offline laboratory console for pathology labs and their authorised
 staff. It runs with no network access at all - the Android build does not request the
 INTERNET permission - so patient records never leave the device you enter them on.
 
@@ -51,7 +51,8 @@ WHAT IT DOES
   of volume, revenue and turnaround.
 - Notification centre: overdue reports, drafts awaiting issue, and unpaid bills.
 - Data safety: an encrypted database, a PIN or biometric device unlock, automatic
-  re-lock when you leave the app, and a full local erase when you are done.
+  re-lock when you leave the app, screenshot and screen-recording protection that is
+  on unless you switch it off in Settings, and a full local erase when you are done.
 
 OFFLINE BY CONSTRUCTION
 
@@ -64,7 +65,9 @@ WHERE YOUR DATA LIVES
 Records are stored on your device in a SQLCipher (AES-256) database whose key is held
 in the Android hardware keystore. Your unlock passcode is stored only as a PBKDF2
 hash. Because there is no server, you are the only copy: use Settings > Data to create
-JSON backups and keep them somewhere you control.
+a backup - sealed with a passphrase you choose, so a copy that leaves the device does
+not carry readable patient records - and keep it somewhere you control. That passphrase
+is the only key and cannot be recovered, so store it apart from the file.
 
 PRIVACY
 
@@ -75,7 +78,7 @@ permanently delete everything at any time from within the app.
 
 NOTES
 
-- PathLab OS is a professional tool for laboratory staff. It is not a patient-facing
+- PathoMitra is a professional tool for laboratory staff. It is not a patient-facing
   app and not a diagnostic device: it stores, formats and prints what a qualified
   operator enters, and does not interpret results.
 - The app holds no accreditation or certification of its own, and asserts none on your
@@ -157,10 +160,22 @@ permission list is exactly
 android.permission.VIBRATE
 android.permission.USE_BIOMETRIC
 android.permission.USE_FINGERPRINT
-com.healthcareos.app.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION
+android.permission.POST_NOTIFICATIONS
+android.permission.WAKE_LOCK
+android.permission.RECEIVE_BOOT_COMPLETED
+com.pathomitra.app.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION
 ```
 
-— with **no** `INTERNET`. Verify any uploaded artifact with
+— with **no** `INTERNET`, and with `SCHEDULE_EXACT_ALARM` / `USE_EXACT_ALARM` deliberately
+**removed** by `tools:node="remove"` in `android/app/src/main/AndroidManifest.xml` (Play treats
+exact-alarm scheduling as a sensitive permission needing a declared use case, and the app does not
+need it — banners are posted when an alert is derived, not fired at a wall-clock instant).
+Regenerate this list rather than trusting it: `@capacitor/local-notifications` was added 2026-10-11
+and contributed two of the last three, which is why the build itself checks — `npm run check:android`
+prints the count and fails on anything outside the allow-list in
+`scripts/check-android-manifest.mjs`.
+
+Verify any uploaded artifact with
 
 ```
 npm run sync:android && npm run android:aab
@@ -221,11 +236,53 @@ production only once vitals are clean (crash < 1.0%, ANR < 1.5%).
 
 ## 5. Pre-submission checklist
 
-- [ ] The orphaned "Staff access code" upgrade UI in `DashboardLayout` is a leftover of
-      the multi-role cloud model; with a single local operator it can never apply. Remove it
-      or explain it.
+- [x] The orphaned "Staff access code" upgrade UI was **removed 2026-10-11** —
+      `DashboardLayout` (guest banner, `handleUpgrade`, the `db/doc/updateDoc` and
+      `ShieldAlert` imports) and the `Unlock staff access above` line in
+      `OverviewPage`. With a single local operator `role` is only ever
+      `'admin' | null` (`AuthContext.toUser`), so the branch could never render —
+      but its strings shipped inside the APK and implied a multi-user system that
+      does not exist. The same commit removed `ConnectionBanner`, which promised
+      "will sync automatically when you reconnect" in an app with no sync path.
+- [ ] **BLOCKER — `VITE_SUPPORT_EMAIL` / `VITE_PRIVACY_URL must be real.** The
+    2.5.1 build shipped `privacy@pathomitra.test`and
+   `https://policy.pathomitra.test/` (RFC 2606 reserved, can never resolve),
+      which fails User Data Policy for an app holding patient data. Both are now
+      rejected by `scripts/check-release-config.mjs` (reserved TLDs + a live
+      fetch that requires the hosted page to name the same contact), so
+      `npm run build:android` fails until they are set. Set them, run
+      `npm run build:privacy`, and host `privacy-site/` on that domain.
+- [ ] **Upload only a bundle that passes `npm run check:android`** — it asserts the
+      merged release manifest's package id, `versionCode`/`versionName`, the
+      permission allow-list, `debuggable=false`, `allowBackup=false`, the
+      data-extraction rules, and that no `INTERNET` crept in. The pre-rebrand
+      `app-release.aab` was renamed
+      `STALE_WRONG_PACKAGE_healthcareos_DO_NOT_UPLOAD.aab` for this reason.
+- [ ] Screenshots must come from the installed release build with synthetic data,
+      plus the 1024×512 feature graphic — neither exists yet for PathoMitra.
 - [ ] Report footer geometry was changed (larger legal ribbon); verify it visually in
       `Settings → Report Templates → Preview PDF` and on a real print.
 - [ ] Auto-lock fires on backgrounding; confirm the print/share sheet returning to the
       foreground is not an annoyance worth adding a grace window for.
+- [ ] **Screenshot protection is now ON by default** (Android `FLAG_SECURE`, set in
+      `MainActivity.onCreate` before the WebView loads, with a Settings → Security →
+      "Screenshot protection" switch that only ever clears it). Verify on device that a
+      screenshot really is blocked, that the Recents thumbnail is blank, and — the part
+      that used to be the lab's request — that printing and sharing a report PDF still
+      work, because `FLAG_SECURE` blocks screen capture only, never the print framework
+      or a FileProvider grant. Tell the lab before shipping: this reverses the earlier
+      "screens must be capturable" decision, now as an opt-out instead of a default.
+- [ ] **Backups are sealed by default** (PBKDF2-SHA256 + AES-256-GCM, `lib/backup.ts`
+      → `lib/backup-crypto.ts`), with the plaintext path still offered per-backup. Older
+      unsealed snapshots restore unchanged; a sealed one prompts for the passphrase.
+      Confirm on device that a sealed backup restores onto a second device, and that a
+      lost passphrase really is unrecoverable — then say so in support material.
+- [ ] **Permission declarations in the Console** for the three that
+      `@capacitor/local-notifications` needs: `POST_NOTIFICATIONS` (the opt-in story — overdue-report
+      and unpaid-bill banners the lab switches on in Settings → Notifications), `WAKE_LOCK` (fire a
+      scheduled banner while the app is closed) and `RECEIVE_BOOT_COMPLETED` (the plugin's boot
+      receiver re-arms pending banners after a reboot). `SCHEDULE_EXACT_ALARM` / `USE_EXACT_ALARM`
+      are stripped in the manifest, so **do not** describe an exact-timing feature in the listing —
+      the declaration would then not match the binary. Still **no** dangerous permission: no camera,
+      microphone, location, contacts, SMS, call log or storage.
 - [ ] Release keystore created, backed up off-machine, and Play App Signing configured.

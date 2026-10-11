@@ -76,6 +76,16 @@ export interface LabSettings {
    * files themselves can opt in (Settings → Data & Diagnostics).
    */
   allowPublicExports: boolean;
+  /**
+   * Let the device capture this screen (Android's FLAG_SECURE cleared).
+   * Default `false` = protected: screenshots, recordings, screen shares and the
+   * Recents thumbnail show nothing, because every screen pairs a patient name
+   * with their findings. The lab asked for capturable report screens, so this
+   * exists as an opt-out rather than being hard-coded — the native window starts
+   * protected in `MainActivity.onCreate`, and only an explicit `true` here clears
+   * it (see lib/screenshot-protection).
+   */
+  screenshotsAllowed: boolean;
   reportMarginTop: number;
   reportMarginBottom: number;
   reportMarginLeft: number;
@@ -124,7 +134,7 @@ export const DEFAULT_SETTINGS: LabSettings = {
   name: '',
   email: '',
   phone: '',
-  labName: 'PathLab OS Lab',
+  labName: 'PathoMitra Lab',
   address: '',
   emailNotifications: DEFAULT_NOTIFICATION_PREFS.channels.email,
   smsNotifications: DEFAULT_NOTIFICATION_PREFS.channels.sms,
@@ -141,6 +151,7 @@ export const DEFAULT_SETTINGS: LabSettings = {
   cornerStyle: 'rounded',
   hapticsEnabled: true,
   allowPublicExports: false,
+  screenshotsAllowed: false,
   // Legacy field kept only as a fallback for older stored settings; the UI
   // edits reportTableBodyFontSize / shareTableBodyFontSize directly.
   tableBodyFontSize: RECOMMENDED_LAYOUT_DEFAULTS.tableBodyFontSize,
@@ -240,6 +251,11 @@ export function migrateSettings(parsed: Record<string, unknown>): Record<string,
   // A leaked PHI-export preference must fail closed, never open.
   if (typeof s.allowPublicExports !== 'boolean')
     s.allowPublicExports = DEFAULT_SETTINGS.allowPublicExports;
+  // Same rule for screen capture: a missing or corrupt value keeps the window
+  // protected, because the native default is protection and a stale stored object
+  // must not silently downgrade it.
+  if (typeof s.screenshotsAllowed !== 'boolean')
+    s.screenshotsAllowed = DEFAULT_SETTINGS.screenshotsAllowed;
   if (s.cornerStyle !== 'rounded' && s.cornerStyle !== 'sharp')
     s.cornerStyle = DEFAULT_SETTINGS.cornerStyle;
   // Legal-footer credentials are claims printed on a clinical document, so a

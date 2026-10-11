@@ -29,6 +29,6 @@ export function handleFirestoreError(
 ): never {
   const message = error instanceof Error ? error.message : String(error);
   const info: FirestoreErrorInfo = { error: message, operationType, path };
-  console.error('PathLab OS data error:', JSON.stringify(info));
+  console.error('PathoMitra data error:', JSON.stringify(info));
   throw new Error(message);
 }

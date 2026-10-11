@@ -1,6 +1,6 @@
 # Security Policy
 
-PathLab OS is a clinical system: it holds patient demographics, diagnosis
+PathoMitra is a clinical system: it holds patient demographics, diagnosis
 results, and billing records. Treat every vulnerability report as urgent,
 including the ones that look theoretical.
 
@@ -100,7 +100,7 @@ Play listing of a laboratory running this app.
 
 ## Privacy and compliance
 
-PathLab OS keeps all data on the device, which is the strongest privacy
+PathoMitra keeps all data on the device, which is the strongest privacy
 posture available, but it is **not** a certified HIPAA/GDPR-compliance product.
 Compliance for a laboratory depends on how the device, the backups, and the
 premises are managed. Do not treat this repository as providing compliance on

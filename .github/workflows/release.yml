@@ -90,7 +90,7 @@ jobs:
       - name: Upload AAB artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pathlab-os-aab
+          name: pathomitra-aab
           path: android/app/build/outputs/bundle/release/app-release.aab
           if-no-files-found: error
           retention-days: 30
@@ -110,7 +110,7 @@ jobs:
       - name: Download AAB
         uses: actions/download-artifact@v4
         with:
-          name: pathlab-os-aab
+          name: pathomitra-aab
           path: release-assets
 
       - name: Create GitHub Release

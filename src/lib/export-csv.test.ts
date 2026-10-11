@@ -8,15 +8,15 @@ const { mockIsNativeShell, mockSaveTextDocument } = vi.hoisted(() => ({
   mockIsNativeShell: vi.fn((): boolean => false),
   mockSaveTextDocument: vi.fn(async (_filename: string, _contents: string): Promise<SavedStub> => ({
     name: 'patients.csv',
-    uri: 'file:///sdcard/Documents/PathLab OS/patients.csv',
-    path: 'PathLab OS/patients.csv',
+    uri: 'file:///sdcard/Documents/PathoMitra/patients.csv',
+    path: 'PathoMitra/patients.csv',
   })),
 }));
 type SavedStub = { name: string; uri: string; path: string };
 vi.mock('./native-files', () => ({
   isNativeShell: mockIsNativeShell,
   saveTextDocument: mockSaveTextDocument,
-  describeSavedLocation: (file: { name: string }) => `Documents/PathLab OS/${file.name}`,
+  describeSavedLocation: (file: { name: string }) => `Documents/PathoMitra/${file.name}`,
 }));
 
 type Row = { name: string; age: number | string; note?: string };

@@ -70,7 +70,7 @@ function buildPayload(settings: LabSettings, customTests: PathologyTest[], uid?:
     payload.settings = { ...rest, sharingTemplateImage };
   } else if (sharingTemplateImage) {
     console.warn(
-      'PathLab OS: the share template image is too large to sync between devices; ' +
+      'PathoMitra: the share template image is too large to sync between devices; ' +
         'it remains available on this device only.',
     );
   }
@@ -90,7 +90,7 @@ function queuePush(uid?: string): void {
     } catch (err) {
       // A blocked write here means the local store rejected the document shape;
       // the UI keeps working from localStorage, so this is a warning, not a fault.
-      console.warn('PathLab OS: settings could not be mirrored into the encrypted store.', err);
+      console.warn('PathoMitra: settings could not be mirrored into the encrypted store.', err);
     }
   }, PUSH_DELAY_MS);
 }

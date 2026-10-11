@@ -11,7 +11,6 @@ import {
   Menu,
   ChevronRight,
   PanelLeftClose,
-  ShieldAlert,
   RefreshCw,
   UserPlus,
   Microscope,
@@ -20,7 +19,6 @@ import {
   Sun,
   Search,
 } from 'lucide-react';
-import { db, doc, updateDoc } from '../../data/fs';
 import { useAuth } from '../../contexts/AuthContext';
 import { cn } from '../../lib/utils';
 import BackButton from '../../components/BackButton';
@@ -30,10 +28,10 @@ import { KeyboardShortcutsDialog } from '../../components/KeyboardShortcutsDialo
 import NotificationCenter from '../../components/NotificationCenter';
 import type { NotificationLink } from '../../lib/notification-engine';
 import { Tooltip, useToast } from '../../components/ui';
-import { ConnectionBanner } from '../../components/ConnectionBanner';
 import { readSettings, writeSettings } from '../../lib/settings';
 import { startSettingsSync } from '../../lib/settings-sync';
 import { BACK_PRIORITY, useBackHandler } from '../../lib/back-button';
+import { hapticTap } from '../../lib/haptics';
 
 interface NavItem {
   id: string;
@@ -149,11 +147,7 @@ export default function DashboardLayout({
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [avatarSeed, setAvatarSeed] = useState(user?.photoURL || 'default');
   // Alert messages are signed with the lab's name, so it must follow Settings.
-  const [labName, setLabName] = useState(() => readSettings().labName || 'PathLab OS Lab');
-
-  const [upgradePassword, setUpgradePassword] = useState('');
-  const [upgrading, setUpgrading] = useState(false);
-  const [upgradeError, setUpgradeError] = useState('');
+  const [labName, setLabName] = useState(() => readSettings().labName || 'PathoMitra Lab');
 
   // Light/dark mode — persisted through the shared settings contract
   const [themeMode, setThemeMode] = useState<'light' | 'dark'>(() =>
@@ -166,38 +160,13 @@ export default function DashboardLayout({
     setThemeMode(next as 'light' | 'dark');
   };
 
-  const handleUpgrade = async () => {
-    if (!upgradePassword || !user) return;
-    setUpgrading(true);
-    setUpgradeError('');
-    try {
-      await updateDoc(doc(db, 'users', user.uid), {
-        role: 'staff',
-        upgradeCode: upgradePassword,
-      });
-      // Remove the plaintext code from the stored profile once the role
-      // change has been accepted by the security rules.
-      await updateDoc(doc(db, 'users', user.uid), {
-        upgradeCode: '',
-      });
-      setUpgradePassword('');
-      toast.success('Staff access unlocked. You can now edit records.');
-    } catch (err: any) {
-      console.error(err);
-      setUpgradeError(
-        "That access code wasn't recognized. Double-check it and try again, or ask your lab administrator.",
-      );
-    }
-    setUpgrading(false);
-  };
-
   React.useEffect(() => {
     const loadSettings = () => {
       const s = readSettings();
       if (s.avatarSeed) {
         setAvatarSeed(s.avatarSeed);
       }
-      setLabName(s.labName || 'PathLab OS Lab');
+      setLabName(s.labName || 'PathoMitra Lab');
       setThemeMode(s.themeMode === 'dark' ? 'dark' : 'light');
     };
 
@@ -344,7 +313,11 @@ export default function DashboardLayout({
           // pt/pb-safe: the panel is full-bleed under the status bar and the
           // gesture pill in the APK, so its own top and bottom rows need the
           // inset (the frosted background still paints behind both).
-          'vibrancy flex h-full shrink-0 flex-col border-r border-[var(--glass-border)] z-50 overflow-hidden shadow-float fold:shadow-none',
+          // No `overflow-hidden` here: the outer shell already clips the
+          // off-screen drawer, and keeping the rail un-clipped lets the
+          // collapse toggle overhang its edge instead of being sliced in half
+          // at the top-left corner in landscape.
+          'vibrancy flex h-full shrink-0 flex-col border-r border-[var(--glass-border)] z-50 shadow-float fold:shadow-none',
           'fixed fold:relative rounded-r-3xl fold:rounded-r-none pt-safe pb-safe',
         )}
       >
@@ -363,7 +336,7 @@ export default function DashboardLayout({
           {(sidebarOpen || mobileMenuOpen) && (
             <motion.span initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="min-w-0">
               <span className="block text-[15px] font-bold tracking-[-0.02em] text-on-surface leading-tight">
-                PathLab OS
+                PathoMitra
               </span>
               <span className="block text-[11px] font-medium text-on-surface-variant leading-tight">
                 Laboratory Suite
@@ -383,6 +356,7 @@ export default function DashboardLayout({
               <button
                 key={item.id}
                 onClick={() => {
+                  hapticTap();
                   setActiveTab(item.id);
                   // Use matchMedia to avoid forced reflow from window.innerWidth
                   if (!window.matchMedia(SHELL_RAIL_MQ).matches) setMobileMenuOpen(false);
@@ -445,7 +419,10 @@ export default function DashboardLayout({
           // Visual stays a compact 28px chip; the ::after expands the hit area
           // to ~44px so it clears the WCAG / Material touch-target minimum
           // without nudging the button off the rail border.
-          className="absolute -right-3.5 top-10 h-7 w-7 rounded-full bg-surface-container-lowest text-on-surface-variant shadow-raised border border-[var(--elevated-border)] items-center justify-center hidden fold:flex hover:text-on-surface after:absolute after:-inset-2 after:rounded-full after:content-['']"
+          // `top` is composed with the status-bar inset (not a fixed `top-10`):
+          // absolute offsets ignore the rail's pt-safe padding, so a static
+          // value slid the toggle under the clock in landscape.
+          className="absolute -right-3.5 top-[calc(var(--safe-top)+1.5rem)] h-7 w-7 rounded-full bg-surface-container-lowest text-on-surface-variant shadow-raised border border-[var(--elevated-border)] items-center justify-center hidden fold:flex hover:text-on-surface after:absolute after:-inset-2 after:rounded-full after:content-['']"
         >
           {sidebarOpen ? (
             <PanelLeftClose className="w-3.5 h-3.5" aria-hidden="true" />
@@ -598,53 +575,7 @@ export default function DashboardLayout({
               />
             </div>
           </div>
-          <div className="max-w-7xl mx-auto">
-            {/* Writes are queued locally while offline, so nothing else tells the
-                user their data has not reached the lab yet. */}
-            <div className="mb-4 empty:mb-0">
-              <ConnectionBanner />
-            </div>
-            {role === 'guest' && (
-              <div className="mb-6 flex flex-col items-center gap-5 rounded-3xl border border-error/25 bg-error-container p-5 text-on-error-container md:flex-row md:p-6">
-                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-error/15">
-                  <ShieldAlert className="h-6 w-6 text-error" aria-hidden="true" />
-                </div>
-                <div className="flex-1 text-center md:text-left">
-                  <h3 className="text-base font-bold tracking-[-0.01em]">
-                    Limited access — read only
-                  </h3>
-                  <p className="mt-0.5 text-[13px] opacity-90 max-w-xl">
-                    You're browsing as a guest. Records are view-only. Enter the staff access code
-                    from your lab administrator to unlock editing, report signing and billing.
-                  </p>
-                  {upgradeError && (
-                    <p role="alert" className="mt-1.5 text-xs font-bold text-error animate-shake-x">
-                      {upgradeError}
-                    </p>
-                  )}
-                </div>
-                <div className="flex w-full gap-2 md:w-auto">
-                  <input
-                    type="password"
-                    value={upgradePassword}
-                    onChange={e => setUpgradePassword(e.target.value)}
-                    aria-label="Staff access code"
-                    className="h-11 flex-1 rounded-full border border-error/25 bg-surface px-4 text-sm text-on-surface placeholder:text-on-surface-variant focus:border-error focus:outline-none md:w-44"
-                    placeholder="Access code"
-                    onKeyDown={e => e.key === 'Enter' && handleUpgrade()}
-                  />
-                  <button
-                    onClick={handleUpgrade}
-                    disabled={upgrading || !upgradePassword}
-                    className="h-11 shrink-0 rounded-full bg-error px-5 text-sm font-semibold text-on-error shadow-card transition hover:brightness-110 active:scale-[0.97] disabled:opacity-50 btn-shine"
-                  >
-                    {upgrading ? 'Unlocking…' : 'Unlock'}
-                  </button>
-                </div>
-              </div>
-            )}
-            {children}
-          </div>
+          <div className="max-w-7xl mx-auto">{children}</div>
         </div>
 
         {/* Floating quick action — register a patient from anywhere (mobile only) */}
@@ -680,14 +611,22 @@ export default function DashboardLayout({
             {bottomNavItems.map(item => (
               <button
                 key={item.id}
-                onClick={() => setActiveTab(item.id)}
+                onClick={() => {
+                  // The tab bar is the highest-traffic control in the app and the
+                  // only one that never ticked — buttons, switches and rows all do.
+                  hapticTap();
+                  setActiveTab(item.id);
+                }}
                 aria-current={activeTab === item.id ? 'page' : undefined}
                 className={cn(
                   'relative flex flex-col items-center justify-center gap-1 text-[10.5px] font-bold transition-colors min-h-11 active:scale-90',
+                  // Ring drawn inward: the bar clips its children, so the default
+                  // outward offset got sliced into a stray vertical line at the edge.
+                  'focus-visible:[outline-offset:-3px]',
                   activeTab === item.id ? 'text-accent' : 'text-on-surface-variant',
                 )}
               >
-                <span className="relative flex h-7 w-12 items-center justify-center">
+                <span className="relative flex h-8 w-8 items-center justify-center">
                   {activeTab === item.id && (
                     <motion.span
                       layoutId="bottomnav-active"

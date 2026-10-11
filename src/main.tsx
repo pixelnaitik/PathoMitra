@@ -46,8 +46,8 @@ if (Capacitor.isNativePlatform()) {
   window.addEventListener('load', () => {
     navigator.serviceWorker
       .register('/sw.js')
-      .then(reg => console.log('PathLab OS PWA: Service Worker registered scope:', reg.scope))
-      .catch(err => console.error('PathLab OS PWA: Service Worker registration failed:', err));
+      .then(reg => console.log('PathoMitra PWA: Service Worker registered scope:', reg.scope))
+      .catch(err => console.error('PathoMitra PWA: Service Worker registration failed:', err));
   });
 }
 

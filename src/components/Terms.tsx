@@ -1,5 +1,5 @@
 /**
- * Terms-of-use React components for PathLab OS.
+ * Terms-of-use React components for PathoMitra.
  *
  * Mirrors `components/PrivacyPolicy.tsx`: the section data lives in
  * `lib/terms.ts` so this file exports only components and Fast Refresh stays

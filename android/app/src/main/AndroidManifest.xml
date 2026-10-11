@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <application
         android:allowBackup="false"
@@ -43,4 +44,23 @@
 
     <!-- Fully offline: no INTERNET permission is requested. Biometric
          permissions are contributed by the biometric plugin's own manifest. -->
+
+    <!-- Alert banners (Settings -> Notifications). Declared here as well as
+         contributed by @capacitor/local-notifications, because the app's own
+         feature depends on it and this file should state that. Local-only: it
+         lets the app post a banner on this device, nothing to do with the
+         network. Runtime prompt is raised by lib/desktop-notifications.ts. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
+    <!-- Pulled in by @capacitor/local-notifications, but only needed to fire a
+         notification at a wall-clock instant. This feature posts banners the
+         moment an alert is derived, so nothing here uses it — and Play treats
+         SCHEDULE_EXACT_ALARM as a sensitive permission requiring a declared
+         use case. Strip it rather than answer for it. -->
+    <uses-permission
+        android:name="android.permission.SCHEDULE_EXACT_ALARM"
+        tools:node="remove"/>
+    <uses-permission
+        android:name="android.permission.USE_EXACT_ALARM"
+        tools:node="remove"/>
 </manifest>

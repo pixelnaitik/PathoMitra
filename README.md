@@ -1,4 +1,4 @@
-# PathLab OS
+# PathoMitra
 
 > An offline-first digital pathology laboratory management system — patient records,
 > encrypted reports, billing and analytics, entirely on-device.
@@ -8,7 +8,7 @@
 ![Android](https://github.com/pixelnaitik/PathoMitra/actions/workflows/android.yml/badge.svg)
 ![Release](https://github.com/pixelnaitik/PathoMitra/actions/workflows/release.yml/badge.svg)
 
-**PathLab OS** is built with React 19, Vite, Tailwind CSS and Capacitor 8. It runs as a
+**PathoMitra** is built with React 19, Vite, Tailwind CSS and Capacitor 8. It runs as a
 web app during development and ships as an Android APK/AAB where every clinical record
 lives in an encrypted on-device database. It requests **no `INTERNET` permission**, talks
 to no backend, and contains no analytics or third-party crash reporting — the laboratory
@@ -255,12 +255,12 @@ before distributing anything.
 
 Four GitHub Actions workflows:
 
-| Workflow      | Trigger           | What it does                                                                                                                |
-| ------------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `ci.yml`      | PRs to `main`     | `lint:ci`, `test:coverage`, `build`                                                                                         |
-| `deploy.yml`  | push to `main`    | Same gates, then deploys `dist/` to **Cloudflare Pages** (`healthcare-os` project) and uploads the `privacy-site/` artifact |
-| `release.yml` | `v*` tag          | Builds the signed AAB, verifies 16 KB native page alignment, creates the GitHub Release with the AAB attached               |
-| `android.yml` | `v*` tag / manual | Builds the AAB and an installable APK as build artifacts                                                                    |
+| Workflow      | Trigger           | What it does                                                                                                             |
+| ------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `ci.yml`      | PRs to `main`     | `lint:ci`, `test:coverage`, `build`                                                                                      |
+| `deploy.yml`  | push to `main`    | Same gates, then deploys `dist/` to **Cloudflare Pages** (`pathomitra` project) and uploads the `privacy-site/` artifact |
+| `release.yml` | `v*` tag          | Builds the signed AAB, verifies 16 KB native page alignment, creates the GitHub Release with the AAB attached            |
+| `android.yml` | `v*` tag / manual | Builds the AAB and an installable APK as build artifacts                                                                 |
 
 **Secrets / variables to configure** (Settings → Secrets and variables → Actions):
 
@@ -300,7 +300,7 @@ with [standard-version](https://github.com/conventional-changelog/standard-versi
 
 ## Security
 
-PathLab OS holds patient data. If you find a vulnerability, **do not open a public
+PathoMitra holds patient data. If you find a vulnerability, **do not open a public
 issue** — follow the private reporting process in
 [SECURITY.md](SECURITY.md). Highlights of the model:
 

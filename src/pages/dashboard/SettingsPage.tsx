@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { useAuth, isValidPasscode, PIN_ERROR } from '../../contexts/AuthContext';
 import { verifyAccountPassword } from '../../lib/local-account';
+import { isNative } from '../../data';
 import { THEME_OPTIONS, applyAppearance, applyTheme } from '../../lib/theme';
 import {
   SegmentedControl,
@@ -36,6 +37,7 @@ import {
   ConfirmSheet,
   useToast,
 } from '../../components/ui';
+import { cn } from '../../lib/utils';
 import AvatarIcon from '../../components/AvatarIcon';
 import { avatarPresetLabel } from '../../components/avatarPresets';
 import ReportPreview from '../../components/ReportPreview';
@@ -57,9 +59,33 @@ import {
   type NotificationCategory,
   type NotificationPrefsPatch,
 } from '../../lib/notification-engine';
+import {
+  currentPermission,
+  isSupported,
+  requestPermission,
+  type BannerPermission,
+} from '../../lib/desktop-notifications';
 import { useEditHistory, useHistoryShortcuts } from '../../lib/use-edit-history';
 import { openSampleReportPdf } from '../../lib/report-sample-pdf';
-import type { PathologyTest } from '../../lib/pathology-tests';
+import type { PathologyTest, ReferenceRange } from '../../lib/pathology-tests';
+
+/**
+ * One line per populated population band, for the custom-test list. Labs enter
+ * ranges as text (`13.5 - 17.5`, `< 100`, `Neg`); `resolveReferenceRange` parses
+ * the bounds back out for flagging, so the value is stored exactly as typed and
+ * never silently re-formatted.
+ */
+const describeRangeBands = (ranges?: ReferenceRange): string[] =>
+  (
+    [
+      ['Adult male', ranges?.male?.text],
+      ['Adult female', ranges?.female?.text],
+      ['Infant (0–24 mo)', ranges?.infant?.text],
+      ['All patients', ranges?.general?.text],
+    ] as const
+  )
+    .filter(([, text]) => Boolean(text))
+    .map(([label, text]) => `${label}: ${text}`);
 
 /** Keys that make up the report-layout slice of the settings — the part the
  * templates tab edits, previews, saves and undoes. */
@@ -182,17 +208,72 @@ const channelPatch = (
   channels: { [channel]: on } as NotificationPrefsPatch['channels'],
 });
 
-/** Section ids, in nav order — also what a deep link is validated against. */
-const SETTINGS_SECTIONS = [
-  'profile',
-  'theme',
-  'organization',
-  'templates',
-  'tests',
-  'notifications',
-  'security',
-  'data',
+/**
+ * One delivery-channel row: what it does, and a jump to the field that makes it
+ * able to do it.
+ *
+ * The switch stays live when the destination is missing — arming the preference
+ * before you have typed the address is reasonable — but the row then says out
+ * loud that the channel will stay silent, with a link to the one field that
+ * fixes it. Previously the copy pointed at a profile field that was read-only,
+ * which left the switch looking broken with nothing to do about it.
+ */
+function ChannelRow({
+  title,
+  description,
+  missingHint,
+  onFix,
+  checked,
+  onChange,
+  switchLabel,
+  disabled,
+}: {
+  title: string;
+  description: string;
+  /** Compact warning shown when the channel is on but cannot deliver yet. */
+  missingHint?: string;
+  onFix?: () => void;
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  switchLabel: string;
+  disabled?: boolean;
+}) {
+  const blocked = Boolean(missingHint && onFix);
+  return (
+    <div className="flex items-start justify-between gap-4 p-4 bg-surface-container-low border border-outline-variant/30 rounded-2xl">
+      <div className="min-w-0">
+        <h4 className="font-bold text-primary">{title}</h4>
+        <p className="text-xs text-on-surface-variant mt-1">{description}</p>
+        {blocked && (
+          <button
+            type="button"
+            onClick={onFix}
+            className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-bold text-warning underline underline-offset-2"
+          >
+            <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
+            {missingHint}
+          </button>
+        )}
+      </div>
+      <Switch checked={checked} onChange={onChange} disabled={disabled} label={switchLabel} />
+    </div>
+  );
+}
+
+/** Settings sections in nav order — the single source for both the nav rail and
+ * the ids a deep link is validated against. */
+const SETTINGS_TABS = [
+  { id: 'profile', label: 'My Profile', icon: User },
+  { id: 'theme', label: 'Theme Settings', icon: Palette },
+  { id: 'organization', label: 'Lab Organization', icon: Building2 },
+  { id: 'templates', label: 'Report Templates', icon: FileSignature },
+  { id: 'tests', label: 'Custom Tests', icon: Activity },
+  { id: 'notifications', label: 'Notifications', icon: Bell },
+  { id: 'security', label: 'Security', icon: Shield },
+  { id: 'data', label: 'Data & Diagnostics', icon: DatabaseBackup },
 ];
+
+const SETTINGS_SECTIONS = SETTINGS_TABS.map(tab => tab.id);
 
 export default function SettingsPage({
   initialSection,
@@ -244,7 +325,11 @@ export default function SettingsPage({
   const [formData, setFormData] = useState<LabSettings>(() => ({
     ...readSettings(),
     name: user?.displayName || '',
-    email: user?.email || '',
+    // The email is *not* mirrored from the account — the local account has no
+    // email field at all (`AuthContext.toUser()` returns `email: null`), so
+    // seeding from it used to blank the saved address on every single save and
+    // made the Email alert channel unreachable. It is the lab's own contact
+    // address now, edited below like the phone number is.
     avatarSeed: user?.photoURL || readSettings().avatarSeed || 'default',
   }));
 
@@ -347,6 +432,9 @@ export default function SettingsPage({
     unit: '',
     rangeLower: '',
     rangeUpper: '',
+    rangeMale: '',
+    rangeFemale: '',
+    rangeInfant: '',
     includedTestsStr: '',
   });
 
@@ -448,35 +536,61 @@ export default function SettingsPage({
   }, []);
 
   /**
-   * Desktop banners need the browser's permission, not just our preference — so
-   * the toggle asks for it and reflects whatever the user actually answered.
+   * Banners need the *system's* permission, not just our preference — so the
+   * toggle asks for it and reflects whatever the user actually answered. The
+   * answer is async because on the app it comes from the notification plugin
+   * rather than a browser global, so it is held in state and re-read on mount.
    */
+  const [bannerPermission, setBannerPermission] = useState<BannerPermission>('prompt');
+
+  useEffect(() => {
+    let cancelled = false;
+    void currentPermission().then(value => {
+      if (!cancelled) setBannerPermission(value);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const toggleDesktopChannel = useCallback(
     async (next: boolean) => {
       if (!next) {
         patchPrefs({ channels: { desktop: false } });
         return;
       }
-      if (typeof Notification === 'undefined') {
-        toast.error('This browser cannot show desktop notifications.');
+      if (!isSupported()) {
+        toast.error('This device cannot show alert banners.');
         return;
       }
-      const result = await Notification.requestPermission();
+      const result = await requestPermission();
+      setBannerPermission(result);
       patchPrefs({ channels: { desktop: result === 'granted' } });
-      if (result !== 'granted') {
+      if (result === 'granted') {
+        toast.success('Banners allowed. Press Save Changes to keep them on.');
+      } else if (result === 'denied') {
         toast.warning(
-          result === 'denied'
-            ? 'The browser is blocking notifications for this site. Allow it in your site settings first.'
-            : 'Choose “Allow” in the browser prompt to get desktop banners.',
+          'Notifications are blocked for PathoMitra. Allow them in your settings first.',
         );
+      } else if (result === 'unsupported') {
+        toast.error('This device cannot show alert banners.');
+      } else {
+        toast.warning('Choose “Allow” to get alert banners.');
       }
     },
     [patchPrefs, toast],
   );
 
   const notificationPrefs = resolvePrefs(formData.notificationPrefs);
-  const desktopPermission =
-    typeof Notification !== 'undefined' ? Notification.permission : 'unsupported';
+
+  const bannerDescription =
+    bannerPermission === 'granted'
+      ? 'Allowed. Critical and warning alerts appear as system banners.'
+      : bannerPermission === 'denied'
+        ? 'Notifications are blocked for PathoMitra. Allow them in your device or site settings, then switch this back on.'
+        : bannerPermission === 'unsupported'
+          ? 'This device offers no way for the app to post a banner, so the switch is unavailable.'
+          : 'Asks your device or browser for permission when you switch this on.';
 
   const isDirty = useMemo(
     () =>
@@ -518,38 +632,68 @@ export default function SettingsPage({
     setActiveTab(nextTab);
   };
 
+  // The chip rail scrolls sideways on mobile, so a section arrived at from a deep
+  // link or the bell has to be dragged into view — otherwise the active chip can
+  // sit off-screen with nothing on screen to hint at it.
+  const navChipRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const firstNavScroll = useRef(true);
+  useEffect(() => {
+    if (firstNavScroll.current) {
+      firstNavScroll.current = false;
+      return;
+    }
+    navChipRefs.current[activeTab]?.scrollIntoView({
+      behavior: 'smooth',
+      inline: 'nearest',
+      block: 'nearest',
+    });
+  }, [activeTab]);
+
   return (
     <div className="mx-auto max-w-5xl space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        {/* Sidebar Nav */}
-        <div className="col-span-1 space-y-2">
-          {[
-            { id: 'profile', label: 'My Profile', icon: User },
-            { id: 'theme', label: 'Theme Settings', icon: Palette },
-            { id: 'organization', label: 'Lab Organization', icon: Building2 },
-            { id: 'templates', label: 'Report Templates', icon: FileSignature },
-            { id: 'tests', label: 'Custom Tests', icon: Activity },
-            { id: 'notifications', label: 'Notifications', icon: Bell },
-            { id: 'security', label: 'Security', icon: Shield },
-            { id: 'data', label: 'Data & Diagnostics', icon: DatabaseBackup },
-          ].map(tab => (
-            <button
-              key={tab.id}
-              onClick={() => goToTab(tab.id)}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition ${
-                activeTab === tab.id
-                  ? 'bg-primary-container text-on-primary-container shadow-card'
-                  : 'bg-surface-container-lowest hover:bg-surface-container-low text-on-surface-variant hover:text-primary border border-outline-variant/30'
-              }`}
-            >
-              <tab.icon className="w-5 h-5 shrink-0" />
-              <span className="font-bold text-sm">{tab.label}</span>
-            </button>
-          ))}
+      {/* Website puts the section nav across the top in one column; the app keeps
+          the sidebar it shipped with. Both render the same SETTINGS_TABS. */}
+      <div className={cn('grid gap-6', isNative ? 'grid-cols-1 md:grid-cols-4' : 'grid-cols-1')}>
+        {/* Section nav. App: a single scrollable chip row below md — stacked
+            vertically these eight rows used to fill most of the screen before any
+            actual setting was reachable — and the sidebar from md up.
+            Website: the same pills in a wrapping row above the content, because a
+            wide desktop window has room for eight labels in two rows and the
+            forms here lose a whole column to a sidebar. */}
+        <div className="col-span-1">
+          <div
+            className={cn(
+              'no-scrollbar flex gap-2',
+              isNative
+                ? 'overflow-x-auto pb-1 md:block md:overflow-visible md:space-y-2 md:pb-0'
+                : 'flex-wrap',
+            )}
+          >
+            {SETTINGS_TABS.map(tab => (
+              <button
+                key={tab.id}
+                ref={el => {
+                  navChipRefs.current[tab.id] = el;
+                }}
+                onClick={() => goToTab(tab.id)}
+                aria-current={activeTab === tab.id ? 'true' : undefined}
+                className={cn(
+                  'flex shrink-0 items-center gap-2 rounded-full px-3.5 py-2.5 text-sm font-bold whitespace-nowrap transition',
+                  isNative && 'md:w-full md:gap-3 md:rounded-xl md:px-4 md:py-3',
+                  activeTab === tab.id
+                    ? 'bg-primary-container text-on-primary-container shadow-card'
+                    : 'border border-outline-variant/30 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container-low hover:text-primary',
+                )}
+              >
+                <tab.icon className="h-5 w-5 shrink-0" />
+                {tab.label}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Content Area */}
-        <div className="col-span-1 md:col-span-3">
+        <div className={cn(isNative ? 'col-span-1 md:col-span-3' : 'col-span-1')}>
           <motion.div
             key={activeTab}
             initial={{ opacity: 0, y: 10 }}
@@ -611,7 +755,7 @@ export default function SettingsPage({
                       type="text"
                       value={formData.name}
                       onChange={e => setFormData({ ...formData, name: e.target.value })}
-                      className="w-full px-4 py-3 bg-surface-container-low border border-outline-variant/30 rounded-xl focus:border-accent focus:outline-none"
+                      className="w-full px-4 py-3 bg-surface-container-low border border-outline-variant/30 rounded-xl focus:border-accent"
                     />
                   </div>
                   <div className="space-y-1">
@@ -624,10 +768,14 @@ export default function SettingsPage({
                     <input
                       id="profile-email"
                       type="email"
-                      disabled
                       value={formData.email}
-                      className="w-full px-4 py-3 bg-surface-container border border-outline-variant/30 rounded-xl text-on-surface-variant cursor-not-allowed outline-none"
+                      onChange={e => setFormData({ ...formData, email: e.target.value })}
+                      placeholder="lab@example.com"
+                      className="w-full px-4 py-3 bg-surface-container-low border border-outline-variant/30 rounded-xl focus:border-accent"
                     />
+                    <p className="text-[11px] text-on-surface-variant ml-1">
+                      Where email alerts and the daily summary are addressed.
+                    </p>
                   </div>
                   <div className="space-y-1">
                     <label
@@ -642,7 +790,7 @@ export default function SettingsPage({
                       value={formData.phone}
                       onChange={e => setFormData({ ...formData, phone: e.target.value })}
                       placeholder="+91 98765 43210"
-                      className="w-full px-4 py-3 bg-surface-container-low border border-outline-variant/30 rounded-xl focus:border-accent focus:outline-none"
+                      className="w-full px-4 py-3 bg-surface-container-low border border-outline-variant/30 rounded-xl focus:border-accent"
                     />
                   </div>
                   <div className="space-y-1">
@@ -854,7 +1002,7 @@ export default function SettingsPage({
                       type="text"
                       value={formData.labName}
                       onChange={e => setFormData({ ...formData, labName: e.target.value })}
-                      className="w-full px-4 py-3 bg-surface-container-low border border-outline-variant/30 rounded-xl focus:border-accent focus:outline-none"
+                      className="w-full px-4 py-3 bg-surface-container-low border border-outline-variant/30 rounded-xl focus:border-accent"
                     />
                   </div>
                   <div className="space-y-1">
@@ -869,13 +1017,13 @@ export default function SettingsPage({
                       value={formData.address}
                       onChange={e => setFormData({ ...formData, address: e.target.value })}
                       placeholder="Enter full lab address..."
-                      className="w-full px-4 py-3 bg-surface-container-low border border-outline-variant/30 rounded-xl focus:border-accent focus:outline-none resize-none min-h-[100px]"
+                      className="w-full px-4 py-3 bg-surface-container-low border border-outline-variant/30 rounded-xl focus:border-accent resize-none min-h-[100px]"
                     />
                   </div>
                 </div>
 
                 {/* Report credentials & legal footer.
-                    PathLab OS cannot verify an accreditation or sign a report —
+                    PathoMitra cannot verify an accreditation or sign a report —
                     there is no signing service and no registry check. So the
                     accreditation line is opt-in, gated on an explicit
                     attestation, and prints nothing at all when unset. */}
@@ -903,7 +1051,7 @@ export default function SettingsPage({
                       value={formData.licenceNumber}
                       onChange={e => setFormData({ ...formData, licenceNumber: e.target.value })}
                       placeholder="e.g. the number your state authority issued to this lab"
-                      className="w-full px-4 py-3 bg-surface-container-low border border-outline-variant/30 rounded-xl focus:border-accent focus:outline-none"
+                      className="w-full px-4 py-3 bg-surface-container-low border border-outline-variant/30 rounded-xl focus:border-accent"
                     />
                   </div>
 
@@ -958,7 +1106,7 @@ export default function SettingsPage({
                           onChange={e =>
                             setFormData({ ...formData, accreditationBody: e.target.value })
                           }
-                          className="w-full px-4 py-3 bg-surface-container-low border border-outline-variant/30 rounded-xl focus:border-accent focus:outline-none"
+                          className="w-full px-4 py-3 bg-surface-container-low border border-outline-variant/30 rounded-xl focus:border-accent"
                         />
                       </div>
                       <div className="space-y-1">
@@ -976,7 +1124,7 @@ export default function SettingsPage({
                           onChange={e =>
                             setFormData({ ...formData, accreditationNumber: e.target.value })
                           }
-                          className="w-full px-4 py-3 bg-surface-container-low border border-outline-variant/30 rounded-xl focus:border-accent focus:outline-none"
+                          className="w-full px-4 py-3 bg-surface-container-low border border-outline-variant/30 rounded-xl focus:border-accent"
                         />
                       </div>
                     </div>
@@ -1076,7 +1224,7 @@ export default function SettingsPage({
                                 thresholdPatch(field.key, Number(e.target.value) || field.fallback),
                               )
                             }
-                            className="w-full px-4 py-3 bg-surface-container-low border border-outline-variant/30 rounded-xl focus:border-accent focus:outline-none"
+                            className="w-full px-4 py-3 bg-surface-container-low border border-outline-variant/30 rounded-xl focus:border-accent"
                           />
                           <span className="text-xs font-bold text-on-surface-variant shrink-0">
                             {field.unit}
@@ -1098,74 +1246,68 @@ export default function SettingsPage({
                     Where alerts can be sent
                   </h4>
                   <div className="space-y-3">
-                    <div className="flex items-center justify-between gap-4 p-4 bg-surface-container-low border border-outline-variant/30 rounded-2xl">
-                      <div className="min-w-0">
-                        <h4 className="font-bold text-primary">Email</h4>
-                        <p className="text-xs text-on-surface-variant mt-1">
-                          {formData.email
-                            ? `Composes the alert or the daily summary to ${formData.email}.`
-                            : 'No email on this account — add one in My Profile first.'}
-                        </p>
-                      </div>
-                      <Switch
-                        checked={notificationPrefs.channels.email}
-                        onChange={v => patchPrefs(channelPatch('email', v))}
-                        label="Send alerts by email"
-                      />
-                    </div>
+                    <ChannelRow
+                      title="Email"
+                      description={
+                        formData.email
+                          ? `Composes the alert or the daily summary to ${formData.email}.`
+                          : 'No email address saved yet.'
+                      }
+                      missingHint={
+                        notificationPrefs.channels.email && !formData.email
+                          ? 'Add an email address in My Profile'
+                          : undefined
+                      }
+                      onFix={() => goToTab('profile')}
+                      checked={notificationPrefs.channels.email}
+                      onChange={v => patchPrefs(channelPatch('email', v))}
+                      switchLabel="Send alerts by email"
+                    />
 
-                    <div className="flex items-center justify-between gap-4 p-4 bg-surface-container-low border border-outline-variant/30 rounded-2xl">
-                      <div className="min-w-0">
-                        <h4 className="font-bold text-primary">SMS</h4>
-                        <p className="text-xs text-on-surface-variant mt-1">
-                          {formData.phone
-                            ? `Opens your phone’s messaging app with the alert addressed to ${formData.phone}.`
-                            : 'No lab phone saved — add one in My Profile to enable text delivery.'}
-                        </p>
-                      </div>
-                      <Switch
-                        checked={notificationPrefs.channels.sms}
-                        onChange={v => patchPrefs(channelPatch('sms', v))}
-                        label="Send alerts by SMS"
-                      />
-                    </div>
+                    <ChannelRow
+                      title="SMS"
+                      description={
+                        formData.phone
+                          ? `Opens your messaging app with the alert addressed to ${formData.phone}.`
+                          : 'No phone number saved yet.'
+                      }
+                      missingHint={
+                        notificationPrefs.channels.sms && !formData.phone
+                          ? 'Add a phone number in My Profile'
+                          : undefined
+                      }
+                      onFix={() => goToTab('profile')}
+                      checked={notificationPrefs.channels.sms}
+                      onChange={v => patchPrefs(channelPatch('sms', v))}
+                      switchLabel="Send alerts by SMS"
+                    />
 
-                    <div className="flex items-center justify-between gap-4 p-4 bg-surface-container-low border border-outline-variant/30 rounded-2xl">
-                      <div className="min-w-0">
-                        <h4 className="font-bold text-primary">WhatsApp</h4>
-                        <p className="text-xs text-on-surface-variant mt-1">
-                          {formData.phone
-                            ? `Opens WhatsApp with the alert text ready to send to ${formData.phone}.`
-                            : 'Uses the same lab phone number as SMS — add one in My Profile.'}
-                        </p>
-                      </div>
-                      <Switch
-                        checked={notificationPrefs.channels.whatsapp}
-                        onChange={v => patchPrefs(channelPatch('whatsapp', v))}
-                        label="Send alerts on WhatsApp"
-                      />
-                    </div>
+                    <ChannelRow
+                      title="WhatsApp"
+                      description={
+                        formData.phone
+                          ? `Opens WhatsApp with the alert text ready to send to ${formData.phone}.`
+                          : 'Uses the same phone number as SMS.'
+                      }
+                      missingHint={
+                        notificationPrefs.channels.whatsapp && !formData.phone
+                          ? 'Add a phone number in My Profile'
+                          : undefined
+                      }
+                      onFix={() => goToTab('profile')}
+                      checked={notificationPrefs.channels.whatsapp}
+                      onChange={v => patchPrefs(channelPatch('whatsapp', v))}
+                      switchLabel="Send alerts on WhatsApp"
+                    />
 
-                    <div className="flex items-center justify-between gap-4 p-4 bg-surface-container-low border border-outline-variant/30 rounded-2xl">
-                      <div className="min-w-0">
-                        <h4 className="font-bold text-primary">Desktop banners</h4>
-                        <p className="text-xs text-on-surface-variant mt-1">
-                          {desktopPermission === 'granted'
-                            ? 'Allowed by the browser. Critical and warning alerts appear as banners while the dashboard is open.'
-                            : desktopPermission === 'denied'
-                              ? 'The browser is blocking notifications for this site. Allow them in your address-bar site settings, then switch this back on.'
-                              : 'Asks the browser for permission when you switch this on.'}
-                        </p>
-                      </div>
-                      <Switch
-                        checked={notificationPrefs.channels.desktop}
-                        onChange={toggleDesktopChannel}
-                        disabled={
-                          desktopPermission === 'unsupported' || desktopPermission === 'denied'
-                        }
-                        label="Show desktop banners"
-                      />
-                    </div>
+                    <ChannelRow
+                      title="Alert banners"
+                      description={bannerDescription}
+                      checked={notificationPrefs.channels.desktop}
+                      onChange={toggleDesktopChannel}
+                      disabled={bannerPermission === 'unsupported' || bannerPermission === 'denied'}
+                      switchLabel="Show alert banners"
+                    />
                   </div>
                   <p className="text-[11px] text-on-surface-variant ml-1 leading-relaxed">
                     Delivery uses your own mail, messaging or WhatsApp client — the lab never sends
@@ -1374,9 +1516,9 @@ export default function SettingsPage({
                         {!test.isGroup && test.unit && (
                           <p className="text-xs text-on-surface-variant">Unit: {test.unit}</p>
                         )}
-                        {!test.isGroup && test.ranges?.general?.text && (
+                        {!test.isGroup && (
                           <p className="text-xs text-on-surface-variant">
-                            Range: {test.ranges.general.text}
+                            {describeRangeBands(test.ranges).join('   ·   ') || 'No range set'}
                           </p>
                         )}
                         {test.isGroup && (
@@ -1418,7 +1560,7 @@ export default function SettingsPage({
                               isGroup: e.target.value === 'group',
                             })
                           }
-                          className="w-full px-4 py-3 bg-surface-container border border-outline-variant/30 rounded-xl outline-none"
+                          className="w-full px-4 py-3 bg-surface-container border border-outline-variant/30 rounded-xl"
                         >
                           <option value="individual">Individual Test</option>
                           <option value="group">Test Group</option>
@@ -1436,7 +1578,7 @@ export default function SettingsPage({
                           type="text"
                           value={newTestDraft.name}
                           onChange={e => setNewTestDraft({ ...newTestDraft, name: e.target.value })}
-                          className="w-full px-4 py-3 bg-surface-container border border-outline-variant/30 rounded-xl outline-none"
+                          className="w-full px-4 py-3 bg-surface-container border border-outline-variant/30 rounded-xl"
                         />
                       </div>
                       <div className="space-y-1">
@@ -1453,7 +1595,7 @@ export default function SettingsPage({
                           onChange={e =>
                             setNewTestDraft({ ...newTestDraft, category: e.target.value })
                           }
-                          className="w-full px-4 py-3 bg-surface-container border border-outline-variant/30 rounded-xl outline-none"
+                          className="w-full px-4 py-3 bg-surface-container border border-outline-variant/30 rounded-xl"
                         />
                       </div>
                       {!newTestDraft.isGroup && (
@@ -1471,7 +1613,7 @@ export default function SettingsPage({
                               onChange={e =>
                                 setNewTestDraft({ ...newTestDraft, unit: e.target.value })
                               }
-                              className="w-full px-4 py-3 bg-surface-container border border-outline-variant/30 rounded-xl outline-none"
+                              className="w-full px-4 py-3 bg-surface-container border border-outline-variant/30 rounded-xl"
                             >
                               <option value="">— None —</option>
                               <option value="%">%</option>
@@ -1505,7 +1647,7 @@ export default function SettingsPage({
                               id="new-test-range-label"
                               className="block text-xs font-black text-primary uppercase ml-1"
                             >
-                              Reference Range
+                              Reference Range — all patients
                             </span>
                             <div className="flex gap-2">
                               <input
@@ -1516,7 +1658,7 @@ export default function SettingsPage({
                                 onChange={e =>
                                   setNewTestDraft({ ...newTestDraft, rangeLower: e.target.value })
                                 }
-                                className="w-full px-4 py-3 bg-surface-container border border-outline-variant/30 rounded-xl outline-none"
+                                className="w-full px-4 py-3 bg-surface-container border border-outline-variant/30 rounded-xl"
                               />
                               <span
                                 className="flex items-center text-on-surface-variant"
@@ -1532,8 +1674,41 @@ export default function SettingsPage({
                                 onChange={e =>
                                   setNewTestDraft({ ...newTestDraft, rangeUpper: e.target.value })
                                 }
-                                className="w-full px-4 py-3 bg-surface-container border border-outline-variant/30 rounded-xl outline-none"
+                                className="w-full px-4 py-3 bg-surface-container border border-outline-variant/30 rounded-xl"
                               />
+                            </div>
+                            {/* Three optional bands under the one above: the report
+                                picks Adult male / Adult female / Infant (0–24 months)
+                                per patient, and only falls back to the row above
+                                when a band is blank. Blank is not "same as adults" —
+                                a child on an adult range is printed with a caveat. */}
+                            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                              {(
+                                [
+                                  ['rangeMale', 'Adult male', 'e.g. 13.5 - 17.5'],
+                                  ['rangeFemale', 'Adult female', 'e.g. 12.0 - 15.0'],
+                                  ['rangeInfant', 'Infant (0–24 mo)', 'e.g. 9.5 - 13.5'],
+                                ] as const
+                              ).map(([key, label, placeholder]) => (
+                                <div key={key} className="space-y-1">
+                                  <label
+                                    htmlFor={`new-test-range-${key}`}
+                                    className="block text-[11px] font-bold text-on-surface-variant ml-1"
+                                  >
+                                    {label}
+                                  </label>
+                                  <input
+                                    id={`new-test-range-${key}`}
+                                    type="text"
+                                    placeholder={placeholder}
+                                    value={newTestDraft[key]}
+                                    onChange={e =>
+                                      setNewTestDraft({ ...newTestDraft, [key]: e.target.value })
+                                    }
+                                    className="w-full px-3 py-2.5 bg-surface-container border border-outline-variant/30 rounded-xl text-sm"
+                                  />
+                                </div>
+                              ))}
                             </div>
                           </div>
                         </>
@@ -1549,7 +1724,7 @@ export default function SettingsPage({
                           onChange={e =>
                             setNewTestDraft({ ...newTestDraft, includedTestsStr: e.target.value })
                           }
-                          className="w-full px-4 py-3 bg-surface-container border border-outline-variant/30 rounded-xl outline-none resize-none min-h-[80px]"
+                          className="w-full px-4 py-3 bg-surface-container border border-outline-variant/30 rounded-xl resize-none min-h-[80px]"
                           placeholder="e.g. Hemoglobin, WBC Count"
                         />
                       </div>
@@ -1579,7 +1754,19 @@ export default function SettingsPage({
                                   '',
                                 )
                               : '';
-                          test.ranges = { general: { text: rangeStr } };
+                          // Only populated bands are stored. An empty
+                          // `{ general: { text: '' } }` used to render as the
+                          // bogus "0 - 0" because the label falls back to the
+                          // (absent) numeric bounds.
+                          const ranges: ReferenceRange = {};
+                          if (rangeStr) ranges.general = { text: rangeStr };
+                          if (newTestDraft.rangeMale.trim())
+                            ranges.male = { text: newTestDraft.rangeMale.trim() };
+                          if (newTestDraft.rangeFemale.trim())
+                            ranges.female = { text: newTestDraft.rangeFemale.trim() };
+                          if (newTestDraft.rangeInfant.trim())
+                            ranges.infant = { text: newTestDraft.rangeInfant.trim() };
+                          test.ranges = ranges;
                         }
 
                         setCustomTests([...customTests, test]);
@@ -1590,6 +1777,9 @@ export default function SettingsPage({
                           unit: '',
                           rangeLower: '',
                           rangeUpper: '',
+                          rangeMale: '',
+                          rangeFemale: '',
+                          rangeInfant: '',
                           includedTestsStr: '',
                         });
                       }}
@@ -1638,7 +1828,7 @@ export default function SettingsPage({
                           autoComplete="current-password"
                           value={currentPasscode}
                           onChange={e => setCurrentPasscode(e.target.value)}
-                          className="w-full px-4 py-2 bg-surface-container-lowest border border-outline-variant/30 rounded-xl outline-none focus:border-accent"
+                          className="w-full px-4 py-2 bg-surface-container-lowest border border-outline-variant/30 rounded-xl focus:border-accent"
                         />
                       </div>
                       <div>
@@ -1655,7 +1845,7 @@ export default function SettingsPage({
                           value={newPasscode}
                           onChange={e => setNewPasscode(e.target.value)}
                           aria-describedby="passcode-policy-help"
-                          className="w-full px-4 py-2 bg-surface-container-lowest border border-outline-variant/30 rounded-xl outline-none focus:border-accent"
+                          className="w-full px-4 py-2 bg-surface-container-lowest border border-outline-variant/30 rounded-xl focus:border-accent"
                         />
                       </div>
                       <div>
@@ -1671,7 +1861,7 @@ export default function SettingsPage({
                           autoComplete="new-password"
                           value={confirmPasscode}
                           onChange={e => setConfirmPasscode(e.target.value)}
-                          className="w-full px-4 py-2 bg-surface-container-lowest border border-outline-variant/30 rounded-xl outline-none focus:border-accent"
+                          className="w-full px-4 py-2 bg-surface-container-lowest border border-outline-variant/30 rounded-xl focus:border-accent"
                         />
                       </div>
                     </div>
@@ -1708,7 +1898,7 @@ export default function SettingsPage({
                         onChange={e =>
                           setFormData({ ...formData, autoLockSeconds: Number(e.target.value) })
                         }
-                        className="w-full px-4 py-2 bg-surface-container-lowest border border-outline-variant/30 rounded-xl outline-none focus:border-accent"
+                        className="w-full px-4 py-2 bg-surface-container-lowest border border-outline-variant/30 rounded-xl focus:border-accent"
                       >
                         <option value="30">30 seconds</option>
                         <option value="120">2 minutes</option>
@@ -1741,9 +1931,27 @@ export default function SettingsPage({
                     </div>
                   )}
 
-                  {/* Screenshot capture (Android's FLAG_SECURE) was deliberately
-                      removed at the lab's request — the screen is capturable, so
-                      there is no toggle to offer. */}
+                  {/* Screen capture is a native window flag (Android's FLAG_SECURE);
+                      a browser tab has nothing to protect, so the control only
+                      appears where it can actually be honoured. */}
+                  {isNative && (
+                    <div className="flex items-center justify-between gap-4 p-4 bg-surface-container-low border border-outline-variant/30 rounded-2xl">
+                      <div>
+                        <h4 className="font-bold text-primary">Screenshot protection</h4>
+                        <p className="text-xs text-on-surface-variant mt-1">
+                          While on, screenshots, screen recordings, screen sharing and the
+                          recent-apps preview show a blank screen, so a patient list cannot be
+                          captured or forwarded off this device. Turn it off only if you need to
+                          capture a report screen.
+                        </p>
+                      </div>
+                      <Switch
+                        checked={!formData.screenshotsAllowed}
+                        onChange={v => setFormData({ ...formData, screenshotsAllowed: !v })}
+                        label="Block screenshots and screen recording"
+                      />
+                    </div>
+                  )}
 
                   <div className="p-4 bg-surface-container-low border border-outline-variant/30 rounded-2xl space-y-3">
                     <h4 className="font-bold text-primary flex items-center gap-2">

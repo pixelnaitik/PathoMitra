@@ -1,5 +1,5 @@
 /**
- * Privacy-policy React components for PathLab OS.
+ * Privacy-policy React components for PathoMitra.
  *
  * Two surfaces share this content:
  *   1. the public web page (`/privacy`) that the Google Play listing links to,
@@ -20,7 +20,7 @@ export function PrivacyPolicyContent({ className = '' }: { className?: string })
           Last updated: {PRIVACY_LAST_UPDATED}
         </p>
         <p className="mt-1 text-xs text-on-surface-variant">
-          PathLab OS stores and processes data entirely on your device. This build does not request
+          PathoMitra stores and processes data entirely on your device. This build does not request
           network access, so your records and your patients&rsquo; health information are never
           transmitted to us or anyone else.
         </p>
