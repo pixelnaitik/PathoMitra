@@ -17,7 +17,7 @@ import { DURATION, EASE } from './lib/motion';
 import DashboardLayout from './pages/dashboard/DashboardLayout';
 import ErrorBoundary from './components/ErrorBoundary';
 import TermsGate from './components/TermsGate';
-import { isNative } from './data';
+import { isNative, isShell } from './data';
 import { installAndroidBackButton } from './lib/back-button';
 import { readSettings, SETTINGS_UPDATED_EVENT } from './lib/settings';
 import { applyScreenshotProtection } from './lib/screenshot-protection';
@@ -281,15 +281,13 @@ function AnimatedRoutes() {
           {/* The explicit location keeps the exiting page mounted (and correct)
               while the incoming page animates in. */}
           <Routes location={location}>
-            {/* The APK is a working console, not a brochure: no marketing site,
-                every public path collapses onto the auth screen. The web build
-                keeps the landing/technology/solutions pages. */}
-            <Route
-              path="/"
-              element={isNative ? <Navigate to="/auth" replace /> : <LandingPage />}
-            />
-            {!isNative && <Route path="/technology" element={<TechnologyPage />} />}
-            {!isNative && <Route path="/solutions" element={<SolutionsPage />} />}
+            {/* The installed shells (APK, desktop window) are working
+                consoles, not brochures: no marketing site, every public path
+                collapses onto the auth screen. The web build keeps the
+                landing/technology/solutions pages. */}
+            <Route path="/" element={isShell ? <Navigate to="/auth" replace /> : <LandingPage />} />
+            {!isShell && <Route path="/technology" element={<TechnologyPage />} />}
+            {!isShell && <Route path="/solutions" element={<SolutionsPage />} />}
             {/* Public privacy-policy URL — the link the Google Play listing points to. */}
             <Route path="/privacy" element={<PrivacyPage />} />
             <Route path="/auth" element={<AuthPage />} />
@@ -301,7 +299,7 @@ function AnimatedRoutes() {
                 </ProtectedRoute>
               }
             />
-            <Route path="*" element={<Navigate to={isNative ? '/auth' : '/'} replace />} />
+            <Route path="*" element={<Navigate to={isShell ? '/auth' : '/'} replace />} />
           </Routes>
         </Suspense>
       </motion.div>

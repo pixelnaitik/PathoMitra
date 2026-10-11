@@ -653,6 +653,9 @@ export default function SettingsPage({
     <div className="mx-auto max-w-5xl space-y-6">
       {/* Website puts the section nav across the top in one column; the app keeps
           the sidebar it shipped with. Both render the same SETTINGS_TABS. */}
+      {/* Website and the desktop window put the section nav across the top in
+          one column; the phone/tablet APK keeps the sidebar it shipped with.
+          Both render the same SETTINGS_TABS. */}
       <div className={cn('grid gap-6', isNative ? 'grid-cols-1 md:grid-cols-4' : 'grid-cols-1')}>
         {/* Section nav. App: a single scrollable chip row below md — stacked
             vertically these eight rows used to fill most of the screen before any

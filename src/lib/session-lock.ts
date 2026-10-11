@@ -19,6 +19,7 @@
  */
 import { App } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
+import { isDesktopShell } from './desktop-bridge';
 
 export interface SessionLockOptions {
   onLock: () => void;
@@ -59,6 +60,15 @@ export function installSessionLock({ onLock, idleMs }: SessionLockOptions): () =
         else teardowns.push(() => void handle.remove());
       })
       .catch(error => console.error('SessionLock: appStateChange unavailable', error));
+  } else if (isDesktopShell()) {
+    // Desktop deliberately has NO visibility trigger: Chromium reports an
+    // occluded window (any other window placed over ours) as hidden, so
+    // `visibilitychange` locked the console the instant the operator clicked
+    // another program — reported on the first desktop runs, 2026-10-11.
+    // Losing focus is not leaving the app; a real desktop "background" is
+    // minimize or system suspend, which need a main-process event channel
+    // (powerMonitor) — tracked as a Core Functionality item. Until then the
+    // idle timer below is the desktop lock.
   } else {
     const onVisibility = () => {
       if (document.visibilityState === 'hidden') fire();

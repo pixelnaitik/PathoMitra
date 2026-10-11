@@ -58,7 +58,7 @@ import {
 } from '../lib/backup-crypto';
 import { clearCrashLog, formatCrashLog, readCrashLog, type CrashEntry } from '../lib/crash-log';
 import { readSettings, writeSettings } from '../lib/settings';
-import { isNative } from '../data';
+import { isShell } from '../data';
 import { saveTextDocument, describeSavedLocation } from '../lib/native-files';
 import { captureError } from '../lib/telemetry';
 import { downloadCsv } from '../lib/export-csv';
@@ -283,7 +283,7 @@ export default function DataBackupPanel() {
     run('Export log', async () => {
       const text = formatCrashLog(crashes);
       const name = `pathomitra-diagnostics-${Date.now()}.txt`;
-      if (isNative) {
+      if (isShell) {
         const saved = await saveTextDocument(name, text);
         toast.success(`Log saved as ${describeSavedLocation(saved)}.`);
       } else {
@@ -492,7 +492,7 @@ export default function DataBackupPanel() {
                     Working
                   </StatusPill>
                 ) : null}
-                {isNative ? (
+                {isShell ? (
                   <>
                     <Button
                       variant="ghost"
@@ -564,14 +564,14 @@ export default function DataBackupPanel() {
           </div>
           <Switch
             checked={publicExports}
-            disabled={!isNative}
+            disabled={!isShell}
             onChange={enabled =>
               enabled ? setConfirmingPublicOn(true) : applyPublicExports(false)
             }
             label="Save exports to the shared Documents folder"
           />
         </div>
-        {!isNative && (
+        {!isShell && (
           <p className="mt-3 text-xs text-on-surface-variant">
             This setting only applies in the mobile app.
           </p>

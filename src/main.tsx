@@ -10,6 +10,7 @@ import { applyAppearance } from './lib/theme';
 import { readSettings } from './lib/settings';
 import { Capacitor } from '@capacitor/core';
 import { initDataStore } from './data';
+import { isDesktopShell } from './lib/desktop-bridge';
 
 // Capture un-caught errors outside the React tree (SW registration, lazy chunk
 // load failures, stray promise rejections) before anything else runs.
@@ -27,21 +28,27 @@ NProgress.configure({ showSpinner: false, speed: 400, minimum: 0.1 });
 (window as any).__NProgress = NProgress;
 
 // In the native (offline) app there is no service worker: Capacitor serves the
-// bundle from disk and the encrypted SQLCipher store handles persistence. Only
-// the web build registers the PWA service worker.
-if (Capacitor.isNativePlatform()) {
-  // The APK has no landing page. Rewriting the entry URL before the router is
-  // created means the first frame is already the auth screen, instead of an
+// bundle from disk and the encrypted SQLCipher store handles persistence. The
+// Electron shell is the same story — served from disk over its own scheme, the
+// encrypted store persists — so both skip the PWA registration and land
+// directly on the auth console. Only the web build registers the service worker
+// and keeps the landing page.
+if (Capacitor.isNativePlatform() || isDesktopShell()) {
+  // The shells have no landing page. Rewriting the entry URL before the router
+  // is created means the first frame is already the auth screen, instead of an
   // empty one while `/` redirects.
   if (window.location.pathname === '/' || window.location.pathname === '/index.html') {
     window.history.replaceState(null, '', '/auth');
   }
   // Warm up (open + decrypt) the local database as early as possible.
   void initDataStore();
-  // The status bar band is part of our UI now, so its icons have to match the
-  // mode the pre-paint bootstrap in index.html chose — applyTheme() keeps them
-  // in sync after that, but the very first frame needs this.
-  syncSystemBars(document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light');
+  // The status bar band is an Android concept — the desktop window has no
+  // status bar to tint, and the plugin call would only noise the console.
+  if (Capacitor.isNativePlatform()) {
+    syncSystemBars(
+      document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light',
+    );
+  }
 } else if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker

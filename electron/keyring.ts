@@ -8,37 +8,40 @@
  * cannot read it. (Weaker than the phone's hardware KeyMint — this asymmetry
  * is documented in SECURITY.md rather than papered over.)
  *
- * `@napi-rs/keyring` is an ESM/CJS package resolved from node_modules at
- * runtime; createRequire keeps it working through the esbuild CJS bundle.
+ * `@napi-rs/keyring` is resolved from node_modules at runtime; createRequire
+ * keeps it working through the esbuild bundle.
  */
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { PasswordManager } = require('@napi-rs/keyring');
+const { Entry } = require('@napi-rs/keyring');
 
 /** One namespace so unrelated credentials in the manager are never touched. */
 const SERVICE = 'PathoMitra';
 
-type PasswordManagerCtor = new (
+// v2 of the package exposes a synchronous Entry API. PasswordManager was the
+// v1 name — requiring it yielded undefined and every keyring call died with
+// "Pm is not a constructor" in the main process (seen on the first real
+// desktop launch, 2026-10-11).
+type EntryCtor = new (
   service: string,
   username: string,
-  password: string,
 ) => {
-  save: () => Promise<void>;
-  deletePassword: () => Promise<boolean>;
-  getPassword: () => Promise<string | null>;
+  setPassword(password: string): void;
+  getPassword(): string | null;
+  deletePassword(): boolean;
 };
 
-const Pm = PasswordManager as PasswordManagerCtor;
+const E = Entry as EntryCtor;
 
 export async function setSecret(account: string, secret: string): Promise<void> {
-  await new Pm(SERVICE, account, secret).save();
+  new E(SERVICE, account).setPassword(secret);
 }
 
 export async function getSecret(account: string): Promise<string | null> {
-  return (await new Pm(SERVICE, account, '').getPassword()) ?? null;
+  return new E(SERVICE, account).getPassword();
 }
 
 export async function deleteSecret(account: string): Promise<boolean> {
-  return new Pm(SERVICE, account, '').deletePassword();
+  return new E(SERVICE, account).deletePassword();
 }

@@ -4,6 +4,9 @@
  *
  * On device this is `@aparajita/capacitor-secure-storage`, which is backed by
  * the Android Keystore / iOS Keychain — the right home for a password hash.
+ * On the Electron shell the same role is played by the Windows Credential
+ * Manager over the IPC bridge (DPAPI-sealed to the user account) — the
+ * desktop counterpart, chosen per-key exactly like Keystore is on Android.
  * In the browser (dev/tests) it falls back to `localStorage`, clearly good
  * enough for development and never used by the shipped APK.
  *
@@ -13,6 +16,7 @@
 import { Capacitor } from '@capacitor/core';
 import { SecureStorage } from '@aparajita/capacitor-secure-storage';
 import type { DataType } from '@aparajita/capacitor-secure-storage';
+import { desktopBridge } from './desktop-bridge';
 
 const PREFIX = 'pathlab_';
 let prefixSet = false;
@@ -24,6 +28,16 @@ async function ensurePrefix(): Promise<void> {
 }
 
 export async function secureGet<T>(key: string): Promise<T | null> {
+  const bridge = desktopBridge();
+  if (bridge) {
+    const raw = await bridge.keyring.get(PREFIX + key);
+    if (raw === null) return null;
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return null;
+    }
+  }
   if (Capacitor.isNativePlatform()) {
     await ensurePrefix();
     const value = await SecureStorage.get(key);
@@ -38,6 +52,11 @@ export async function secureGet<T>(key: string): Promise<T | null> {
 }
 
 export async function secureSet<T>(key: string, value: T): Promise<void> {
+  const bridge = desktopBridge();
+  if (bridge) {
+    await bridge.keyring.set(PREFIX + key, JSON.stringify(value));
+    return;
+  }
   if (Capacitor.isNativePlatform()) {
     await ensurePrefix();
     await SecureStorage.set(key, value as unknown as DataType);
@@ -51,6 +70,11 @@ export async function secureSet<T>(key: string, value: T): Promise<void> {
 }
 
 export async function secureRemove(key: string): Promise<void> {
+  const bridge = desktopBridge();
+  if (bridge) {
+    await bridge.keyring.remove(PREFIX + key);
+    return;
+  }
   if (Capacitor.isNativePlatform()) {
     await ensurePrefix();
     await SecureStorage.remove(key);

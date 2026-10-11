@@ -139,7 +139,10 @@ export const DEFAULT_SETTINGS: LabSettings = {
   emailNotifications: DEFAULT_NOTIFICATION_PREFS.channels.email,
   smsNotifications: DEFAULT_NOTIFICATION_PREFS.channels.sms,
   notificationPrefs: DEFAULT_NOTIFICATION_PREFS,
-  autoLockSeconds: 120,
+  // 5 minutes — the owner's chosen bench default (2026-10-11): long enough to
+  // read a report aloud without the console locking mid-sentence, short enough
+  // that an abandoned desk is not an open patient record over lunch.
+  autoLockSeconds: 300,
   // Report layout values come from the single shared source of truth in
   // lib/report-layout — never hard-code copies of them in UI components.
   ...RECOMMENDED_LAYOUT_DEFAULTS,

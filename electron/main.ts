@@ -12,9 +12,30 @@
  * `main` in package.json). The native modules are loaded from node_modules at
  * runtime — electron-builder rebuilds them for the packaged app.
  */
-import { app, BrowserWindow, session, shell } from 'electron';
+import { app, BrowserWindow, net, protocol, session, shell } from 'electron';
+import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { registerIpc } from './ipc';
+
+/**
+ * Serve the bundle over a privileged custom scheme — the same posture the APK
+ * gets from Capacitor's `https://localhost` and for the same reasons:
+ *   - secure context → WebCrypto (PBKDF2) and WebAuthn/Windows Hello work;
+ *   - a real origin + path namespace → `history.replaceState('/auth')` and
+ *     BrowserRouter behave exactly as on web (under file:// they do not);
+ *   - unknown paths fall back to index.html, so client routes survive reloads.
+ */
+const SCHEME = 'pathomitra';
+// `dist/` is the Vite desktop build (`base: './'`), resolved against the
+// bundle location (`dist-electron/main.js` sits next to `dist/`).
+const WEB_ROOT = path.join(import.meta.dirname, '../dist');
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: SCHEME,
+    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
+  },
+]);
 
 /** Single-window app: a second launch just focuses the first. */
 if (!app.requestSingleInstanceLock()) {
@@ -38,11 +59,8 @@ function createWindow(): BrowserWindow {
     },
   });
 
-  // The bundle ships with Vite `base: './'`, so absolute /assets URLs resolve
-  // relative to dist/index.html under file://. Same secure-context story as
-  // the APK's https://localhost scheme: WebCrypto (PBKDF2) and WebAuthn
-  // (Windows Hello) are available under file:// in Chromium.
-  void win.loadFile(path.join(import.meta.dirname, '../dist/index.html'));
+  // Served through the privileged scheme handler registered in whenReady.
+  void win.loadURL(`${SCHEME}://app/index.html`);
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     // No in-app popups; anything trying to open a window goes to the default
@@ -55,6 +73,21 @@ function createWindow(): BrowserWindow {
 }
 
 app.whenReady().then(() => {
+  protocol.handle(SCHEME, async request => {
+    const { pathname } = new URL(request.url);
+    const rel = decodeURIComponent(pathname);
+    // Path-traversal guard: only anything under webRoot may be read.
+    const target = path.normalize(path.join(WEB_ROOT, rel === '/' ? 'index.html' : rel));
+    if (!target.startsWith(WEB_ROOT + path.sep) && target !== WEB_ROOT) {
+      return new Response('Forbidden', { status: 403 });
+    }
+    const file =
+      fs.existsSync(target) && fs.statSync(target).isFile()
+        ? target
+        : path.join(WEB_ROOT, 'index.html');
+    return net.fetch(pathToFileURL(file).toString());
+  });
+
   registerIpc();
 
   // Runtime enforcement of the offline guarantee. The renderer has no reason
@@ -63,7 +96,10 @@ app.whenReady().then(() => {
   // trusted to "we simply don't call anything". Checked on the webContents so
   // subresources, fetch and websockets are all covered.
   session.defaultSession.webRequest.onBeforeRequest({ urls: ['*://*/*'] }, (details, callback) => {
-    const allow = app.isPackaged ? false : /^file:|^devtools:|^data:|^blob:/i.test(details.url);
+    // Custom-scheme and local-UI traffic stays; anything truly remote is refused.
+    const allow = app.isPackaged
+      ? false
+      : /^pathomitra:|^file:|^devtools:|^data:|^blob:/i.test(details.url);
     callback({ cancel: !allow });
     if (!allow) console.warn(`PathoMitra desktop: blocked network request ${details.url}`);
   });

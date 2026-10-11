@@ -37,6 +37,15 @@ export async function initDataStore(): Promise<DataRepository> {
 /** True when running inside the native shell (the APK). */
 export const isNative = Capacitor.isNativePlatform();
 
+/**
+ * True in any installed shell — APK or Electron window. Use it where the
+ * question is "does this runtime have real file/output APIs?" (routing to
+ * the auth console instead of the marketing site, backup actions, storage
+ * policy). Keep `isNative` for genuinely Android-only concerns (system bars,
+ * hardware back button, haptics).
+ */
+export const isShell = isNative || isDesktopShell();
+
 export type {
   DataRepository,
   EntityName,
