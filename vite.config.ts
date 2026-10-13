@@ -4,6 +4,18 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
 
+// On Windows, node 22+ with esbuild can encounter EPERM/Access Denied when
+// attempting to unlink files from the system AppData\Local\Temp directory.
+// Pointing to a local directory within the project eliminates this file lock.
+if (process.platform === 'win32') {
+  const localTmp = path.resolve(process.cwd(), '.tmp-build');
+  if (!fs.existsSync(localTmp)) {
+    fs.mkdirSync(localTmp, { recursive: true });
+  }
+  process.env.TEMP = localTmp;
+  process.env.TMP = localTmp;
+}
+
 /**
  * Everything in `public/` that exists to serve the *public web deployment*.
  *

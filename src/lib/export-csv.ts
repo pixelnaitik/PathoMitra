@@ -21,10 +21,33 @@ function escapeCell(input: string | number | boolean | null | undefined): string
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
+/**
+ * Formula-injection guard. These exports are opened in Excel/Sheets by
+ * referring doctors, and a patient name or result typed as
+ * `=cmd|' /C calc'!A0` / `=WEBSERVICE("http://…")` used to be *evaluated* on
+ * the recipient's machine — the one network egress an offline app cannot
+ * police is the spreadsheet it hands out. A leading apostrophe makes Excel
+ * treat the cell as literal text.
+ *
+ * Only strings are guarded: `+`/`-` cells come straight from result fields,
+ * and a plain signed number (`-4.5`) is data, not a formula — it must survive
+ * unquoted so the labs' own spreadsheet math keeps working.
+ */
+const FORMULA_START = /^[=@+\-\t\r]/;
+const SIGNED_NUMBER = /^[+-]?\d+(?:\.\d+)?$/;
+
+function neutralise(input: string | number | boolean | null | undefined): string {
+  const guarded =
+    typeof input === 'string' && FORMULA_START.test(input) && !SIGNED_NUMBER.test(input)
+      ? `'${input}`
+      : input;
+  return escapeCell(guarded);
+}
+
 export function toCsv<T>(columns: CsvColumn<T>[], rows: T[]): string {
-  const lines = [columns.map(column => escapeCell(column.label)).join(',')];
+  const lines = [columns.map(column => neutralise(column.label)).join(',')];
   for (const row of rows)
-    lines.push(columns.map(column => escapeCell(column.value(row))).join(','));
+    lines.push(columns.map(column => neutralise(column.value(row))).join(','));
   return lines.join('\r\n');
 }
 

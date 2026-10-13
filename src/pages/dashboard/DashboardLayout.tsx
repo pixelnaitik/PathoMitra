@@ -29,6 +29,7 @@ import NotificationCenter from '../../components/NotificationCenter';
 import type { NotificationLink } from '../../lib/notification-engine';
 import { Tooltip, useToast } from '../../components/ui';
 import { readSettings, writeSettings } from '../../lib/settings';
+import { useBrandLogo, DEFAULT_BRAND_LOGO_SRC, SPLASH_BRAND_LOGO_SRC } from '../../lib/brand-logo';
 import { startSettingsSync } from '../../lib/settings-sync';
 import { BACK_PRIORITY, useBackHandler } from '../../lib/back-button';
 import { hapticTap } from '../../lib/haptics';
@@ -91,6 +92,13 @@ export default function DashboardLayout({
   const toast = useToast();
   const navigate = useNavigate();
 
+  // Brand tile: the uploaded lab logo everywhere in the shell, except on the
+  // logged-in home page (Overview), which follows the splash branding — the
+  // PathoMitra ribbon — by owner decision (2026-10-11); see lib/brand-logo.ts.
+  const brandLogo = useBrandLogo();
+  const brandSrc =
+    activeTab === 'dashboard' ? SPLASH_BRAND_LOGO_SRC : brandLogo || DEFAULT_BRAND_LOGO_SRC;
+
   // Global search + keyboard shortcuts
   const [searchOpen, setSearchOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -146,8 +154,6 @@ export default function DashboardLayout({
   );
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [avatarSeed, setAvatarSeed] = useState(user?.photoURL || 'default');
-  // Alert messages are signed with the lab's name, so it must follow Settings.
-  const [labName, setLabName] = useState(() => readSettings().labName || 'PathoMitra Lab');
 
   // Light/dark mode — persisted through the shared settings contract
   const [themeMode, setThemeMode] = useState<'light' | 'dark'>(() =>
@@ -166,7 +172,6 @@ export default function DashboardLayout({
       if (s.avatarSeed) {
         setAvatarSeed(s.avatarSeed);
       }
-      setLabName(s.labName || 'PathoMitra Lab');
       setThemeMode(s.themeMode === 'dark' ? 'dark' : 'light');
     };
 
@@ -324,9 +329,14 @@ export default function DashboardLayout({
         <div className="p-4 md:p-5 flex items-center gap-3.5">
           <div className="w-10 h-10 bg-primary rounded-[14px] flex items-center justify-center shrink-0 overflow-hidden relative shadow-card">
             <img
-              src="/logo.png"
+              src={brandSrc}
               alt="Logo"
-              className="w-full h-full object-cover absolute inset-0 z-10"
+              // Shipped art is a square full-bleed tile; an uploaded logo may
+              // be any aspect ratio and must never be cropped.
+              className={cn(
+                'w-full h-full absolute inset-0 z-10',
+                brandSrc === brandLogo ? 'object-contain p-0.5' : 'object-cover',
+              )}
               onError={e => {
                 e.currentTarget.style.opacity = '0';
               }}
@@ -338,8 +348,8 @@ export default function DashboardLayout({
               <span className="block text-[15px] font-bold tracking-[-0.02em] text-on-surface leading-tight">
                 PathoMitra
               </span>
-              <span className="block text-[11px] font-medium text-on-surface-variant leading-tight">
-                Laboratory Suite
+              <span className="block text-[10px] font-semibold tracking-wider uppercase text-on-surface-variant leading-tight">
+                LAB MANAGEMENT SIMPLIFIED
               </span>
             </motion.span>
           )}
@@ -477,7 +487,6 @@ export default function DashboardLayout({
             <NotificationCenter
               onOpen={handleNotificationOpen}
               onOpenSettings={() => navigate('/dashboard/settings?section=notifications')}
-              labName={labName}
             />
             <button
               onClick={toggleThemeMode}

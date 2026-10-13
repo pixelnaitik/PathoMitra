@@ -52,9 +52,23 @@ describe('privacy policy content', () => {
     expect(body).not.toMatch(/^All records are kept/);
   });
 
-  it('discloses the Email / SMS / WhatsApp compose hand-off', () => {
-    expect(body).toMatch(/mailto/);
-    expect(body).toMatch(/wa\.me/);
+  it('discloses banner-only alert delivery, with no compose hand-off left', () => {
+    // The Email / SMS / WhatsApp compose buttons were removed on 2026-10-11, so the
+    // policy must not read as though the app still hands alert text to a mail or
+    // messaging app. Those scheme names may appear only in the sentence recording
+    // that they went away.
+    expect(body).toMatch(/delivered as system banners and nothing else/);
+    expect(body).toMatch(/those were removed/);
+    expect(body).not.toMatch(/buttons build a mailto/);
+    expect(body).not.toMatch(/whichever app the device resolves/);
+  });
+
+  it('describes the re-lock as an inactivity countdown, not an instant background lock', () => {
+    // `lib/session-lock` no longer locks the moment the app leaves the foreground —
+    // leaving the app now starts the same countdown the operator sets. The policy
+    // claimed "when you leave the app", which is no longer what happens.
+    expect(body).toMatch(/re-locks automatically after a period of inactivity/);
+    expect(body).not.toMatch(/re-locks automatically when you leave the app/);
   });
 
   it('states that a snapshot is sealed, and that the passphrase cannot be recovered', () => {

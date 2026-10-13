@@ -89,16 +89,10 @@ const AUTO_REFRESH_MS = 10 * 60_000;
 /** Debounce for pushing read/mute changes so a "mark all" click is one write. */
 const STATE_PUSH_DELAY_MS = 600;
 
-export interface NotificationDestinations {
-  email?: string;
-  phone?: string;
-}
-
 export interface UseNotificationsResult {
   items: NotificationItem[];
   summary: NotificationSummary;
   prefs: NotificationPrefs;
-  destinations: NotificationDestinations;
   /** True until the first load resolves. */
   loading: boolean;
   refreshing: boolean;
@@ -140,10 +134,6 @@ export function useNotifications(): UseNotificationsResult {
   const [prefs, setPrefs] = useState<NotificationPrefs>(() =>
     resolvePrefs(readSettings().notificationPrefs ?? DEFAULT_NOTIFICATION_PREFS),
   );
-  const [destinations, setDestinations] = useState<NotificationDestinations>(() => {
-    const s = readSettings();
-    return { email: s.email, phone: s.phone };
-  });
 
   const [state, setState] = useState<NotificationState>(() => readLocalState(uid));
   /**
@@ -160,9 +150,7 @@ export function useNotifications(): UseNotificationsResult {
   // Preferences are lab settings: re-read them whenever Settings writes.
   useEffect(() => {
     const load = () => {
-      const s = readSettings();
-      setPrefs(resolvePrefs(s.notificationPrefs));
-      setDestinations({ email: s.email, phone: s.phone });
+      setPrefs(resolvePrefs(readSettings().notificationPrefs));
     };
     load();
     window.addEventListener(SETTINGS_UPDATED_EVENT, load);
@@ -420,7 +408,6 @@ export function useNotifications(): UseNotificationsResult {
     items,
     summary,
     prefs,
-    destinations,
     loading,
     refreshing,
     error,

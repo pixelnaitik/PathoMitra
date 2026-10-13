@@ -20,7 +20,18 @@ import { createdAtRangeFilters } from '../../lib/date-range';
 import { readPatients, type PatientRecord } from '../../lib/models';
 import { downloadCsv, toCsv, type CsvColumn } from '../../lib/export-csv';
 import { handleFirestoreError, OperationType } from '../../lib/firestore-errors';
-import { Search, Plus, UserPlus, FileSpreadsheet, Loader2, Trash2, Edit2, X } from 'lucide-react';
+import {
+  Search,
+  Plus,
+  UserPlus,
+  FileSpreadsheet,
+  Loader2,
+  Trash2,
+  Edit2,
+  X,
+  ChevronDown,
+  ChevronUp,
+} from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { listStaggerProps } from '../../lib/motion';
 import { useAuth } from '../../contexts/AuthContext';
@@ -97,6 +108,33 @@ export default function PatientsPage({
     address: '',
     testSelection: [] as string[],
   });
+
+  /**
+   * Selected panels (CBC, URINE ANALYSIS, LIPID PROFILE …) render as ONE chip
+   * with a member count, expandable on demand — the stored selection still
+   * carries every member (reports, results and billing read that list), so
+   * this is a display fold, not a data change. Without it a single CBC filled
+   * twenty chips and the sheet scrolled forever.
+   */
+  const [expandedGroups, setExpandedGroups] = useState<string[]>([]);
+  const testChips = useMemo(() => {
+    const catalogue = getPathologyTests();
+    const selected = formData.testSelection;
+    const groups = selected
+      .map(name => catalogue.find(t => t.name === name && t.isGroup && t.includedTests?.length))
+      .filter((t): t is NonNullable<typeof t> => Boolean(t));
+    const memberOf = new Map<string, string>();
+    for (const group of groups) {
+      for (const member of group.includedTests ?? []) memberOf.set(member, group.name);
+    }
+    return {
+      groups: groups.map(group => ({
+        name: group.name,
+        members: (group.includedTests ?? []).filter(m => selected.includes(m)),
+      })),
+      singles: selected.filter(t => !memberOf.has(t) && !groups.some(g => g.name === t)),
+    };
+  }, [formData.testSelection]);
 
   // Registration range is evaluated by Firestore, so the page window already
   // holds what the filter asks for instead of filtering whatever was loaded.
@@ -266,6 +304,7 @@ export default function PatientsPage({
       address: '',
       testSelection: [],
     });
+    setExpandedGroups([]);
     setEditingPatient(null);
     setFormError('');
   };
@@ -831,11 +870,67 @@ export default function PatientsPage({
           <Field label="Test Selection">
             <div className="space-y-2">
               {formData.testSelection.length > 0 && (
-                <div className="flex flex-wrap gap-2">
-                  {formData.testSelection.map(test => (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {testChips.groups.map(group => {
+                    const open = expandedGroups.includes(group.name);
+                    return (
+                      <React.Fragment key={group.name}>
+                        <span className="flex items-center gap-0.5 rounded-full bg-primary/12 py-0.5 pr-1 text-xs font-bold text-primary">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedGroups(prev =>
+                                prev.includes(group.name)
+                                  ? prev.filter(n => n !== group.name)
+                                  : [...prev, group.name],
+                              )
+                            }
+                            aria-expanded={open}
+                            className="flex items-center gap-1 rounded-full py-0.5 pl-2.5 pr-1 transition-colors hover:bg-primary/10"
+                          >
+                            {group.name}
+                            <span className="rounded-full bg-primary/15 px-1.5 py-px text-[10px] font-semibold leading-tight">
+                              {group.members.length}
+                            </span>
+                            {open ? (
+                              <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
+                            ) : (
+                              <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => removeTest(group.name)}
+                            aria-label={`Remove ${group.name}`}
+                            className="rounded-full p-1 transition-colors hover:bg-error-container hover:text-error"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </span>
+                        {open &&
+                          group.members.map(member => (
+                            <span
+                              key={member}
+                              className="flex items-center gap-1 rounded-full bg-accent/12 px-2.5 py-0.5 text-[11px] font-medium text-accent"
+                            >
+                              {member}
+                              <button
+                                type="button"
+                                onClick={() => removeTest(member)}
+                                aria-label={`Remove ${member}`}
+                                className="rounded-full p-0.5 transition-colors hover:bg-error-container hover:text-error"
+                              >
+                                <X className="w-2.5 h-2.5" />
+                              </button>
+                            </span>
+                          ))}
+                      </React.Fragment>
+                    );
+                  })}
+                  {testChips.singles.map(test => (
                     <span
                       key={test}
-                      className="flex items-center gap-1.5 rounded-full bg-accent/12 px-3 py-1 text-xs font-semibold text-accent"
+                      className="flex items-center gap-1 rounded-full bg-accent/12 px-2.5 py-0.5 text-[11px] font-medium text-accent"
                     >
                       {test}
                       <button
@@ -844,7 +939,7 @@ export default function PatientsPage({
                         aria-label={`Remove ${test}`}
                         className="rounded-full p-0.5 transition-colors hover:bg-error-container hover:text-error"
                       >
-                        <X className="w-3 h-3" />
+                        <X className="w-2.5 h-2.5" />
                       </button>
                     </span>
                   ))}

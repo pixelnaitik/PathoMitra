@@ -6,10 +6,12 @@
  * the `?report=` / `?patient=` params that `DashboardShell` already consumes, so
  * opening an alert lands on the exact record that needs work.
  *
- * Delivery actions (Email / SMS / WhatsApp) compose a message and hand it to the
- * OS handler rather than sending anything from the browser: there is no mail or
- * SMS credential in this app, and silently pretending otherwise would be worse
- * than an honest "compose" button.
+ * Delivery is the banner preference in `useNotifications` and nothing else. The
+ * Email / SMS / WhatsApp compose buttons used to sit on every alert row and on
+ * the panel footer; they were removed on 2026-10-11 at the lab's request, because
+ * a `mailto:` / `sms:` / `wa.me` hand-off copies the alert text — which can name
+ * a patient — into a third-party messaging app. The app still sends nothing on
+ * its own; it now offers no path out of the device at all.
  */
 import { useCallback, useMemo, useState } from 'react';
 import {
@@ -19,9 +21,6 @@ import {
   FileClock,
   GitCompare,
   Hourglass,
-  Mail,
-  MessageSquare,
-  Phone,
   Receipt,
   RefreshCw,
   SlidersHorizontal,
@@ -43,14 +42,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { useNotifications } from '../hooks/useNotifications';
 import {
   CATEGORY_LABEL,
-  buildAlertText,
-  buildDailySummaryText,
-  channelAvailability,
-  emailHref,
   formatAge,
   formatAmount,
-  smsHref,
-  whatsappHref,
   type NotificationCategory,
   type NotificationItem,
   type NotificationLink,
@@ -77,29 +70,15 @@ interface NotificationCenterProps {
   onOpen: (link: NotificationLink) => void;
   /** Opens Settings → Notifications for threshold and channel changes. */
   onOpenSettings: () => void;
-  labName: string;
 }
 
-export default function NotificationCenter({
-  onOpen,
-  onOpenSettings,
-  labName,
-}: NotificationCenterProps) {
+export default function NotificationCenter({ onOpen, onOpenSettings }: NotificationCenterProps) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState<Filter>('all');
   const { role } = useAuth();
   const notifications = useNotifications();
-  const {
-    items,
-    summary,
-    prefs,
-    destinations,
-    loading,
-    refreshing,
-    error,
-    lastCheckedAt,
-    mutedCount,
-  } = notifications;
+  const { items, summary, prefs, loading, refreshing, error, lastCheckedAt, mutedCount } =
+    notifications;
 
   const visible = useMemo(
     () => (filter === 'unread' ? items.filter(item => !item.read) : items),
@@ -121,13 +100,6 @@ export default function NotificationCenter({
   // Guests cannot read patients, reports or invoices, so there is genuinely
   // nothing for them to be alerted about — an empty bell would be a lie.
   const canSeeAlerts = role === 'staff' || role === 'admin';
-
-  const email = channelAvailability('email', prefs, destinations.email);
-  const sms = channelAvailability('sms', prefs, destinations.phone);
-  const whatsapp = channelAvailability('whatsapp', prefs, destinations.phone);
-
-  // Only surface channels that are switched on and have somewhere to go.
-  const anyChannelReady = email.ready || sms.ready || whatsapp.ready;
 
   if (!canSeeAlerts) return null;
 
@@ -200,19 +172,6 @@ export default function NotificationCenter({
               </button>
             </div>
             <div className="flex items-center gap-2">
-              {email.ready && summary.total > 0 && (
-                <a
-                  href={emailHref(
-                    destinations.email!,
-                    `${labName} — daily lab summary`,
-                    buildDailySummaryText(items, labName),
-                  )}
-                  className="inline-flex h-10 items-center gap-2 rounded-full border border-outline-variant px-4 text-sm font-semibold text-on-surface transition hover:border-outline hover:bg-surface-container-high"
-                >
-                  <Mail className="h-4 w-4" aria-hidden="true" />
-                  Email summary
-                </a>
-              )}
               <Button
                 variant="primary"
                 onClick={notifications.markAllRead}
@@ -306,10 +265,11 @@ export default function NotificationCenter({
             />
           ) : (
             <>
-              {!anyChannelReady && (
+              {!prefs.channels.desktop && (
                 <p className="rounded-2xl border border-outline-variant/60 bg-surface-container-low px-4 py-3 text-[12.5px] leading-relaxed text-on-surface-variant">
-                  Delivery is off — enable Email, SMS or WhatsApp in Settings → Notifications and
-                  add the lab’s own address there, and each alert will grow a compose button.
+                  Alert banners are switched off, so nothing reaches you outside this panel. Turn
+                  them on in Settings → Notifications for a system notice whenever something is late
+                  or amended.
                 </p>
               )}
               <ul className="space-y-2.5">
@@ -318,25 +278,6 @@ export default function NotificationCenter({
                     key={item.id}
                     item={item}
                     index={index}
-                    emailHrefValue={
-                      email.ready
-                        ? emailHref(
-                            destinations.email!,
-                            `${labName}: ${item.title}`,
-                            buildAlertText(item, labName),
-                          )
-                        : undefined
-                    }
-                    smsHrefValue={
-                      sms.ready
-                        ? smsHref(destinations.phone!, buildAlertText(item, labName))
-                        : undefined
-                    }
-                    whatsappHrefValue={
-                      whatsapp.ready
-                        ? whatsappHref(destinations.phone!, buildAlertText(item, labName))
-                        : undefined
-                    }
                     onOpen={() => {
                       notifications.markRead(item.id);
                       onOpen(item.link);
@@ -358,18 +299,12 @@ export default function NotificationCenter({
 function AlertRow({
   item,
   index,
-  emailHrefValue,
-  smsHrefValue,
-  whatsappHrefValue,
   onOpen,
   onHandled,
   onMute,
 }: {
   item: NotificationItem;
   index: number;
-  emailHrefValue?: string;
-  smsHrefValue?: string;
-  whatsappHrefValue?: string;
   onOpen: () => void;
   onHandled: () => void;
   onMute: () => void;
@@ -436,41 +371,6 @@ function AlertRow({
             </Button>
           )}
           <span className="ml-auto flex items-center gap-1.5">
-            {emailHrefValue && (
-              <a
-                href={emailHrefValue}
-                onClick={onHandled}
-                aria-label={`Email this alert about ${item.entityName}`}
-                title="Send as email"
-                className="flex h-9 w-9 items-center justify-center rounded-full text-on-surface-variant transition hover:bg-surface-container-high hover:text-on-surface"
-              >
-                <Mail className="h-4 w-4" />
-              </a>
-            )}
-            {smsHrefValue && (
-              <a
-                href={smsHrefValue}
-                onClick={onHandled}
-                aria-label={`Text this alert about ${item.entityName}`}
-                title="SMS"
-                className="flex h-9 w-9 items-center justify-center rounded-full text-on-surface-variant transition hover:bg-surface-container-high hover:text-on-surface"
-              >
-                <Phone className="h-4 w-4" />
-              </a>
-            )}
-            {whatsappHrefValue && (
-              <a
-                href={whatsappHrefValue}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={onHandled}
-                aria-label={`Send this alert about ${item.entityName} on WhatsApp`}
-                title="WhatsApp"
-                className="flex h-9 w-9 items-center justify-center rounded-full text-on-surface-variant transition hover:bg-surface-container-high hover:text-on-surface"
-              >
-                <MessageSquare className="h-4 w-4" />
-              </a>
-            )}
             <button
               type="button"
               onClick={onMute}

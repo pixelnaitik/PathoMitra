@@ -29,8 +29,11 @@ export default function Footer() {
       <div className="max-w-7xl mx-auto px-4 md:px-6 pt-16 pb-8">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-12 mb-16">
           <div className="col-span-1">
-            <span className="font-black text-primary text-xl block mb-6 tracking-tighter">
+            <span className="font-black text-primary text-xl block mb-1 tracking-tighter">
               PathoMitra
+            </span>
+            <span className="block text-[10px] font-bold tracking-wider uppercase text-on-surface-variant mb-6">
+              LAB MANAGEMENT SIMPLIFIED
             </span>
             <p className="text-sm text-on-surface-variant mb-6 leading-relaxed">
               Offline digital pathology for clinical laboratories — patient records, reports,

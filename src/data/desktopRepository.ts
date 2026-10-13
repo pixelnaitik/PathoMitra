@@ -38,6 +38,8 @@ export class DesktopRepository implements DataRepository {
   private memory = new Map<EntityName, Promise<Store>>();
   private listeners = new Map<EntityName, Set<(docs: LocalDoc[]) => void>>();
   private ready: Promise<void> | null = null;
+  /** Tail of the per-entity mutation chain (see `queue`). */
+  private queues = new Map<EntityName, Promise<void>>();
 
   constructor() {
     const bridge = desktopBridge();
@@ -50,14 +52,22 @@ export class DesktopRepository implements DataRepository {
     return this.ready;
   }
 
-  /** The collection's store, loaded once and cached for the session. */
+  /**
+   * The collection's store, loaded once and cached for the session.
+   *
+   * A failed load is NOT cached as an empty store: the next mutation would
+   * then persist `{}` + its own document over the collection and silently
+   * destroy everything else in it. Dropping the cache entry on failure keeps
+   * the error honest for the caller and lets a later call retry the read.
+   */
   private store(entity: EntityName): Promise<Store> {
     let cached = this.memory.get(entity);
     if (!cached) {
-      cached = this.bridge.db
-        .load(entity)
-        .then(raw => (raw ? (JSON.parse(raw) as Store) : {}))
-        .catch(() => ({}));
+      cached = this.bridge.db.load(entity).then(raw => (raw ? (JSON.parse(raw) as Store) : {}));
+      cached = cached.catch((err: unknown) => {
+        if (this.memory.get(entity) === cached) this.memory.delete(entity);
+        throw err;
+      });
       this.memory.set(entity, cached);
     }
     return cached;
@@ -66,6 +76,28 @@ export class DesktopRepository implements DataRepository {
   private async persist(entity: EntityName, store: Store): Promise<void> {
     this.memory.set(entity, Promise.resolve(store));
     await this.bridge.db.save(entity, JSON.stringify(store));
+  }
+
+  /**
+   * Run one mutation for `entity` after every mutation already queued for it.
+   *
+   * Whole-collection writes are read-copy-persist; two that interleave (a
+   * report save racing a note write) would each copy the pre-mutation store
+   * and the slower one would roll the faster one's document back out of the
+   * database. Chaining per entity makes the read and its write atomic
+   * against sibling mutations, and failures do not poison the chain.
+   */
+  private queue<T>(entity: EntityName, task: () => Promise<T>): Promise<T> {
+    const prev = this.queues.get(entity) ?? Promise.resolve();
+    const run = prev.then(task, task);
+    this.queues.set(
+      entity,
+      run.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return run;
   }
 
   private async toDocs(entity: EntityName): Promise<LocalDoc[]> {
@@ -83,10 +115,12 @@ export class DesktopRepository implements DataRepository {
   }
 
   async set(entity: EntityName, id: string, value: Record<string, unknown>): Promise<void> {
-    const store = { ...(await this.store(entity)) };
-    store[id] = value;
-    await this.persist(entity, store);
-    await this.emit(entity);
+    await this.queue(entity, async () => {
+      const store = { ...(await this.store(entity)) };
+      store[id] = value;
+      await this.persist(entity, store);
+      await this.emit(entity);
+    });
   }
 
   async add(entity: EntityName, value: Record<string, unknown>): Promise<string> {
@@ -96,17 +130,21 @@ export class DesktopRepository implements DataRepository {
   }
 
   async update(entity: EntityName, id: string, patch: Record<string, unknown>): Promise<void> {
-    const store = { ...(await this.store(entity)) };
-    store[id] = { ...(store[id] ?? {}), ...patch };
-    await this.persist(entity, store);
-    await this.emit(entity);
+    await this.queue(entity, async () => {
+      const store = { ...(await this.store(entity)) };
+      store[id] = { ...(store[id] ?? {}), ...patch };
+      await this.persist(entity, store);
+      await this.emit(entity);
+    });
   }
 
   async delete(entity: EntityName, id: string): Promise<void> {
-    const store = { ...(await this.store(entity)) };
-    delete store[id];
-    await this.persist(entity, store);
-    await this.emit(entity);
+    await this.queue(entity, async () => {
+      const store = { ...(await this.store(entity)) };
+      delete store[id];
+      await this.persist(entity, store);
+      await this.emit(entity);
+    });
   }
 
   async count(entity: EntityName, where?: WhereFilter[]): Promise<number> {
@@ -125,7 +163,17 @@ export class DesktopRepository implements DataRepository {
       this.listeners.set(entity, set);
     }
     set.add(cb);
-    void this.toDocs(entity).then(docs => cb(docs));
+    // The first read is async — drop the replay if the caller already
+    // unsubscribed (component gone). A failed first read replays an empty
+    // list exactly like SqliteRepository does: the UI must never hang in
+    // "loading", and the mutation paths surface the real error.
+    void this.toDocs(entity)
+      .then(docs => {
+        if (set?.has(cb)) cb(docs);
+      })
+      .catch(() => {
+        if (set?.has(cb)) cb([]);
+      });
     return () => {
       set?.delete(cb);
     };
@@ -147,11 +195,27 @@ export class DesktopRepository implements DataRepository {
     await fn(this);
   }
 
+  /** Resolve when every mutation queued for `entity` has settled. */
+  private drain(entity: EntityName): Promise<void> {
+    return (this.queues.get(entity) ?? Promise.resolve()).then(
+      () => undefined,
+      () => undefined,
+    );
+  }
+
+  /**
+   * Drop every collection — "erase all data". Queued mutations are drained
+   * first: a write still in the chain must not re-persist its stale store
+   * (from the memory cache) after the database rows are gone.
+   */
   async clearAll(): Promise<void> {
+    await Promise.all(ALL_ENTITIES.map(entity => this.drain(entity)));
     await this.bridge.db.clear();
     for (const entity of ALL_ENTITIES) {
-      await this.persist(entity, {});
-      await this.emit(entity);
+      await this.queue(entity, async () => {
+        await this.persist(entity, {});
+        await this.emit(entity);
+      });
     }
   }
 }

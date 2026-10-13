@@ -247,13 +247,13 @@ export default function Hero() {
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
-          className="inline-flex items-center gap-2 rounded-full bg-accent/12 px-3.5 py-1.5 text-[12px] font-semibold tracking-[-0.01em] text-accent"
+          className="inline-flex items-center gap-2 rounded-full bg-accent/12 px-3.5 py-1.5 text-[11px] font-bold tracking-wider uppercase text-accent"
         >
           <span
             className="animate-soft-pulse h-1.5 w-1.5 rounded-full bg-accent"
             aria-hidden="true"
           />
-          Digital Pathology, reimagined
+          LAB MANAGEMENT SIMPLIFIED
         </motion.span>
 
         <motion.h1

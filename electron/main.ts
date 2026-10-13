@@ -12,7 +12,7 @@
  * `main` in package.json). The native modules are loaded from node_modules at
  * runtime — electron-builder rebuilds them for the packaged app.
  */
-import { app, BrowserWindow, net, protocol, session, shell } from 'electron';
+import { app, BrowserWindow, nativeImage, net, protocol, session, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -42,6 +42,11 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 }
 
+// Windows keys the taskbar entry off the AppUserModelID: without ours set,
+// the window rides Electron's generic identity and the taskbar shows the
+// blue Electron atom no matter what icon the window itself carries.
+app.setAppUserModelId('com.pathomitra.desktop');
+
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1440,
@@ -50,6 +55,12 @@ function createWindow(): BrowserWindow {
     minHeight: 640,
     backgroundColor: '#f5f5f7', // matches capacitor.config.ts — same first paint
     title: 'PathoMitra',
+    // Title-bar + taskbar icon: the multi-size favicon.ico (16/32/48 px, built
+    // from the P-ribbon logo by scripts/make-favicon-assets.ps1) so Windows
+    // picks the crisp size per surface. Missing file → empty image → falls
+    // back to the exe icon in a packaged build, which electron-builder paints
+    // from desktop-resources/icon.png anyway.
+    icon: nativeImage.createFromPath(path.join(WEB_ROOT, 'favicon.ico')),
     webPreferences: {
       preload: path.join(import.meta.dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -92,14 +103,19 @@ app.whenReady().then(() => {
 
   // Runtime enforcement of the offline guarantee. The renderer has no reason
   // to reach the network — same posture as the APK shipping without the
-  // INTERNET permission — so every non-file request is refused rather than
+  // INTERNET permission — so every remote request is refused rather than
   // trusted to "we simply don't call anything". Checked on the webContents so
   // subresources, fetch and websockets are all covered.
   session.defaultSession.webRequest.onBeforeRequest({ urls: ['*://*/*'] }, (details, callback) => {
-    // Custom-scheme and local-UI traffic stays; anything truly remote is refused.
-    const allow = app.isPackaged
-      ? false
-      : /^pathomitra:|^file:|^devtools:|^data:|^blob:/i.test(details.url);
+    // The app's OWN traffic stays allowed in every build mode: the privileged
+    // scheme serves the bundle, `net.fetch(file://…)` answers that scheme
+    // handler, and data:/blob: back in-page resources. Refusing them when
+    // packaged would blank the window outright — the offline guarantee is
+    // about remote schemes (http/https/ws/wss), not local ones, so the allow
+    // list is identical in dev and in the installer.
+    const allow = /^pathomitra:|^file:|^devtools:|^data:|^blob:|^chrome-extension:|^about:/i.test(
+      details.url,
+    );
     callback({ cancel: !allow });
     if (!allow) console.warn(`PathoMitra desktop: blocked network request ${details.url}`);
   });

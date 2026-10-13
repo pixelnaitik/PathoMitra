@@ -29,11 +29,28 @@ export type BannerBackend = 'native' | 'service-worker' | 'page' | 'none';
 type LocalNotificationsModule = typeof import('@capacitor/local-notifications');
 
 /** Android 8+ groups banners under a channel the user can silence in settings. */
-const ANDROID_CHANNEL_ID = 'pathomitra-alerts';
+const ALERT_CHANNEL_ID = 'pathomitra-alerts';
+/**
+ * A saved-file receipt is a different intent from an alert: the lab may want one
+ * and still silence the other, so Android gives them separate channels.
+ */
+export const FILE_CHANNEL_ID = 'pathomitra-files';
+
+/** Channel labels as they appear in the device's own notification settings. */
+const CHANNEL_SPECS: Record<string, { name: string; description: string }> = {
+  [ALERT_CHANNEL_ID]: {
+    name: 'Lab alerts',
+    description: 'Overdue samples, unissued drafts, amendments and unpaid dues',
+  },
+  [FILE_CHANNEL_ID]: {
+    name: 'Saved files',
+    description: 'A notice each time a report or export is written to this device',
+  },
+};
 
 let nativeMod: LocalNotificationsModule | null | undefined;
-/** Create the channel once per app run — `createChannel` is idempotent but not free. */
-let channelReady = false;
+/** Channels created this run — `createChannel` is idempotent but not free. */
+const channelsReady = new Set<string>();
 
 /** Load the plugin once, and only on a real device. */
 async function loadNative(): Promise<LocalNotificationsModule | null> {
@@ -142,14 +159,15 @@ export async function requestPermission(): Promise<BannerPermission> {
   }
 }
 
-/** Android-only: make our channel before the first banner, so it is not silent. */
-async function ensureChannel(m: LocalNotificationsModule): Promise<void> {
-  if (channelReady || Capacitor.getPlatform() !== 'android') return;
+/** Android-only: make a channel before the first banner in it, so it is not silent. */
+async function ensureChannel(m: LocalNotificationsModule, channelId: string): Promise<void> {
+  if (Capacitor.getPlatform() !== 'android' || channelsReady.has(channelId)) return;
+  const spec = CHANNEL_SPECS[channelId] ?? CHANNEL_SPECS[ALERT_CHANNEL_ID];
   try {
     await m.LocalNotifications.createChannel({
-      id: ANDROID_CHANNEL_ID,
-      name: 'Lab alerts',
-      description: 'Overdue samples, unissued drafts, amendments and unpaid dues',
+      id: channelId,
+      name: spec.name,
+      description: spec.description,
       importance: 4,
       visibility: 1,
       vibration: true,
@@ -157,7 +175,7 @@ async function ensureChannel(m: LocalNotificationsModule): Promise<void> {
   } catch {
     /* an existing or refused channel must not stop the banner */
   }
-  channelReady = true;
+  channelsReady.add(channelId);
 }
 
 export interface BannerOptions {
@@ -165,6 +183,8 @@ export interface BannerOptions {
   key: string;
   title: string;
   body: string;
+  /** Android channel; defaults to the lab-alerts one. */
+  channelId?: string;
 }
 
 /**
@@ -179,14 +199,15 @@ export async function showBanner(options: BannerOptions): Promise<boolean> {
     if (backend === 'native') {
       const m = await loadNative();
       if (!m) return false;
-      await ensureChannel(m);
+      const channelId = options.channelId ?? ALERT_CHANNEL_ID;
+      await ensureChannel(m, channelId);
       await m.LocalNotifications.schedule({
         notifications: [
           {
             id: bannerIdFor(options.key),
             title: options.title,
             body: options.body,
-            channelId: ANDROID_CHANNEL_ID,
+            channelId,
             autoCancel: true,
             // Carried through to the app on tap; the dashboard can read it from
             // `localNotificationReceived` if it ever wants to deep-link.
@@ -214,6 +235,24 @@ export async function showBanner(options: BannerOptions): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Show a banner, asking the OS for permission first if it has never been asked.
+ *
+ * The alert path can wait for the Settings toggle; a one-off receipt the operator
+ * just triggered cannot, and on Android 13+ nothing can be posted at all until the
+ * runtime prompt is answered. A refusal is not an error — the in-app toast already
+ * carried the same words — so this only reports whether a banner went out.
+ */
+export async function showBannerWithPermission(options: BannerOptions): Promise<boolean> {
+  const permission = await currentPermission();
+  if (permission === 'prompt') {
+    if ((await requestPermission()) !== 'granted') return false;
+  } else if (permission !== 'granted') {
+    return false;
+  }
+  return showBanner(options);
 }
 
 /** Drop a banner the lab has handled. Best-effort; ignores an unknown key. */

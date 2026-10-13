@@ -8,8 +8,13 @@
  *
  * Kept framework-free and Firebase-free on purpose — same rule as
  * `report-calculations.ts` — so every threshold and message string is unit-
- * testable without a Firestore emulator, and so the delivery helpers below can
- * be reused by a future server-side sender.
+ * testable without a Firestore emulator.
+ *
+ * Delivery is banners only. The Email / SMS / WhatsApp compose helpers that used
+ * to sit at the bottom of this file were removed on 2026-10-11 at the lab's
+ * request: a `mailto:`, `sms:` or `wa.me` hand-off puts the alert text — which
+ * can name a patient — inside a third-party app, and the lab would rather not
+ * offer that path. `lib/desktop-notifications` is the single delivery seam.
  *
  * Categories are all *operational*, never clinical: an alert says "this sample
  * has had no report for 26 hours", not "this potassium is dangerous". Panic
@@ -25,24 +30,19 @@ export type NotificationCategory = (typeof NOTIFICATION_CATEGORIES)[number];
 export type NotificationSeverity = 'critical' | 'warning' | 'info';
 
 /**
- * Channel + threshold preferences. `email`/`sms` replace the legacy
- * `emailNotifications`/`smsNotifications` booleans, which are migrated into
- * this shape so an existing lab's choices survive the upgrade.
+ * Channel + threshold preferences.
+ *
+ * `desktop` is the only delivery channel left: it posts through
+ * `lib/desktop-notifications`, which uses the native plugin on the app and the
+ * Web Notifications API in a browser — the bare `new Notification()` this used to
+ * call is unavailable in WebView and throws from page context on Chrome for
+ * Android. `email` / `sms` / `whatsapp` were removed on 2026-10-11; the legacy
+ * `emailNotifications` / `smsNotifications` booleans that predate this shape are
+ * ignored on read (see `sanitizeNotificationPrefs`).
  */
 export interface NotificationPrefs {
   channels: {
-    /** Composes to the lab's own address via `mailto:`. */
-    email: boolean;
-    /** Composes to the lab's own number via `sms:`. */
-    sms: boolean;
-    /** Composes to the lab's own number via `wa.me`. */
-    whatsapp: boolean;
-    /**
-     * System banners. Posted through `lib/desktop-notifications`, which uses the
-     * native plugin on the app and the Web Notifications API in a browser — the
-     * bare `new Notification()` this used to call is unavailable in WebView and
-     * throws from page context on Chrome for Android.
-     */
+    /** System banner for critical and warning alerts. */
     desktop: boolean;
   };
   categories: Record<NotificationCategory, boolean>;
@@ -55,7 +55,7 @@ export interface NotificationPrefs {
 }
 
 export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
-  channels: { email: true, sms: false, whatsapp: false, desktop: false },
+  channels: { desktop: false },
   categories: { overdue: true, draft: true, amended: true, due: true },
   overdueHours: 24,
   draftHours: 24,
@@ -340,99 +340,4 @@ export function summarizeNotifications(items: NotificationItem[]): NotificationS
   }
 
   return { total: items.length, unread, critical, warning, info, dueAmount, byCategory };
-}
-
-// ---------------------------------------------------------------------------
-// Delivery helpers
-// ---------------------------------------------------------------------------
-
-/**
- * One-line alert text for email/SMS/WhatsApp bodies.
- *
- * Kept to the record's status, never a result value: an SMS to a shared
- * phone must not carry clinical data.
- */
-export function buildAlertText(item: NotificationItem, labName: string): string {
-  return `${labName}: [${CATEGORY_LABEL[item.category]}] ${item.title} (${item.body})`;
-}
-
-/**
- * Plain-text daily summary — the thing the old "Receive daily summaries via
- * email" copy promised but never produced.
- */
-export function buildDailySummaryText(items: NotificationItem[], labName: string): string {
-  const summary = summarizeNotifications(items);
-  const lines = [
-    `${labName} — daily lab summary`,
-    `${new Date().toLocaleDateString('en-IN')} ${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`,
-    '',
-    `Open alerts: ${summary.total} (${summary.critical} critical, ${summary.warning} warning)`,
-    summary.dueAmount > 0 ? `Outstanding payments: ${formatAmount(summary.dueAmount)}` : '',
-    '',
-  ].filter(Boolean);
-
-  for (const category of NOTIFICATION_CATEGORIES) {
-    const group = items.filter(item => item.category === category);
-    if (group.length === 0) continue;
-    lines.push(`${CATEGORY_LABEL[category]} (${group.length})`);
-    for (const item of group.slice(0, 20)) {
-      lines.push(`  • ${item.title} — ${formatAge(item.ageHours)}`);
-    }
-    lines.push('');
-  }
-
-  if (lines.length <= 5) lines.push('Nothing outstanding. The lab is clear.');
-  return lines.join('\n');
-}
-
-/** Digits only — `wa.me` and `sms:` both reject formatting and `+` differs per OS. */
-export function normalizePhone(phone: string): string {
-  return phone.replace(/[^\d+]/g, '').replace(/(?!^)\+/g, '');
-}
-
-function encodeBody(body: string): string {
-  return encodeURIComponent(body);
-}
-
-export interface ChannelAvailability {
-  enabled: boolean;
-  /** A destination exists (address/phone present in lab settings). */
-  ready: boolean;
-  missingHint?: string;
-}
-
-export function channelAvailability(
-  channel: keyof NotificationPrefs['channels'],
-  prefs: NotificationPrefs,
-  destination: string | undefined,
-): ChannelAvailability {
-  const enabled = prefs.channels[channel];
-  const ready = Boolean(destination && destination.trim().length > 0);
-  if (!enabled) return { enabled: false, ready: false };
-  return {
-    enabled: true,
-    ready,
-    missingHint: ready
-      ? undefined
-      : `Add a ${channel === 'email' ? 'lab email' : 'lab phone'} in Settings → My Profile to use ${channel.toUpperCase()}.`,
-  };
-}
-
-/** Opens the user's mail client with the alert composed. */
-export function emailHref(to: string, subject: string, body: string): string {
-  return `mailto:${to}?subject=${encodeBody(subject)}&body=${encodeBody(body)}`;
-}
-
-/** Opens the native SMS composer with the alert composed. */
-export function smsHref(phone: string, body: string): string {
-  return `sms:${normalizePhone(phone)}?body=${encodeBody(body)}`;
-}
-
-/**
- * Opens WhatsApp with the alert composed. `normalizePhone` strips the leading
- * `+` because wa.me expects country code without punctuation.
- */
-export function whatsappHref(phone: string, body: string): string {
-  const digits = normalizePhone(phone).replace(/^\+/, '');
-  return `https://wa.me/${digits}?text=${encodeBody(body)}`;
 }

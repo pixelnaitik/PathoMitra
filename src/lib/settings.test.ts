@@ -9,6 +9,8 @@ import {
   sanitizeNotificationPrefs,
   SETTINGS_STORAGE_KEY,
   CUSTOM_TESTS_STORAGE_KEY,
+  BRAND_LOGO_MAX_CHARS,
+  isBrandLogoDataUrl,
 } from './settings';
 import { DEFAULT_NOTIFICATION_PREFS } from './notification-engine';
 
@@ -103,12 +105,40 @@ describe('migrateSettings', () => {
     expect(migrateSettings({ screenshotsAllowed: true }).screenshotsAllowed).toBe(true);
   });
 
-  it('grows notification prefs out of the two legacy toggles', () => {
+  it('ignores the legacy email / SMS toggles an older document may carry', () => {
+    // The channels those two booleans mirrored were removed on 2026-10-11, so a
+    // document written before then must come back as today's shape rather than a
+    // half-populated one.
     const m = migrateSettings({ emailNotifications: false, smsNotifications: true });
     const prefs = m.notificationPrefs as ReturnType<typeof sanitizeNotificationPrefs>;
-    expect(prefs.channels.email).toBe(false);
-    expect(prefs.channels.sms).toBe(true);
+    expect(prefs.channels).toEqual(DEFAULT_NOTIFICATION_PREFS.channels);
     expect(prefs.categories).toEqual(DEFAULT_NOTIFICATION_PREFS.categories);
+  });
+
+  it('keeps a valid brand-logo data URL and drops everything else', () => {
+    const url = 'data:image/png;base64,iVBORw0KGgo=';
+    expect(migrateSettings({ brandLogoUrl: url }).brandLogoUrl).toBe(url);
+    // Remote URLs break the offline posture; non-strings and oversized blobs
+    // are corrupt or hand-edited — all fall back to the built-in microscope.
+    expect(migrateSettings({ brandLogoUrl: 'https://x.test/logo.png' }).brandLogoUrl).toBe('');
+    expect(migrateSettings({ brandLogoUrl: 'data:application/pdf;base64,' }).brandLogoUrl).toBe('');
+    expect(migrateSettings({ brandLogoUrl: 42 }).brandLogoUrl).toBe('');
+    expect(
+      migrateSettings({
+        brandLogoUrl: 'data:image/png;base64,' + 'A'.repeat(BRAND_LOGO_MAX_CHARS),
+      }).brandLogoUrl,
+    ).toBe('');
+    // Absent key (settings written before the feature) is the default, not undefined.
+    expect(migrateSettings({}).brandLogoUrl).toBe('');
+  });
+});
+
+describe('isBrandLogoDataUrl', () => {
+  it('accepts only inline image data URLs within the ceiling', () => {
+    expect(isBrandLogoDataUrl('data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=')).toBe(true);
+    expect(isBrandLogoDataUrl('')).toBe(false);
+    expect(isBrandLogoDataUrl('/logo.png')).toBe(false);
+    expect(isBrandLogoDataUrl(null)).toBe(false);
   });
 });
 
@@ -143,7 +173,7 @@ describe('sanitizeNotificationPrefs', () => {
     expect(prefs.overdueHours).toBe(12);
     expect(prefs.categories.due).toBe(false);
     // Keys a newer version added are filled from the defaults, never undefined.
-    expect(prefs.channels.whatsapp).toBe(DEFAULT_NOTIFICATION_PREFS.channels.whatsapp);
+    expect(prefs.channels.desktop).toBe(DEFAULT_NOTIFICATION_PREFS.channels.desktop);
     expect(prefs.draftHours).toBe(DEFAULT_NOTIFICATION_PREFS.draftHours);
   });
 
@@ -163,18 +193,22 @@ describe('sanitizeNotificationPrefs', () => {
 
 describe('notification prefs round-trip through storage', () => {
   it('survives a write and read', () => {
-    const prefs = sanitizeNotificationPrefs({ dueDays: 3, channels: { whatsapp: true } });
+    const prefs = sanitizeNotificationPrefs({ dueDays: 3, channels: { desktop: true } });
     writeSettings({ ...DEFAULT_SETTINGS, notificationPrefs: prefs });
     const reread = readSettings();
     expect(reread.notificationPrefs.dueDays).toBe(3);
-    expect(reread.notificationPrefs.channels.whatsapp).toBe(true);
+    expect(reread.notificationPrefs.channels.desktop).toBe(true);
   });
 
-  it('keeps the legacy booleans mirrored so older documents stay truthful', () => {
-    const prefs = sanitizeNotificationPrefs({ channels: { email: false, sms: true } });
+  it('drops channel keys the app no longer delivers through', () => {
+    // The whitelist in sanitizeNotificationPrefs is what stops a stored document
+    // from an older build re-adding a mail or messaging button that no longer
+    // exists anywhere in the UI.
+    const prefs = sanitizeNotificationPrefs({
+      channels: { email: true, sms: true, whatsapp: true },
+    });
     writeSettings({ ...DEFAULT_SETTINGS, notificationPrefs: prefs });
     const stored = JSON.parse(localStorage.getItem(SETTINGS_STORAGE_KEY)!);
-    expect(stored.emailNotifications).toBe(false);
-    expect(stored.smsNotifications).toBe(true);
+    expect(stored.notificationPrefs.channels).toEqual({ desktop: false });
   });
 });

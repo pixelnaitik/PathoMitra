@@ -259,6 +259,25 @@ export async function listAppFiles(dir: string, extension?: string): Promise<str
   }
 }
 
+/**
+ * Delete a file written by {@link writeAppTextFile}.
+ *
+ * Same three-way split as every other app-files helper: the Electron bridge
+ * (which confines the delete to the private root in the main process), the
+ * Capacitor plugin on the APK, the web filesystem in the browser. Deleting a
+ * desktop backup through the *plugin* would target the WebView's OPFS, not the
+ * folder the snapshot was written to — the delete would always miss.
+ */
+export async function deleteAppFile(path: string): Promise<void> {
+  const bridge = desktopBridge();
+  if (bridge) {
+    await bridge.files.remove(path);
+    return;
+  }
+  const { Directory, Filesystem } = await appExternal();
+  await Filesystem.deleteFile({ path, directory: Directory.External });
+}
+
 /** The `file://` URI for a path in the app's own storage, for sharing. */
 export async function getAppFileUri(path: string): Promise<string> {
   const bridge = desktopBridge();

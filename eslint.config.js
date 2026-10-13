@@ -4,7 +4,10 @@ import reactHooks from 'eslint-plugin-react-hooks';
 import reactRefresh from 'eslint-plugin-react-refresh';
 
 export default tseslint.config(
-  { ignores: ['dist', 'dist-electron', 'release-desktop', 'node_modules', 'coverage', 'public/sw.js', '**/*.json', 'android', '.build-tmp'] },
+  // The scratch/temp directories are build leftovers (an esbuild/OneDrive
+  // workaround points TEMP inside the repo), never source — and app-builder-lib
+  // unpacks a whole package under .tmp, which eslint would then lint.
+  { ignores: ['dist', 'dist-electron', 'release-desktop', 'node_modules', 'coverage', 'public/sw.js', '**/*.json', 'android', '.build-tmp', '.tmp', '.tmp-build', 'promotion_website'] },
   {
     files: ['**/*.{ts,tsx}'],
     extends: [js.configs.recommended, ...tseslint.configs.recommended],

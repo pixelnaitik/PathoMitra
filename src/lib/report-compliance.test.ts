@@ -73,30 +73,29 @@ describe('report legal lines — nothing prints without attestation', () => {
   });
 });
 
-describe('report legal lines — issuance wording is honest', () => {
-  it('names the signer and states that no external verification exists', () => {
+describe('report legal lines — signer sentence and disclaimer are off reports', () => {
+  // Owner decision 2026-10-12: both footers were removed from printed output.
+  // These tests exist so the lines cannot creep back via a renderer edit.
+  it('prints no signer / verification sentence even when a signer is known', () => {
     const legal = buildReportLegalLines(ATTESTED);
-    expect(legal.signer).toContain('Dr. A. Kulkarni');
-    expect(legal.signer).toContain('No external verification service is available');
-    expect(legal.signer).not.toMatch(/verified|tamper|sealed|certified/i);
+    expect(legal.signer).toBe('');
+    const printed = legalLinesForPrint(ATTESTED).join(' ');
+    expect(printed).not.toContain('Electronically signed');
+    expect(printed).not.toContain('No external verification service');
+    expect(printed).not.toContain('Dr. A. Kulkarni');
   });
 
-  it('degrades to a neutral issuer line when no signer is known', () => {
-    const legal = buildReportLegalLines({ signedAt: ATTESTED.signedAt });
-    expect(legal.signer).toContain('Issued by the laboratory');
-    expect(legal.signer).not.toContain('undefined');
-  });
-
-  it('always carries the professional-use disclaimer', () => {
-    expect(buildReportLegalLines().disclaimer).toBe(PROFESSIONAL_USE_DISCLAIMER);
-    expect(legalLinesForPrint()).toContain(PROFESSIONAL_USE_DISCLAIMER);
+  it('prints no professional-use disclaimer', () => {
+    expect(buildReportLegalLines().disclaimer).toBe('');
+    expect(legalLinesForPrint().join(' ')).not.toContain(PROFESSIONAL_USE_DISCLAIMER);
+    expect(legalLinesForPrint().join(' ')).not.toContain('clinical judgement');
   });
 
   it('tolerates a malformed timestamp instead of printing Invalid Date', () => {
     expect(formatIssuedStamp('not-a-date')).toBe('not-a-date');
     expect(formatIssuedStamp('')).toBe('');
     expect(formatIssuedStamp(undefined)).toBe('');
-    expect(buildReportLegalLines({ signedAt: 'garbage', signerName: 'X' }).signer).not.toContain(
+    expect(legalLinesForPrint({ signedAt: 'garbage', signerName: 'X' }).join(' ')).not.toContain(
       'Invalid Date',
     );
   });

@@ -20,6 +20,32 @@ export const SETTINGS_STORAGE_KEY = 'pathologyos_settings';
 export const CUSTOM_TESTS_STORAGE_KEY = 'custom_pathology_tests';
 
 /**
+ * Hard ceiling for the stored brand-logo data URL (~2 MB of text). The upload
+ * path resizes to 512 px before encoding, so a normal logo lands far under
+ * this; the limit exists to keep one blob from eating the localStorage quota
+ * and to bound what the pre-JS splash bootstrap in index.html will accept.
+ * That bootstrap mirrors both rules here — a value that passes there is
+ * always a value `migrateSettings` would keep.
+ */
+export const BRAND_LOGO_MAX_CHARS = 2_000_000;
+
+/**
+ * The custom app logo is stored *inline* as an image data URL, never as a
+ * remote address: the build is offline by posture (the APK ships without
+ * INTERNET), so a URL would be a broken promise and a tracking vector. This
+ * is the single acceptance test every consumer (splash bootstrap, favicon,
+ * UI) applies before rendering the value.
+ */
+export function isBrandLogoDataUrl(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.startsWith('data:image/') &&
+    value.length > 0 &&
+    value.length <= BRAND_LOGO_MAX_CHARS
+  );
+}
+
+/**
  * Fired by `writeSettings` / `writeCustomTests` so the cloud-sync layer
  * (lib/settings-sync) can react without this module importing Firebase — that
  * keeps settings.ts free of network dependencies and trivially unit-testable.
@@ -34,24 +60,23 @@ export interface LabSettings {
   labName: string;
   address: string;
   /**
-   * Legacy mirrors of `notificationPrefs.channels.email` / `.sms`. They predate
-   * the notification engine, when the two toggles were stored and never read;
-   * `writeSettings` keeps them in step so an older synced document still
-   * reflects the lab's choices.
-   */
-  emailNotifications: boolean;
-  smsNotifications: boolean;
-  /**
    * What the Notification Center actually evaluates: which categories alert,
-   * how long a lab has before something counts as late, and which delivery
-   * channels may offer to send an alert.
+   * how long a lab has before something counts as late, and whether an alert
+   * may also appear as a system banner.
+   *
+   * There used to be `emailNotifications` / `smsNotifications` mirrors beside
+   * this, and `channels.email` / `.sms` / `.whatsapp` inside it. The mail,
+   * messaging and WhatsApp compose buttons were removed on 2026-10-11 at the
+   * lab's request, so nothing read them any more — the exact state this field's
+   * predecessor was built to escape. A stored document that still carries those
+   * keys is unaffected: they are ignored, and `sanitizeNotificationPrefs`
+   * rebuilds the shape from the defaults.
    */
   notificationPrefs: NotificationPrefs;
   /**
    * Seconds of inactivity after which the console re-locks itself. 0 means
-   * "never on idle" — backgrounding still locks regardless, because leaving the
-   * app foregrounded is not a setting, it is the point of the lock. See
-   * `lib/session-lock`.
+   * "never". Leaving the app starts this same countdown rather than locking on
+   * the spot — see `lib/session-lock` for why the instant lock was reversed.
    */
   autoLockSeconds: number;
   reportTemplate: string;
@@ -108,6 +133,13 @@ export interface LabSettings {
   avatarSeed: string;
   sharingTemplateImage: string;
   /**
+   * Uploaded app logo as an inline image data URL ('' = the built-in
+   * microscope mark). Used by the splash screen, the sign-in tile, the tab
+   * icon and every brand surface EXCEPT the logged-in Overview page, which
+   * keeps the default microscope mark by owner decision (2026-10-11).
+   */
+  brandLogoUrl: string;
+  /**
    * Legal footer credentials, supplied by the laboratory operator. Printing an
    * accreditation is opt-in and gated: nothing appears on a report unless
    * `accreditationAttestedAt` is non-empty *and* both the body and its number
@@ -136,8 +168,6 @@ export const DEFAULT_SETTINGS: LabSettings = {
   phone: '',
   labName: 'PathoMitra Lab',
   address: '',
-  emailNotifications: DEFAULT_NOTIFICATION_PREFS.channels.email,
-  smsNotifications: DEFAULT_NOTIFICATION_PREFS.channels.sms,
   notificationPrefs: DEFAULT_NOTIFICATION_PREFS,
   // 5 minutes — the owner's chosen bench default (2026-10-11): long enough to
   // read a report aloud without the console locking mid-sentence, short enough
@@ -160,6 +190,7 @@ export const DEFAULT_SETTINGS: LabSettings = {
   tableBodyFontSize: RECOMMENDED_LAYOUT_DEFAULTS.tableBodyFontSize,
   avatarSeed: 'default',
   sharingTemplateImage: '',
+  brandLogoUrl: '',
   accreditationBody: '',
   accreditationNumber: '',
   licenceNumber: '',
@@ -185,13 +216,11 @@ function clamp(value: unknown, fallback: number, limits: { min: number; max: num
  * category. Every field is therefore taken from the stored object *only when it
  * has the right type*, and from the defaults otherwise — which also makes a
  * corrupt value (a string, an array, a JSON scalar) harmless rather than
- * spread-able. Legacy `emailNotifications` / `smsNotifications` are honoured when
- * the nested channel flag is absent, so an existing lab's choices carry over.
+ * spread-able. Channel keys the app no longer supports (`email`, `sms`,
+ * `whatsapp`) are dropped here rather than carried forward, so an old document
+ * cannot resurrect a delivery button that has been removed.
  */
-export function sanitizeNotificationPrefs(
-  raw: unknown,
-  legacy?: { email?: unknown; sms?: unknown },
-): NotificationPrefs {
+export function sanitizeNotificationPrefs(raw: unknown): NotificationPrefs {
   const source = isRecord(raw) ? raw : {};
   const channels = isRecord(source.channels) ? source.channels : {};
   const categories = isRecord(source.categories) ? source.categories : {};
@@ -199,15 +228,8 @@ export function sanitizeNotificationPrefs(
   const bool = (value: unknown, fallback: boolean): boolean =>
     typeof value === 'boolean' ? value : fallback;
 
-  // The legacy booleans only apply where the nested flag was never written.
-  const email = typeof channels.email === 'boolean' ? channels.email : legacy?.email;
-  const sms = typeof channels.sms === 'boolean' ? channels.sms : legacy?.sms;
-
   return {
     channels: {
-      email: bool(email, defaults.channels.email),
-      sms: bool(sms, defaults.channels.sms),
-      whatsapp: bool(channels.whatsapp, defaults.channels.whatsapp),
       desktop: bool(channels.desktop, defaults.channels.desktop),
     },
     categories: {
@@ -261,6 +283,11 @@ export function migrateSettings(parsed: Record<string, unknown>): Record<string,
     s.screenshotsAllowed = DEFAULT_SETTINGS.screenshotsAllowed;
   if (s.cornerStyle !== 'rounded' && s.cornerStyle !== 'sharp')
     s.cornerStyle = DEFAULT_SETTINGS.cornerStyle;
+  // The brand logo only survives as an inline image data URL within the size
+  // ceiling: a remote URL, a non-string, or an oversized blob (hand-edited or
+  // corrupt) falls back to the built-in microscope rather than being rendered
+  // or bloating every later write.
+  if (!isBrandLogoDataUrl(s.brandLogoUrl)) s.brandLogoUrl = DEFAULT_SETTINGS.brandLogoUrl;
   // Legal-footer credentials are claims printed on a clinical document, so a
   // corrupt or hand-edited stored value is dropped rather than rendered, and an
   // attestation flag that is not a real timestamp disables the claim entirely.
@@ -282,10 +309,7 @@ export function migrateSettings(parsed: Record<string, unknown>): Record<string,
     Number.isNaN(new Date(String(s.accreditationAttestedAt)).getTime())
   )
     s.accreditationAttestedAt = '';
-  s.notificationPrefs = sanitizeNotificationPrefs(s.notificationPrefs, {
-    email: s.emailNotifications,
-    sms: s.smsNotifications,
-  });
+  s.notificationPrefs = sanitizeNotificationPrefs(s.notificationPrefs);
   // Only the listed intervals are valid; an arbitrary stored number (a hand edit,
   // or a value from a build with different options) falls back to the default.
   if (![0, 30, 120, 300, 900].includes(safeInt(s.autoLockSeconds)))
@@ -313,17 +337,10 @@ export function readSettings(): LabSettings {
 
 /** Persist settings, apply the theme and notify other mounted components. */
 export function writeSettings(settings: LabSettings): void {
-  const prefs = sanitizeNotificationPrefs(settings.notificationPrefs, {
-    email: settings.emailNotifications,
-    sms: settings.smsNotifications,
-  });
-  // The legacy booleans are mirrors, never inputs: keeping them in step means a
-  // document written by an older client still shows the lab's real choices.
+  const prefs = sanitizeNotificationPrefs(settings.notificationPrefs);
   const stamped: LabSettings = {
     ...settings,
     notificationPrefs: prefs,
-    emailNotifications: prefs.channels.email,
-    smsNotifications: prefs.channels.sms,
     updatedAt: new Date().toISOString(),
   };
   try {

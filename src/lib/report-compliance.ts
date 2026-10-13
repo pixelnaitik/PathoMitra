@@ -26,8 +26,11 @@
 export const NEUTRAL_TAGLINE = 'Diagnostic Pathology Report';
 
 /**
- * Always printed. The app stores and formats clinical data; it does not
- * interpret it, and nothing here replaces a qualified reader's judgement.
+ * Kept as the single source of truth for wording that COULD print; the owner
+ * took both the signer sentence and this disclaimer off printed reports on
+ * 2026-10-12 ("remove this part … from the report"), so `buildReportLegalLines`
+ * returns them empty and every renderer's `.filter(Boolean)` drops the line.
+ * The constants remain so a future reinstatement changes one place, not four.
  */
 export const PROFESSIONAL_USE_DISCLAIMER =
   'For use by qualified healthcare professionals. Not a substitute for clinical judgement.';
@@ -61,9 +64,9 @@ export interface ReportLegalLines {
   accreditation: string;
   /** Statutory lab registration/licence number, or ''. */
   licence: string;
-  /** Issuance/signer statement — never empty. */
+  /** Issuance/signer statement — empty since 2026-10-12: no longer printed. */
   signer: string;
-  /** Professional-use disclaimer — never empty. */
+  /** Professional-use disclaimer — empty since 2026-10-12: no longer printed. */
   disclaimer: string;
 }
 
@@ -100,8 +103,6 @@ export function formatIssuedStamp(iso: string | undefined): string {
 /** Build every claim-bearing line on the report from one input. */
 export function buildReportLegalLines(input: ReportLegalInput = {}): ReportLegalLines {
   const attested = hasAttestedAccreditation(input);
-  const stamp = formatIssuedStamp(input.signedAt);
-  const signer = clean(input.signerName);
 
   return {
     // A claimed accreditation replaces the neutral descriptor; it never stacks
@@ -111,10 +112,13 @@ export function buildReportLegalLines(input: ReportLegalInput = {}): ReportLegal
       ? `${clean(input.accreditationBody)} · Accreditation no. ${clean(input.accreditationNumber)}`
       : '',
     licence: clean(input.licenceNumber) ? `Registration no. ${clean(input.licenceNumber)}` : '',
-    signer: signer
-      ? `Electronically signed by ${signer}${stamp ? ` on ${stamp}` : ''} ${SIGNER_SUFFIX}`
-      : `Issued by the laboratory${stamp ? ` on ${stamp}` : ''} from the operator's device. No external verification service is available.`,
-    disclaimer: PROFESSIONAL_USE_DISCLAIMER,
+    // Owner decision 2026-10-12: the "Electronically signed by … No external
+    // verification service is available." sentence and the professional-use
+    // disclaimer were taking space at the foot of every report and the lab
+    // asked for them off. The stamp/signer plumbing stays (the viewer header
+    // still shows when a report was issued); these two print lines are dead.
+    signer: '',
+    disclaimer: '',
   };
 }
 
@@ -123,13 +127,11 @@ export function buildReportLegalLines(input: ReportLegalInput = {}): ReportLegal
  * Callers that only have room for one line use `lines[0]`.
  */
 export function legalLinesForPrint(input: ReportLegalInput = {}): string[] {
-  const { tagline, accreditation, licence, signer, disclaimer } = buildReportLegalLines(input);
+  const { tagline, accreditation, licence } = buildReportLegalLines(input);
   return [
     tagline,
     ...(accreditation && accreditation !== tagline ? [accreditation] : []),
     licence,
-    signer,
-    disclaimer,
   ].filter(Boolean);
 }
 

@@ -14,6 +14,7 @@ import {
   Legend,
   BarChart,
   Bar,
+  LabelList,
 } from 'recharts';
 import { Users, Activity, TestTube, FileText } from 'lucide-react';
 import { collection, onSnapshot, query, where, db, type QueryConstraint } from '../../data/fs';
@@ -496,7 +497,7 @@ export default function AnalyticsPage() {
         >
           <Card pad="lg" className="flex h-full flex-col">
             <SectionTitle title="Test Category Distribution" />
-            <div className="flex-1 w-full relative flex items-center justify-center">
+            <div className="flex-1 w-full relative flex items-center justify-center min-h-0">
               {categoryData.length === 0 ? (
                 <p className="text-sm text-on-surface-variant">No data available</p>
               ) : (
@@ -504,8 +505,8 @@ export default function AnalyticsPage() {
                   <PieChart>
                     <Pie
                       data={categoryData}
-                      innerRadius={60}
-                      outerRadius={80}
+                      innerRadius={54}
+                      outerRadius={74}
                       paddingAngle={2}
                       dataKey="value"
                     >
@@ -514,20 +515,27 @@ export default function AnalyticsPage() {
                       ))}
                     </Pie>
                     <RechartsTooltip contentStyle={tooltipContentStyle} />
+                    {/* Legend under the ring: a right-side vertical legend used to
+                        squeeze the donut into the left half of the card and the
+                        entries overlapped the ring itself (owner: "fix analytics
+                        ui"). Bottom-horizontal keeps both readable. */}
                     <Legend
-                      layout="vertical"
-                      verticalAlign="middle"
-                      align="right"
+                      layout="horizontal"
+                      verticalAlign="bottom"
+                      align="center"
                       iconType="circle"
-                      wrapperStyle={{ fontSize: '12px', color: cc('tick') }}
+                      wrapperStyle={{ fontSize: '12px', color: cc('tick'), paddingTop: 6 }}
                     />
                   </PieChart>
                 </ResponsiveContainer>
               )}
               {categoryData.length > 0 && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none pr-[100px]">
+                // Offset by the legend row so the text sits in the ring's true
+                // centre, not the container's — the old `pr-[100px]` hack left
+                // "HAEMATOLO…" clipped across the donut edge.
+                <div className="pointer-events-none absolute inset-x-0 top-0 bottom-9 flex flex-col items-center justify-center">
                   <span
-                    className="text-sm font-semibold text-on-surface truncate max-w-[100px] text-center"
+                    className="max-w-[130px] truncate px-2 text-center text-[13px] font-semibold text-on-surface"
                     title={categoryData[0].name}
                   >
                     {categoryData[0].name}
@@ -571,6 +579,9 @@ export default function AnalyticsPage() {
                       axisLine={false}
                       tickLine={false}
                       tick={{ fontSize: 11, fill: cc('tick') }}
+                      // Counts are whole tests — the default 0/0.25/0.5/0.75/1
+                      // scale read like a bug even when it was only one report.
+                      allowDecimals={false}
                     />
                     <YAxis
                       dataKey="name"
@@ -578,13 +589,25 @@ export default function AnalyticsPage() {
                       axisLine={false}
                       tickLine={false}
                       tick={{ fontSize: 11, fill: cc('onSurface') }}
-                      width={120}
+                      width={130}
+                      // Long catalogue names ("ABSOLUTE EOSINOPHILL COUNT")
+                      // wrapped into the bars; a clipped tick plus the full
+                      // name in the tooltip keeps the axis on one line each.
+                      tickFormatter={(value: string) =>
+                        value.length > 20 ? `${value.slice(0, 19)}…` : value
+                      }
                     />
                     <RechartsTooltip
                       cursor={{ fill: 'transparent' }}
                       contentStyle={tooltipContentStyle}
                     />
-                    <Bar dataKey="value" fill={cc('c3')} radius={[0, 6, 6, 0]} />
+                    <Bar dataKey="value" fill={cc('c3')} radius={[0, 6, 6, 0]}>
+                      <LabelList
+                        dataKey="value"
+                        position="right"
+                        style={{ fontSize: 11, fill: cc('tick') }}
+                      />
+                    </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               )}
@@ -603,13 +626,13 @@ export default function AnalyticsPage() {
         >
           <Card pad="lg" className="flex h-full flex-col">
             <SectionTitle title="Patient Insights" subtitle="New vs recurring patients" />
-            <div className="flex-1 w-full relative flex items-center justify-center">
+            <div className="flex-1 w-full relative flex items-center justify-center min-h-0">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
                     data={patientInsightsData}
-                    innerRadius={50}
-                    outerRadius={70}
+                    innerRadius={48}
+                    outerRadius={66}
                     paddingAngle={2}
                     dataKey="value"
                   >
@@ -619,15 +642,15 @@ export default function AnalyticsPage() {
                   </Pie>
                   <RechartsTooltip contentStyle={tooltipContentStyle} />
                   <Legend
-                    layout="vertical"
-                    verticalAlign="middle"
-                    align="right"
+                    layout="horizontal"
+                    verticalAlign="bottom"
+                    align="center"
                     iconType="circle"
-                    wrapperStyle={{ fontSize: '12px', color: cc('tick') }}
+                    wrapperStyle={{ fontSize: '12px', color: cc('tick'), paddingTop: 6 }}
                   />
                 </PieChart>
               </ResponsiveContainer>
-              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none pr-[100px]">
+              <div className="pointer-events-none absolute inset-x-0 top-0 bottom-9 flex flex-col items-center justify-center">
                 <span className="text-lg font-bold text-on-surface tabular-nums">
                   {patients.length}
                 </span>

@@ -20,6 +20,7 @@ import TermsGate from './components/TermsGate';
 import { isNative, isShell } from './data';
 import { installAndroidBackButton } from './lib/back-button';
 import { readSettings, SETTINGS_UPDATED_EVENT } from './lib/settings';
+import { applyBrandFavicon, readBrandLogo } from './lib/brand-logo';
 import { applyScreenshotProtection } from './lib/screenshot-protection';
 import { useToast } from './components/ui';
 import NProgress from 'nprogress';
@@ -258,6 +259,29 @@ function ScreenshotProtectionController() {
 }
 
 /**
+ * Keeps the browser tab icon in step with the uploaded brand logo.
+ *
+ * Renders nothing. `index.html` ships the built-in favicons, so this only has
+ * to paint over them once React knows the settings — on mount, and again
+ * whenever Settings saves or another tab changes storage. Removing the logo
+ * restores the shipped icons (see lib/brand-logo).
+ */
+function BrandFaviconController() {
+  useEffect(() => {
+    const apply = () => applyBrandFavicon(readBrandLogo());
+    apply();
+    window.addEventListener(SETTINGS_UPDATED_EVENT, apply);
+    window.addEventListener('storage', apply);
+    return () => {
+      window.removeEventListener(SETTINGS_UPDATED_EVENT, apply);
+      window.removeEventListener('storage', apply);
+    };
+  }, []);
+
+  return null;
+}
+
+/**
  * Route-level page transition — each page fades through a short rise.
  * The dashboard is keyed as a single unit so its own tab transition
  * (inside DashboardShell) keeps working without remounting the shell.
@@ -326,6 +350,7 @@ export default function App({ onReady }: AppProps) {
           <BrowserRouter>
             <BackButtonController />
             <ScreenshotProtectionController />
+            <BrandFaviconController />
             {/* Accessibility: keyboard users can jump straight to the content */}
             <a
               href="#main-content"

@@ -1,7 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
-import { Microscope, Loader2, AlertCircle, Fingerprint, Eye, EyeOff } from 'lucide-react';
-import { Navigate } from 'react-router-dom';
+import {
+  Loader2,
+  AlertCircle,
+  Fingerprint,
+  Eye,
+  EyeOff,
+  ArrowLeft,
+  ShieldCheck,
+  HelpCircle,
+  Lock,
+  BarChart3,
+} from 'lucide-react';
+import { Navigate, useNavigate } from 'react-router-dom';
 import {
   useAuth,
   isValidPasscode,
@@ -9,12 +20,12 @@ import {
   MIN_PIN_LENGTH,
   PIN_ERROR,
 } from '../../contexts/AuthContext';
-import type { UnlockResult } from '../../lib/local-account';
-import BackButton from '../../components/BackButton';
+import { getAccount, type UnlockResult } from '../../lib/local-account';
+import BrandLogo from '../../components/BrandLogo';
 import { TermsSheet } from '../../components/Terms';
 import { PrivacyPolicySheet } from '../../components/PrivacyPolicy';
 import { ONBOARDING_ATTESTATION, TERMS_VERSION } from '../../lib/terms';
-import { isNative } from '../../data';
+import { isNative, isShell } from '../../data';
 import { cn } from '../../lib/utils';
 
 /**
@@ -37,53 +48,214 @@ const inputClass =
 /** Digits or the full policy charset — the keypad follows the user's choice. */
 type KeypadMode = 'digits' | 'letters';
 
-function AuroraBackdrop() {
+/**
+ * Full-bleed laboratory photograph behind the auth console. Served from
+ * `public/` (a root-absolute path, exactly like `/brand-p.png`), so it resolves
+ * on the web origin, the desktop `pathomitra://app` scheme, and the APK alike.
+ * The 2 MB source PNG is shipped as an 87 KB JPEG (scripts convert at author
+ * time, not build time) because it rides into every artifact.
+ */
+const BACKDROP_URL = '/auth-lab-bg.jpg';
+
+/** The three reassurance rows shown beside the form on wide (desktop / web) screens. */
+const FEATURES = [
+  {
+    icon: ShieldCheck,
+    tint: 'bg-secondary/12 text-secondary',
+    title: 'Patient data protection',
+    body: 'Keep sensitive information safe and compliant.',
+  },
+  {
+    icon: Lock,
+    tint: 'bg-primary/10 text-primary',
+    title: 'Secure access',
+    body: 'Authorized users only. Your lab, your control.',
+  },
+  {
+    icon: BarChart3,
+    tint: 'bg-accent/10 text-accent',
+    title: 'Reliable workflows',
+    body: 'Smoother operations for better patient care.',
+  },
+];
+
+function AuthBrand() {
   return (
-    <div
-      className="pointer-events-none absolute inset-0 select-none overflow-hidden"
-      aria-hidden="true"
-    >
-      <div className="absolute -top-32 -right-32 h-[480px] w-[480px] rounded-full bg-accent/15 blur-[110px]" />
-      <div className="absolute -bottom-40 -left-32 h-[480px] w-[480px] rounded-full bg-secondary/15 blur-[110px]" />
-      <div className="absolute top-1/3 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-primary/8 blur-[90px]" />
+    <div className="flex min-w-0 items-center gap-2.5">
+      <BrandLogo className="h-9 w-9 shrink-0 shadow-card" iconClassName="h-[18px] w-[18px]" />
+      <div className="flex min-w-0 flex-col">
+        <span className="truncate text-[15px] font-bold leading-tight tracking-[-0.02em] text-on-surface">
+          PathoMitra
+        </span>
+        <span className="hidden truncate text-[9px] font-semibold uppercase leading-tight tracking-wider text-on-surface-variant sm:block">
+          Lab Management Simplified
+        </span>
+      </div>
     </div>
   );
 }
 
 /**
- * The card is 550-700px tall, so it cannot be vertically centred inside a fixed
- * clip box: every viewport shorter than it (landscape phones, a foldable propped
- * half-open, the APK with the IME raised) lost the top *and* the bottom of the
- * form with nothing left to scroll to. The shell is therefore a scroll host —
- * `my-auto` centres the card while there is free space and collapses to 0 once
- * the card is taller than the screen, letting the document scroll instead.
- * `overflow-hidden` went with it; the aurora blobs clip themselves inside
- * <AuroraBackdrop>, which still has its own box.
+ * Frosted top bar over the photograph. The back affordance lives here (not as a
+ * floating pill) so it never collides with the brand lockup; neither installed
+ * shell has history to return to — the APK boots straight here and the desktop
+ * window rewrites its entry URL to /auth before the router exists — so the
+ * arrow is dropped in both (owner report, 2026-10-12: a dead back button in
+ * the MSI build). Only the web site, which can arrive from the landing page,
+ * still shows it.
+ */
+function AuthHeader() {
+  const navigate = useNavigate();
+  return (
+    <header className="vibrancy relative z-20 flex shrink-0 items-center justify-between gap-4 border-b border-[var(--glass-border)] px-4 py-3 sm:px-8">
+      <div className="flex min-w-0 items-center gap-1 sm:gap-3">
+        {!isShell && (
+          <button
+            type="button"
+            onClick={() => navigate(-1)}
+            aria-label="Go back"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-on-surface-variant transition hover:bg-surface-container-high hover:text-on-surface active:scale-95"
+          >
+            <ArrowLeft className="h-[18px] w-[18px]" aria-hidden="true" />
+          </button>
+        )}
+        <AuthBrand />
+      </div>
+      <div className="flex shrink-0 items-center gap-4 sm:gap-6">
+        <span className="hidden items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.08em] text-secondary sm:flex">
+          <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+          Secure Workspace
+        </span>
+        <button
+          type="button"
+          onClick={() => navigate('/privacy')}
+          className="flex items-center gap-1.5 rounded-full text-[13px] font-semibold text-accent transition hover:bg-accent/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+        >
+          <HelpCircle className="h-[18px] w-[18px]" aria-hidden="true" />
+          <span className="hidden sm:inline">Help &amp; Support</span>
+          <span className="sm:hidden">Help</span>
+        </button>
+      </div>
+    </header>
+  );
+}
+
+function FeaturePanel() {
+  return (
+    <section className="flex min-w-0 flex-col justify-center px-6 py-8 md:flex-1 md:px-0 md:py-0">
+      <p className="mb-3 text-xs font-bold uppercase tracking-[0.32em] text-on-surface-variant">
+        PathoMitra
+      </p>
+      <h1 className="text-[34px] font-extrabold leading-[1.05] tracking-[-0.03em] text-on-surface sm:text-[40px] lg:text-[44px] xl:text-[52px]">
+        Your lab.
+        <br />
+        <span className="text-secondary">Securely connected.</span>
+      </h1>
+      <p className="mt-5 max-w-md text-[15px] font-medium leading-relaxed text-on-surface-variant">
+        Protect patient records, ensure data security and keep your lab workflows running smoothly
+        with PathoMitra.
+      </p>
+      <ul className="mt-9 space-y-6">
+        {FEATURES.map(feature => (
+          <li key={feature.title} className="flex items-start gap-4">
+            <span
+              className={cn(
+                'flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl',
+                feature.tint,
+              )}
+            >
+              <feature.icon className="h-[22px] w-[22px]" aria-hidden="true" />
+            </span>
+            <div>
+              <p className="text-[15px] font-bold text-on-surface">{feature.title}</p>
+              <p className="mt-0.5 text-sm leading-relaxed text-on-surface-variant">
+                {feature.body}
+              </p>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/**
+ * Auth console shell. A laboratory photograph fills the frame; a theme-aware
+ * veil (light wash / dark scrim) keeps both the marketing copy and the form card
+ * legible over it. On `md` and up (desktop app + most laptop/tablet windows) the
+ * marketing panel sits left and the form card right; on the web build for
+ * phones the panel stacks above the card. On the APK the panel is not rendered
+ * at all (owner decision 2026-10-13) — the phone screen is the unlock card's.
+ *
+ * The shell scrolls rather than clipping: the create-account card is 550-700px
+ * tall, so any viewport shorter than it (landscape phones, the APK with the IME
+ * raised) must still reach every field.
  */
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="relative flex min-h-dvh flex-col items-center bg-background p-6 font-sans">
-      <AuroraBackdrop />
-      {/* In the APK the unlock screen *is* the entry point — nothing to go back to. */}
-      {!isNative && <BackButton />}
-      <motion.div
-        initial={{ opacity: 0, y: 18, scale: 0.98 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={{ type: 'spring', stiffness: 260, damping: 26 }}
-        className="relative z-10 my-auto w-full max-w-md overflow-hidden rounded-4xl border border-[var(--elevated-border)] bg-surface-container-lowest shadow-float"
-      >
-        <div className="flex flex-col p-8 md:p-10">
-          <div className="relative mb-5 self-center">
-            {/* Static halo. The old perpetual pulse turned a screen people hold a
-                finger against into a loading animation — stillness reads calmer. */}
-            <div className="absolute inset-0 scale-125 rounded-full bg-accent/15 blur-xl" />
-            <div className="relative z-10 flex h-14 w-14 items-center justify-center rounded-[20px] bg-primary text-on-primary shadow-raised">
-              <Microscope className="h-7 w-7" />
-            </div>
+    <div className="relative flex min-h-dvh flex-col bg-background font-sans">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 bg-cover bg-center"
+        style={{ backgroundImage: `url('${BACKDROP_URL}')` }}
+      />
+      {/* Light-mode wash: near-solid behind the marketing copy on the left —
+          the headline sitting over the microscope itself read as "text on top
+          of the image" (owner report, 2026-10-12) — easing off towards the
+          right so the photo still shows and the white card separates. */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 bg-gradient-to-r from-background via-background/92 to-white/55 dark:hidden"
+      />
+      {/* Dark-mode scrim so the (light) token text keeps contrast over the photo. */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 hidden bg-gradient-to-r from-neutral-950 via-neutral-950/92 to-neutral-950/55 dark:block"
+      />
+      {/* Extra flattening on phones, where the marketing copy + card stack on the photo. */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 bg-background/75 md:hidden"
+      />
+
+      <AuthHeader />
+
+      <main className="relative z-10 flex flex-1 flex-col md:px-8 lg:px-12">
+        {/* Centred pair, not edge-pinned columns: at desktop widths the old
+            layout pushed the copy to the far left and the card to the far
+            right, leaving a dead strip of photo between them (owner:
+            "why so much space in between"). The max-w container gives both
+            sides equal breathing room and keeps the pair symmetric. */}
+        <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col items-stretch gap-2 py-6 md:flex-row md:items-center md:gap-10 md:py-0 lg:gap-14">
+          {/* The marketing panel — "PATHOMITRA / Your lab. Securely connected."
+              plus the three feature rows — is a website/PC-app affordance only
+              (owner decision 2026-10-13): on the phone it just pushed the
+              unlock card down, so it is dropped on the native shell. The
+              `!isShell` back-button gate above already covers both installed
+              shells; this one is Android-only, so desktop keeps the panel. */}
+          {!isNative && <FeaturePanel />}
+          <div className="flex w-full items-center justify-center px-5 py-8 sm:px-8 md:w-auto md:flex-none md:basis-[440px] md:px-0">
+            <motion.div
+              initial={{ opacity: 0, y: 18, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              transition={{ type: 'spring', stiffness: 260, damping: 26 }}
+              className="w-full max-w-md overflow-hidden rounded-4xl border border-[var(--elevated-border)] bg-surface-container-lowest/95 shadow-float backdrop-blur-xl"
+            >
+              <div className="flex flex-col p-8 md:p-10">
+                <div className="relative mb-5 self-center">
+                  {/* Static halo — stillness reads calmer than a perpetual pulse on a
+                      screen people hold a finger against. */}
+                  <div className="absolute inset-0 scale-125 rounded-full bg-accent/15 blur-xl" />
+                  <div className="relative z-10 flex h-14 w-14 items-center justify-center overflow-hidden rounded-[20px] bg-primary text-on-primary shadow-raised">
+                    <BrandLogo className="h-full w-full" iconClassName="h-7 w-7" />
+                  </div>
+                </div>
+                {children}
+              </div>
+            </motion.div>
           </div>
-          {children}
         </div>
-      </motion.div>
+      </main>
     </div>
   );
 }
@@ -413,6 +585,27 @@ function UnlockForm() {
   const [lockedUntil, setLockedUntil] = useState(0);
   const [now, setNow] = useState(() => Date.now());
   const prompted = useRef(false);
+  /**
+   * The account's display name for the "Welcome back, Naitik" greeting
+   * (owner ask, 2026-10-12). Read straight from the local account — the auth
+   * context keeps `user` null while locked, and the name is not a secret:
+   * it is the lab's own operator, already printed on every report.
+   */
+  const [accountName, setAccountName] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    void getAccount()
+      .then(account => {
+        if (active && account?.name) setAccountName(account.name.split(/\s+/)[0]);
+      })
+      .catch(() => {
+        /* greeting stays generic if the secure store is unreadable */
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const waitSeconds = lockedUntil > now ? Math.ceil((lockedUntil - now) / 1000) : 0;
   const locked = waitSeconds > 0;
@@ -482,7 +675,7 @@ function UnlockForm() {
     <Shell>
       <div className="mb-7 text-center">
         <h2 className="mb-1.5 text-[28px] font-bold leading-none tracking-[-0.03em] text-on-surface">
-          Welcome back
+          Welcome back{accountName ? `, ${accountName}` : ''}
         </h2>
         <p className="px-2 text-sm font-medium leading-relaxed text-on-surface-variant">
           {user?.displayName ? `Signed in as ${user.displayName}. ` : ''}Unlock to open the lab.

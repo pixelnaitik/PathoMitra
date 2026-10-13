@@ -34,7 +34,13 @@
  * destroy newer data.
  */
 import type { EntityName } from '../data/types';
-import { listAppFiles, readAppTextFile, writeAppTextFile, shareAppFile } from './native-files';
+import {
+  deleteAppFile,
+  listAppFiles,
+  readAppTextFile,
+  shareAppFile,
+  writeAppTextFile,
+} from './native-files';
 import { initDataStore } from '../data';
 import { captureError } from './telemetry';
 import {
@@ -336,12 +342,12 @@ export async function restoreBackupFromText(
 
 /** Remove one snapshot. Used by the "delete old backups" housekeeping. */
 export async function deleteBackup(fileName: string): Promise<void> {
-  const { Directory, Filesystem } = await import('@capacitor/filesystem');
   try {
-    await Filesystem.deleteFile({
-      path: await backupPathFor(fileName),
-      directory: Directory.External,
-    });
+    // Routed through the same platform split as every other app-file action:
+    // the desktop shell deletes via the bridge (the snapshots live in the
+    // main process's userData, which the Capacitor plugin cannot see), the
+    // APK and the web build through the filesystem they wrote to.
+    await deleteAppFile(await backupPathFor(fileName));
   } catch (err) {
     captureError(err, { scope: 'backup/delete', file: fileName });
     throw err;

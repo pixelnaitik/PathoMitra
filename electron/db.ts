@@ -64,7 +64,17 @@ async function databaseKey(): Promise<string> {
 /** Idempotent, concurrency-safe open. */
 export function openDatabase(): Promise<void> {
   if (db) return Promise.resolve();
-  if (!opening) opening = doOpen();
+  if (!opening) {
+    opening = doOpen();
+    // ANY failure clears the cached promise — the keyring call and the file
+    // open fail *before* doOpen's inner try (a stopped Credential Manager or
+    // a file lock from a previous instance are the common real ones), and a
+    // permanently cached rejection would make the DB unopenable until a full
+    // app restart.
+    opening.catch(() => {
+      if (opening) opening = null;
+    });
+  }
   return opening;
 }
 
@@ -72,14 +82,25 @@ async function doOpen(): Promise<void> {
   const key = await databaseKey();
   fs.mkdirSync(path.dirname(dbFile()), { recursive: true });
   const handle = new Database(dbFile());
-  // Order matters: cipher config must precede keying, and nothing may run
-  // between the key pragma and the first real statement.
-  handle.pragma("cipher='sqlcipher'");
-  handle.pragma(`kdf_iter=${KDF_ITER}`);
-  handle.pragma(`key='${key.replace(/'/g, "''")}'`);
-  handle.pragma('journal_mode = WAL');
-  handle.exec('CREATE TABLE IF NOT EXISTS entities (name TEXT PRIMARY KEY, json TEXT NOT NULL)');
-  db = handle;
+  try {
+    // Order matters: cipher config must precede keying, and nothing may run
+    // between the key pragma and the first real statement.
+    handle.pragma("cipher='sqlcipher'");
+    handle.pragma(`kdf_iter=${KDF_ITER}`);
+    handle.pragma(`key='${key.replace(/'/g, "''")}'`);
+    handle.pragma('journal_mode = WAL');
+    handle.exec('CREATE TABLE IF NOT EXISTS entities (name TEXT PRIMARY KEY, json TEXT NOT NULL)');
+    db = handle;
+  } catch (err) {
+    // A half-opened handle holds the file lock; dropping it here is what makes
+    // a retry possible at all (see openDatabase for the cache reset).
+    try {
+      handle.close();
+    } catch {
+      /* the original failure is the one worth reporting */
+    }
+    throw err;
+  }
 }
 
 /** The stored JSON for one collection, or null when it was never written. */

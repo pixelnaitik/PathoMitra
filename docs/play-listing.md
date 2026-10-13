@@ -201,7 +201,7 @@ npm run verify:android # config guard -> native build -> asset guard -> AAB
 
 Then assert on the artifact:
 
-- `versionCode` and `versionName` come from `package.json` (`2.1.2` → `2001002`);
+- `versionCode` and `versionName` come from `package.json` (`2.5.8` → `2005008`);
   a collision is rejected silently at upload, so confirm the Gradle log line.
 - `debuggable` is absent/`false` in the **release** merged manifest.
 - No `INTERNET` permission.
@@ -245,8 +245,8 @@ production only once vitals are clean (crash < 1.0%, ANR < 1.5%).
       does not exist. The same commit removed `ConnectionBanner`, which promised
       "will sync automatically when you reconnect" in an app with no sync path.
 - [ ] **BLOCKER — `VITE_SUPPORT_EMAIL` / `VITE_PRIVACY_URL must be real.** The
-    2.5.1 build shipped `privacy@pathomitra.test`and
-   `https://policy.pathomitra.test/` (RFC 2606 reserved, can never resolve),
+  2.5.1 build shipped `privacy@pathomitra.test`and
+ `https://policy.pathomitra.test/` (RFC 2606 reserved, can never resolve),
       which fails User Data Policy for an app holding patient data. Both are now
       rejected by `scripts/check-release-config.mjs` (reserved TLDs + a live
       fetch that requires the hosted page to name the same contact), so
@@ -262,8 +262,12 @@ production only once vitals are clean (crash < 1.0%, ANR < 1.5%).
       plus the 1024×512 feature graphic — neither exists yet for PathoMitra.
 - [ ] Report footer geometry was changed (larger legal ribbon); verify it visually in
       `Settings → Report Templates → Preview PDF` and on a real print.
-- [ ] Auto-lock fires on backgrounding; confirm the print/share sheet returning to the
-      foreground is not an annoyance worth adding a grace window for.
+- [ ] **Re-lock on inactivity, not on backgrounding** (behaviour changed 2026-10-11):
+      leaving the app starts the same countdown the lab set in
+      Settings → Security → "Re-lock after inactivity" (default 5 min) instead of locking on the
+      spot, and the elapsed time is measured against the wall clock on return. Verify that opening
+      the print/share sheet or another app and coming back within the window does NOT cost a sign-in,
+      and that returning after longer than the window DOES lock.
 - [ ] **Screenshot protection is now ON by default** (Android `FLAG_SECURE`, set in
       `MainActivity.onCreate` before the WebView loads, with a Settings → Security →
       "Screenshot protection" switch that only ever clears it). Verify on device that a

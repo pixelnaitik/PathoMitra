@@ -1,18 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildNotifications,
-  buildAlertText,
-  buildDailySummaryText,
-  channelAvailability,
-  emailHref,
   formatAge,
   formatAmount,
   hoursBetween,
-  normalizePhone,
   resolvePrefs,
-  smsHref,
   summarizeNotifications,
-  whatsappHref,
   DEFAULT_NOTIFICATION_PREFS,
   type NotificationItem,
 } from './notification-engine';
@@ -92,11 +85,9 @@ describe('resolvePrefs', () => {
     expect(resolvePrefs()).toEqual(DEFAULT_NOTIFICATION_PREFS);
   });
 
-  it('merges a partial channel object without losing the other channels', () => {
-    const prefs = resolvePrefs({ channels: { whatsapp: true } as never });
-    expect(prefs.channels.whatsapp).toBe(true);
-    expect(prefs.channels.email).toBe(true);
-    expect(prefs.channels.sms).toBe(false);
+  it('fills a partial channel object from the defaults', () => {
+    expect(resolvePrefs({ channels: {} }).channels).toEqual(DEFAULT_NOTIFICATION_PREFS.channels);
+    expect(resolvePrefs({ channels: { desktop: true } }).channels.desktop).toBe(true);
   });
 
   it('keeps default thresholds when only categories are overridden', () => {
@@ -404,83 +395,6 @@ describe('summarizeNotifications', () => {
       critical: 0,
       dueAmount: 0,
     });
-  });
-});
-
-describe('delivery helpers', () => {
-  const item = buildNotifications({
-    patients: [patient()],
-    reports: [],
-    invoices: [],
-    now: NOW,
-  })[0];
-
-  it('describes an alert without any clinical result value', () => {
-    const text = buildAlertText(item, 'PathoMitra Lab');
-    expect(text).toContain('PathoMitra Lab');
-    expect(text).toContain('Awaiting report');
-    expect(text).not.toMatch(/HB|mg\/dL/);
-  });
-
-  it('normalizes a phone to a dialable form', () => {
-    expect(normalizePhone('+91 98765-43210')).toBe('+919876543210');
-    expect(normalizePhone('022-4000 1234')).toBe('02240001234');
-  });
-
-  it('builds a mailto with encoded subject and body', () => {
-    const href = emailHref('lab@example.com', 'Daily summary', 'Line one\nLine two');
-    expect(href).toContain('mailto:lab@example.com?subject=Daily%20summary');
-    expect(href).toContain('%0ALine%20two');
-  });
-
-  it('builds an sms link that keeps the body', () => {
-    expect(smsHref('+91 98765 43210', 'Report overdue')).toBe(
-      'sms:+919876543210?body=Report%20overdue',
-    );
-  });
-
-  it('builds a wa.me link with the plus stripped, as the API requires', () => {
-    expect(whatsappHref('+91 98765 43210', 'Report overdue')).toBe(
-      'https://wa.me/919876543210?text=Report%20overdue',
-    );
-  });
-
-  it('marks a channel unavailable when the lab has no address for it', () => {
-    expect(channelAvailability('email', DEFAULT_NOTIFICATION_PREFS, '   ')).toEqual({
-      enabled: true,
-      ready: false,
-      // The hint must name the tab that actually holds the field. It used to
-      // say "Lab Organization", where no email or phone can be entered.
-      missingHint: expect.stringContaining('My Profile'),
-    });
-    expect(
-      channelAvailability('sms', resolvePrefs({ channels: { sms: true } }), '')?.missingHint,
-    ).not.toContain('Lab Organization');
-  });
-
-  it('short-circuits a disabled channel before checking the destination', () => {
-    expect(channelAvailability('sms', DEFAULT_NOTIFICATION_PREFS, '+919876543210').enabled).toBe(
-      false,
-    );
-  });
-});
-
-describe('buildDailySummaryText', () => {
-  it('lists alerts under their category headings', () => {
-    const items = buildNotifications({
-      patients: [patient()],
-      reports: [],
-      invoices: [invoice()],
-      now: NOW,
-    });
-    const text = buildDailySummaryText(items, 'PathoMitra Lab');
-    expect(text).toContain('Awaiting report (1)');
-    expect(text).toContain('Payment due (1)');
-    expect(text).toContain('Outstanding payments: ₹1,200');
-  });
-
-  it('says the lab is clear when nothing is open', () => {
-    expect(buildDailySummaryText([], 'PathoMitra Lab')).toContain('The lab is clear');
   });
 });
 

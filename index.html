@@ -22,7 +22,10 @@
     <!-- PWA Web App Manifest -->
     <link rel="manifest" href="/manifest.json" />
 
-    <!-- Dynamically adjustable favicon configuration for multiple screen sizes and devices -->
+    <!-- Favicon set: the ribbon-P mark, installed from the favicon.io package
+         in favicon_io/ (owner decision 2026-10-11; no SVG). The runtime
+         custom-logo upload (lib/brand-logo.ts) paints over these when a lab
+         uploads its own logo in Settings → Lab Organization. -->
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
@@ -30,27 +33,27 @@
     <link rel="icon" type="image/png" sizes="512x512" href="/android-chrome-512x512.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 
-    <title>PathoMitra — Digital Pathology Laboratory Console</title>
+    <title>PathoMitra — Lab Management Simplified</title>
     <meta
       name="description"
-      content="PathoMitra is a clinical digital pathology laboratory management system. Manage patients, reports, doctors, and lab analytics from one secure dashboard."
+      content="PathoMitra — Lab Management Simplified. Offline, on-device digital pathology laboratory management system for patient records, encrypted reports, billing and analytics."
     />
     <meta
       name="keywords"
-      content="pathology lab software, lab management system, digital pathology, patient reports, clinical lab console"
+      content="pathology lab software, lab management system, digital pathology, patient reports, clinical lab console, lab management simplified"
     />
-    <meta property="og:title" content="PathoMitra — Digital Pathology Laboratory Console" />
+    <meta property="og:title" content="PathoMitra — Lab Management Simplified" />
     <meta
       property="og:description"
-      content="Manage your pathology lab digitally. Patient records, test reports, doctor management, and lab analytics in one offline console."
+      content="PathoMitra — Lab Management Simplified. Patient records, test reports, doctor management, and lab analytics in one secure offline console."
     />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://pathomitra.pages.dev" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="PathoMitra" />
+    <meta name="twitter:title" content="PathoMitra — Lab Management Simplified" />
     <meta
       name="twitter:description"
-      content="Digital Pathology Laboratory Console — patient reports, lab analytics, doctor management."
+      content="PathoMitra — Lab Management Simplified. Offline digital pathology laboratory management console."
     />
     <script>
       // Pre-paint theme bootstrap: flip <html> data attributes so the CSS
@@ -90,7 +93,8 @@
            Styled by index.css so it inherits the active palette. React removes it on mount. -->
       <div id="app-splash" class="app-splash">
         <img
-          src="/android-chrome-192x192.png"
+          id="splash-logo"
+          src="/brand-p.png"
           alt="PathoMitra"
           width="88"
           height="88"
@@ -104,6 +108,29 @@
         <div class="splash-track">
           <div id="splash-bar" class="splash-fill"></div>
         </div>
+        <script>
+          // Custom brand logo: if the lab uploaded one (Settings → Lab
+          // Organization), paint it over the default PathoMitra-ribbon splash
+          // (public/brand-p.png — the temporary brand mark until a lab ships
+          // its own). The acceptance rule mirrors isBrandLogoDataUrl in
+          // src/lib/settings.ts — only an inline data:image URL within the
+          // size ceiling is trusted, never a remote address (this build is
+          // offline by posture).
+          (function () {
+            try {
+              var s = localStorage.getItem('pathologyos_settings');
+              if (!s) return;
+              var logo = JSON.parse(s).brandLogoUrl;
+              if (
+                typeof logo === 'string' &&
+                logo.indexOf('data:image/') === 0 &&
+                logo.length <= 2000000
+              ) {
+                document.getElementById('splash-logo').src = logo;
+              }
+            } catch (e) {}
+          })();
+        </script>
         <script>
           // Animate the splash bar while JS loads
           (function () {

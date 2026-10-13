@@ -62,8 +62,11 @@ import { THEME_OPTIONS } from '../../lib/theme';
 import { readSettings } from '../../lib/settings';
 import { getPrintableArea, getColumnWidths } from '../../lib/report-layout';
 import { buildReportLegalLines, type ReportLegalInput } from '../../lib/report-compliance';
-import { printPdf, previewPdf, savePdf, sharePdf } from '../../lib/native-print';
+import { pdfToBase64, printPdf, previewPdf, savePdf, sharePdf } from '../../lib/native-print';
+import { getShellKind, hasShellOutput } from '../../lib/native-files';
+import { FILE_CHANNEL_ID, showBannerWithPermission } from '../../lib/desktop-notifications';
 import { ReportViewerDashboard } from '../../components/ReportViewerDashboard';
+import { PrintDialog, type PrintJob } from '../../components/PrintDialog';
 import { ReportResultsEditor } from '../../components/ReportResultsEditor';
 import { createdAtRangeFilters } from '../../lib/date-range';
 import { generateDefaultTemplateImage } from '../../lib/default-template';
@@ -128,6 +131,8 @@ export default function ReportsPage({
   // The read-only viewing dashboard: card taps and Preview land here, while the
   // editable Report Details sheet is reached through Edit / Finish draft.
   const [viewerReport, setViewerReport] = useState<ReportRecord | null>(null);
+  /** The Windows print sheet's document — set by the Print action, cleared on close. */
+  const [printJob, setPrintJob] = useState<PrintJob | null>(null);
   const [reportToDelete, setReportToDelete] = useState<ReportRecord | null>(null);
   const [loading, setLoading] = useState(false);
   const [savingNote, setSavingNote] = useState(false);
@@ -1309,8 +1314,14 @@ export default function ReportsPage({
     }
 
     if (action === 'print') {
+      // Windows gets the app's own print sheet: printer, page range, copies,
+      // orientation and a live preview, spooled through webContents.print().
       // On the APK this raises the system print sheet (printers + "Save as
       // PDF"); in a browser it keeps opening the autoPrint blob in a tab.
+      if (getShellKind() === 'desktop') {
+        setPrintJob({ title: `Report — ${patient.name}`, filename, pdfBase64: pdfToBase64(doc) });
+        return;
+      }
       try {
         await printPdf(doc, filename);
       } catch (err) {
@@ -1357,6 +1368,19 @@ export default function ReportsPage({
       try {
         const message = await savePdf(doc, filename);
         if (message) toast.success(message);
+        // A toast is gone in three seconds and the operator is usually already
+        // looking at the next screen, so on a device the same receipt is posted to
+        // the notification shade — named by file, which is what gets checked before
+        // anything is printed. A browser download needs neither: its own bar says
+        // it, and prompting for notification permission for that would be noise.
+        if (hasShellOutput()) {
+          void showBannerWithPermission({
+            key: `download:${filename}`,
+            title: 'Downloaded',
+            body: message ?? filename,
+            channelId: FILE_CHANNEL_ID,
+          });
+        }
       } catch (err) {
         console.error('Error saving the report:', err);
         toast.error('Could not save the report to this device.');
@@ -2290,6 +2314,14 @@ export default function ReportsPage({
           // 'pdf' is the generated document in the device viewer / browser tab.
           if (viewerReport) patient_report(viewerReport, action === 'pdf' ? 'preview' : action);
         }}
+      />
+      {/* The Windows print sheet — desktop only, and it renders nothing at all
+          on the other shells, so the APK/web print paths are untouched. */}
+      <PrintDialog
+        open={!!printJob}
+        job={printJob}
+        onClose={() => setPrintJob(null)}
+        onPrinted={() => toast.success('Report sent to the printer.')}
       />
       {/* Report Details Modal */}
       <Sheet

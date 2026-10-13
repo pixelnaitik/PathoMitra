@@ -118,8 +118,9 @@ Use those instead of hand-rolled filtering so date boundaries cannot drift.
   the UI and are re-rendered as bold text with a drawn arrow in the PDF.
 - **Destructive actions** always go through `ConfirmSheet`, name the object being
   deleted, and state whether the change is reversible.
-- **Loaders:** `lucide-react` spinners and `Skeleton`, never static "Loading…"
-  text. `ConnectionBanner` + the offline banner handle degraded connectivity.
+- **Loaders:** `lucide-react` spinners and `Skeleton`, never static "Loading…" text. The
+  app is offline by construction (no network permission), so there is no reconnect/sync
+  banner — degraded-connectivity messaging was removed with `ConnectionBanner`.
 - **Errors:** `ErrorBoundary` is scoped per dashboard tab, so one broken page
   cannot take the shell down. `handleFirestoreError` turns SDK codes into
   lab-staff-readable sentences.

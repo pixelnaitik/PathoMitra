@@ -10,6 +10,17 @@
  */
 import { contextBridge, ipcRenderer } from 'electron';
 
+/** Mirror of `PrintChoice` in electron/print.ts (a sandboxed preload imports nothing). */
+type PrintChoice = 'printed' | 'opened' | 'cancelled';
+
+/** Mirror of `DesktopPrinter` in src/lib/desktop-bridge.ts. */
+type PrinterEntry = {
+  name: string;
+  displayName: string;
+  description: string;
+  isDefault: boolean;
+};
+
 const api = {
   kind: 'desktop' as const,
   version: process.versions.electron,
@@ -31,11 +42,27 @@ const api = {
     list: (relDir: string, extension?: string): Promise<string[]> =>
       ipcRenderer.invoke('pm:files:list', relDir, extension),
     uri: (rel: string): Promise<string> => ipcRenderer.invoke('pm:files:uri', rel),
+    /** Delete one app-owned file (a stored backup snapshot). Main process
+     *  confines it to the private root and refuses the database files. */
+    remove: (rel: string): Promise<void> => ipcRenderer.invoke('pm:files:delete', rel),
+    /**
+     * The app's print prompt for a file on disk (see electron/print.ts): the
+     * main process asks the operator — print now / choose printer / open in the
+     * PDF viewer / cancel — and reports which one was chosen. Opening the viewer
+     * is never the default.
+     */
+    print: (args: Readonly<{ filePath: string }>): Promise<PrintChoice> =>
+      ipcRenderer.invoke('pm:files:print', { filePath: args.filePath }),
   },
 
+  /**
+   * The in-app print dialog's backend. The job payload is forwarded untouched —
+   * it is validated in the main process, which is the trusted side.
+   */
   print: {
-    pdfBase64: (base64: string, nameHint: string): Promise<void> =>
-      ipcRenderer.invoke('pm:print:pdf', base64, nameHint),
+    printers: (): Promise<PrinterEntry[]> => ipcRenderer.invoke('pm:print:printers'),
+    job: (request: unknown): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('pm:print:job', request),
   },
 
   shell: {

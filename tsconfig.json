@@ -21,5 +21,7 @@
     "noEmit": true
   },
   "include": ["src", "scripts", "electron", "vite.config.ts"],
-  "exclude": ["node_modules", "dist", "dist-electron"]
+  // The static brochure is a separate project with its own tsconfig.json;
+  // checking it from here would resolve its imports against the app's sources.
+  "exclude": ["node_modules", "dist", "dist-electron", "promotion_website"]
 }

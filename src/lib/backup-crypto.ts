@@ -42,6 +42,17 @@ const KEY_BITS = 256;
  */
 export const MIN_BACKUP_PASSPHRASE = 12;
 
+/**
+ * Bounds on the KDF cost an envelope may ask for. The iterations come from the
+ * file, which is untrusted input: an envelope claiming a billion rounds would
+ * otherwise freeze the restore screen for minutes on a wrong guess, and one
+ * claiming 1 round would "succeed" with effectively no key derivation. Every
+ * file this app writes uses ITERATIONS, so the window only ever has to fit
+ * future deliberate bumps.
+ */
+const MIN_ACCEPTED_ITERATIONS = 100_000;
+const MAX_ACCEPTED_ITERATIONS = 2_000_000;
+
 export interface EncryptedBackupEnvelope {
   app: 'PathoMitra';
   /** Distinguishes a sealed snapshot from a plaintext one. */
@@ -185,6 +196,16 @@ export async function openPayload(envelopeText: string, passphrase: string): Pro
   const iterations = envelope.kdf?.iterations ?? ITERATIONS;
   if (!salt.length || !iv.length)
     throw new Error('That encrypted backup is missing its salt or IV.');
+  if (salt.length > 1024 || iv.length > 128) {
+    throw new Error('That encrypted backup has an implausibly large salt or IV.');
+  }
+  if (
+    !Number.isInteger(iterations) ||
+    iterations < MIN_ACCEPTED_ITERATIONS ||
+    iterations > MAX_ACCEPTED_ITERATIONS
+  ) {
+    throw new Error('That encrypted backup asks for an unsupported key-derivation cost.');
+  }
   if (!passphrase) throw new PassphraseRequiredError();
 
   let key: CryptoKey;

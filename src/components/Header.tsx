@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, Menu, Microscope, X } from 'lucide-react';
+import { useBrandLogo, DEFAULT_BRAND_LOGO_SRC } from '../lib/brand-logo';
 import { cn } from '../lib/utils';
 import { Button } from './ui';
 
@@ -12,6 +13,8 @@ const NAV_LINKS = [
 
 /** Logo tile + wordmark — mirrors the dashboard sidebar treatment. */
 function Brand({ onNavigate }: { onNavigate?: () => void }) {
+  // Uploaded lab logo when one is saved, otherwise the shipped microscope art.
+  const brandLogo = useBrandLogo();
   return (
     <Link
       to="/"
@@ -21,19 +24,29 @@ function Brand({ onNavigate }: { onNavigate?: () => void }) {
     >
       <span className="relative flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-[14px] bg-primary text-on-primary shadow-card transition-transform duration-300 group-hover:scale-105">
         <img
-          src="/logo.png"
+          src={brandLogo ?? DEFAULT_BRAND_LOGO_SRC}
           alt=""
           aria-hidden="true"
-          className="absolute inset-0 z-10 h-full w-full object-cover"
+          // The shipped art is a square full-bleed tile; an uploaded logo may
+          // be any aspect ratio and must never be cropped.
+          className={cn(
+            'absolute inset-0 z-10 h-full w-full',
+            brandLogo ? 'object-contain p-0.5' : 'object-cover',
+          )}
           onError={e => {
             e.currentTarget.style.opacity = '0';
           }}
         />
         <Microscope className="h-[18px] w-[18px]" aria-hidden="true" />
       </span>
-      <span className="truncate text-[15px] font-bold tracking-[-0.02em] text-on-surface">
-        PathoMitra
-      </span>
+      <div className="flex flex-col min-w-0">
+        <span className="truncate text-[15px] font-bold tracking-[-0.02em] text-on-surface leading-tight">
+          PathoMitra
+        </span>
+        <span className="hidden sm:block text-[9px] font-semibold tracking-wider uppercase text-on-surface-variant leading-tight">
+          LAB MANAGEMENT SIMPLIFIED
+        </span>
+      </div>
     </Link>
   );
 }

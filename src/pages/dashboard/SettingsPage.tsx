@@ -23,6 +23,8 @@ import {
   FileDown,
   AlertTriangle,
   DatabaseBackup,
+  ImagePlus,
+  Microscope,
 } from 'lucide-react';
 import { useAuth, isValidPasscode, PIN_ERROR } from '../../contexts/AuthContext';
 import { verifyAccountPassword } from '../../lib/local-account';
@@ -51,6 +53,7 @@ import {
   writeCustomTests,
   type LabSettings,
 } from '../../lib/settings';
+import { processLogoFile } from '../../lib/brand-logo';
 import { RECOMMENDED_LAYOUT_DEFAULTS } from '../../lib/report-layout';
 import { buildReportLegalLines } from '../../lib/report-compliance';
 import {
@@ -200,29 +203,18 @@ const categoryPatch = (category: NotificationCategory, on: boolean): Notificatio
   categories: { [category]: on } as NotificationPrefsPatch['categories'],
 });
 
-/** Patch that changes one delivery channel flag. */
-const channelPatch = (
-  channel: 'email' | 'sms' | 'whatsapp' | 'desktop',
-  on: boolean,
-): NotificationPrefsPatch => ({
-  channels: { [channel]: on } as NotificationPrefsPatch['channels'],
-});
-
 /**
- * One delivery-channel row: what it does, and a jump to the field that makes it
- * able to do it.
+ * One delivery-channel row: what it does, and whether this device can do it.
  *
- * The switch stays live when the destination is missing — arming the preference
- * before you have typed the address is reasonable — but the row then says out
- * loud that the channel will stay silent, with a link to the one field that
- * fixes it. Previously the copy pointed at a profile field that was read-only,
- * which left the switch looking broken with nothing to do about it.
+ * There used to be a `missingHint` + jump-to-My-Profile affordance here, because
+ * Email / SMS / WhatsApp each needed a destination saved on the profile. Those
+ * channels were removed on 2026-10-11, and the one that is left — a system
+ * banner — needs no destination, only the OS's permission, which the row reports
+ * through `description`.
  */
 function ChannelRow({
   title,
   description,
-  missingHint,
-  onFix,
   checked,
   onChange,
   switchLabel,
@@ -230,30 +222,16 @@ function ChannelRow({
 }: {
   title: string;
   description: string;
-  /** Compact warning shown when the channel is on but cannot deliver yet. */
-  missingHint?: string;
-  onFix?: () => void;
   checked: boolean;
   onChange: (next: boolean) => void;
   switchLabel: string;
   disabled?: boolean;
 }) {
-  const blocked = Boolean(missingHint && onFix);
   return (
     <div className="flex items-start justify-between gap-4 p-4 bg-surface-container-low border border-outline-variant/30 rounded-2xl">
       <div className="min-w-0">
         <h4 className="font-bold text-primary">{title}</h4>
         <p className="text-xs text-on-surface-variant mt-1">{description}</p>
-        {blocked && (
-          <button
-            type="button"
-            onClick={onFix}
-            className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-bold text-warning underline underline-offset-2"
-          >
-            <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />
-            {missingHint}
-          </button>
-        )}
       </div>
       <Switch checked={checked} onChange={onChange} disabled={disabled} label={switchLabel} />
     </div>
@@ -422,6 +400,33 @@ export default function SettingsPage({
     'pill',
     user?.photoURL?.startsWith('http') ? user.photoURL : 'user',
   ];
+
+  // ---- App logo (branding) ----------------------------------------------
+  // The file is validated + downscaled in the browser (lib/brand-logo) and
+  // held in formData like every other setting: nothing is applied until
+  // Save Changes, so a rejected upload or a abandoned form can never leave a
+  // half-installed brand behind.
+  const logoInputRef = useRef<HTMLInputElement>(null);
+  const [logoBusy, setLogoBusy] = useState(false);
+  const handleLogoFile = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      // Allow re-picking the same file after a change of mind.
+      e.target.value = '';
+      if (!file) return;
+      setLogoBusy(true);
+      try {
+        const dataUrl = await processLogoFile(file);
+        setFormData(prev => ({ ...prev, brandLogoUrl: dataUrl }));
+        toast.info('Logo ready — press Save Changes to apply it.');
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Could not read that logo file.');
+      } finally {
+        setLogoBusy(false);
+      }
+    },
+    [toast],
+  );
 
   const [customTests, setCustomTests] = useState<PathologyTest[]>(() => readCustomTests());
 
@@ -1025,6 +1030,74 @@ export default function SettingsPage({
                   </div>
                 </div>
 
+                {/* App logo. Once saved it replaces the built-in microscope on
+                    the start-up splash, the sign-in tile, the tab icon and the
+                    dashboard — except the logged-in Overview home page, which
+                    keeps the splash-screen microscope mark by owner decision
+                    (2026-10-11). Stored inline as a data URL, so it works
+                    offline and travels with backups. */}
+                <div className="space-y-4 rounded-2xl border border-outline-variant/30 bg-surface-container-low p-5">
+                  <div className="flex items-center gap-4">
+                    <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-[18px] bg-primary text-on-primary shadow-card">
+                      {formData.brandLogoUrl ? (
+                        <img
+                          src={formData.brandLogoUrl}
+                          alt=""
+                          aria-hidden="true"
+                          className="h-full w-full object-contain p-1"
+                        />
+                      ) : (
+                        <Microscope className="h-7 w-7" aria-hidden="true" />
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <h4 className="text-sm font-bold text-on-surface">App logo</h4>
+                      <p className="text-xs text-on-surface-variant leading-relaxed mt-1">
+                        Your logo appears on the start-up splash, the sign-in screen, the browser
+                        tab icon and the dashboard — except the Overview home page, which keeps the
+                        default microscope mark. PNG, JPG, WebP, GIF or SVG, up to 5 MB.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      ref={logoInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
+                      className="hidden"
+                      onChange={handleLogoFile}
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={logoBusy}
+                      onClick={() => logoInputRef.current?.click()}
+                    >
+                      <ImagePlus className="h-4 w-4 mr-1.5" aria-hidden="true" />
+                      {logoBusy
+                        ? 'Processing…'
+                        : formData.brandLogoUrl
+                          ? 'Replace logo'
+                          : 'Upload logo'}
+                    </Button>
+                    {formData.brandLogoUrl && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setFormData({ ...formData, brandLogoUrl: '' })}
+                      >
+                        Use default logo
+                      </Button>
+                    )}
+                  </div>
+
+                  <p className="text-[11px] text-on-surface-variant">
+                    Preview above updates immediately; press <b>Save Changes</b> to apply the logo
+                    across the app.
+                  </p>
+                </div>
+
                 {/* Report credentials & legal footer.
                     PathoMitra cannot verify an accreditation or sign a report —
                     there is no signing service and no registry check. So the
@@ -1246,63 +1319,9 @@ export default function SettingsPage({
                 {/* --- Delivery --- */}
                 <section className="space-y-3">
                   <h4 className="text-xs font-black text-primary uppercase ml-1">
-                    Where alerts can be sent
+                    How alerts reach you
                   </h4>
                   <div className="space-y-3">
-                    <ChannelRow
-                      title="Email"
-                      description={
-                        formData.email
-                          ? `Composes the alert or the daily summary to ${formData.email}.`
-                          : 'No email address saved yet.'
-                      }
-                      missingHint={
-                        notificationPrefs.channels.email && !formData.email
-                          ? 'Add an email address in My Profile'
-                          : undefined
-                      }
-                      onFix={() => goToTab('profile')}
-                      checked={notificationPrefs.channels.email}
-                      onChange={v => patchPrefs(channelPatch('email', v))}
-                      switchLabel="Send alerts by email"
-                    />
-
-                    <ChannelRow
-                      title="SMS"
-                      description={
-                        formData.phone
-                          ? `Opens your messaging app with the alert addressed to ${formData.phone}.`
-                          : 'No phone number saved yet.'
-                      }
-                      missingHint={
-                        notificationPrefs.channels.sms && !formData.phone
-                          ? 'Add a phone number in My Profile'
-                          : undefined
-                      }
-                      onFix={() => goToTab('profile')}
-                      checked={notificationPrefs.channels.sms}
-                      onChange={v => patchPrefs(channelPatch('sms', v))}
-                      switchLabel="Send alerts by SMS"
-                    />
-
-                    <ChannelRow
-                      title="WhatsApp"
-                      description={
-                        formData.phone
-                          ? `Opens WhatsApp with the alert text ready to send to ${formData.phone}.`
-                          : 'Uses the same phone number as SMS.'
-                      }
-                      missingHint={
-                        notificationPrefs.channels.whatsapp && !formData.phone
-                          ? 'Add a phone number in My Profile'
-                          : undefined
-                      }
-                      onFix={() => goToTab('profile')}
-                      checked={notificationPrefs.channels.whatsapp}
-                      onChange={v => patchPrefs(channelPatch('whatsapp', v))}
-                      switchLabel="Send alerts on WhatsApp"
-                    />
-
                     <ChannelRow
                       title="Alert banners"
                       description={bannerDescription}
@@ -1313,8 +1332,8 @@ export default function SettingsPage({
                     />
                   </div>
                   <p className="text-[11px] text-on-surface-variant ml-1 leading-relaxed">
-                    Delivery uses your own mail, messaging or WhatsApp client — the lab never sends
-                    anything on its own, and no result values are put into an SMS or chat message.
+                    A banner is posted by your own device or browser and repeats the alert already
+                    listed in the notification centre — the lab never sends anything anywhere.
                   </p>
                 </section>
               </div>

@@ -7,7 +7,8 @@
  * the "use Download instead" escape hatch the error toasts recommend. So every
  * output path branches here on the platform:
  *
- *   print   → PrintManager via the printer plugin (native) / autoPrint tab (web)
+ *   print   → PrintManager via the printer plugin (Android) / the Windows print
+ *             prompt over the saved file (desktop) / autoPrint tab (web)
  *   preview → a PDF viewer app via ACTION_VIEW (native) / a blob tab (web)
  *   save    → Filesystem plugin (native) / browser download (web)
  *   share   → Filesystem + the system share sheet (native) / Web Share (web)
@@ -16,13 +17,14 @@
  * loads any of them and its behaviour is unchanged.
  */
 import type { jsPDF } from 'jspdf';
-import { desktopBridge } from './desktop-bridge';
+import { desktopBridge, type DesktopPrintChoice } from './desktop-bridge';
 import {
   describeSavedLocation,
   hasShellOutput,
   openSavedFileInViewer,
   saveBinaryDocument,
   shareSavedFile,
+  type SavedFile,
 } from './native-files';
 
 /**
@@ -52,40 +54,75 @@ function openInTab(blobUrl: URL | string, title: string): boolean {
 /**
  * Raw base64 of a finished document.
  *
- * jsPDF only hands base64 out inside a data URI, and both the printer plugin and
- * the filesystem plugin want the bare payload, so the prefix is stripped once
- * here instead of at every call site.
+ * jsPDF only hands base64 out inside a data URI, and everything downstream wants
+ * the bare payload — the printer plugin, the filesystem plugin, and the desktop
+ * print dialog's pdf.js renderer — so the prefix is stripped once here instead of
+ * at every call site.
  */
-function pdfBase64(doc: jsPDF): string {
+export function pdfToBase64(doc: jsPDF): string {
   return doc.output('datauristring').replace(/^data:[^,]+,/, '');
 }
 
 /**
+ * What a print action did on the desktop shell, or `null` on the other shells —
+ * Android's print sheet and the browser's print tab confirm themselves, so only
+ * the Windows path (which spools silently) has an outcome worth relaying.
+ */
+export type PrintOutcome = DesktopPrintChoice | null;
+
+/**
+ * Print a report PDF that already exists on the machine.
+ *
+ * Desktop only, and the only route to the Windows print pipeline: the main
+ * process raises the app's print prompt (print now / choose printer / open in
+ * the PDF viewer / cancel) and spools through the shell `Print`/`PrintTo` verb.
+ * Opening the viewer is a choice the operator has to make, never the default.
+ *
+ * @param file  the saved report — its `path` is what the main process prints.
+ */
+export async function printSavedFile(file: SavedFile): Promise<DesktopPrintChoice> {
+  const bridge = desktopBridge();
+  if (!bridge) {
+    // Android prints from the bytes through the printer plugin (see printPdf);
+    // there is no file-based print API in that path to reach.
+    throw new Error('Printing a saved file is only available in the Windows app.');
+  }
+  return bridge.files.print({ filePath: file.path });
+}
+
+/**
+ * Put a finished report PDF in front of the printer.
+ *
  * @param doc   A fully-rendered jsPDF document (nothing output yet).
  * @param filename Job name shown in the print dialog / used for "Save as PDF".
  */
-export async function printPdf(doc: jsPDF, filename: string): Promise<void> {
+export async function printPdf(doc: jsPDF, filename: string): Promise<PrintOutcome> {
   if (!hasShellOutput()) {
     doc.autoPrint();
     // A refused tab is not a dead end here: saving the file still lands it in
     // the browser, where its own print sheet is one keystroke away.
     if (!openInTab(doc.output('bloburl'), filename)) doc.save(filename);
-    return;
+    return null;
   }
 
   const bridge = desktopBridge();
   if (bridge) {
-    // Windows: the shell "Print" verb over the spooled file (see electron/print.ts).
-    await bridge.print.pdfBase64(pdfBase64(doc), filename);
-    return;
+    // Write first, then print the file. The shell verb needs a real path, and the
+    // copy that went to the printer is the one the lab can find again — unlike a
+    // temp file, which the old base64 leg deleted while Acrobat might still be
+    // reading it. Same storage policy as every other output (private unless the
+    // lab opted into public Documents).
+    const saved = await saveBinaryDocument(filename, pdfToBase64(doc));
+    return bridge.files.print({ filePath: saved.path });
   }
 
   const { Printer } = await import('@capgo/capacitor-printer');
   await Printer.printBase64({
-    data: pdfBase64(doc),
+    data: pdfToBase64(doc),
     mimeType: 'application/pdf',
     name: filename,
   });
+  return null;
 }
 
 /**
@@ -111,7 +148,7 @@ export async function previewPdf(doc: jsPDF, filename: string): Promise<string |
 
   // Writing the file first is what makes it addressable: the viewer is handed a
   // content:// URI over the saved copy through the manifest's FileProvider.
-  const saved = await saveBinaryDocument(filename, pdfBase64(doc));
+  const saved = await saveBinaryDocument(filename, pdfToBase64(doc));
   try {
     await openSavedFileInViewer(saved, 'application/pdf');
     return null;
@@ -139,7 +176,7 @@ export async function savePdf(doc: jsPDF, filename: string): Promise<string | nu
     doc.save(filename);
     return null;
   }
-  const saved = await saveBinaryDocument(filename, pdfBase64(doc));
+  const saved = await saveBinaryDocument(filename, pdfToBase64(doc));
   return `Saved as ${describeSavedLocation(saved)}`;
 }
 
@@ -172,7 +209,7 @@ export async function sharePdf(
     return 'This browser cannot share files directly, so the PDF was downloaded instead.';
   }
 
-  const saved = await saveBinaryDocument(filename, pdfBase64(doc));
+  const saved = await saveBinaryDocument(filename, pdfToBase64(doc));
   try {
     await shareSavedFile(saved, subject, body);
   } catch (err) {

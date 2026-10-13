@@ -13,14 +13,14 @@
  * The app-relative layout (`PathoMitra/Backups/...`) is kept identical so the
  * backup picker code paths look the same on both platforms.
  */
-import { ipcMain, shell } from 'electron';
+import { BrowserWindow, app, ipcMain, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { app } from 'electron';
 import { clearEntities, loadEntity, openDatabase, saveEntity } from './db';
 import { deleteSecret, getSecret, setSecret } from './keyring';
-import { printPdfBase64 } from './print';
+import { printPdfFile } from './print';
+import { type PrintJobRequest, type PrintJobResult, listPrinters, printJob } from './print-window';
 
 /** Collection names from src/data/types.ts — anything else is refused. */
 const ENTITIES = new Set([
@@ -42,16 +42,69 @@ function assertEntity(entity: unknown): string {
   return entity;
 }
 
-/** Join `rel` onto `root`, refusing any escape (symlink targets included via realpath when it exists). */
+/** Containment test used by both guards; case-insensitive on Windows paths. */
+function contains(root: string, abs: string): boolean {
+  const r = process.platform === 'win32' ? root.toLowerCase() : root;
+  const a = process.platform === 'win32' ? abs.toLowerCase() : abs;
+  return a === r || a.startsWith(r + path.sep);
+}
+
+/**
+ * Join `rel` onto `root`, refusing any escape. The first check is lexical;
+ * when the target exists its *real* path is checked too, so a symlink or
+ * directory junction placed inside the root cannot point out of it (this is
+ * what the module header promises — the lexical check alone would not).
+ */
 function within(root: string, rel: string): string {
   const abs = path.resolve(root, rel);
-  if (abs !== root && !abs.startsWith(root + path.sep)) {
+  if (!contains(root, abs)) {
     throw new Error(`path escapes the app storage root: ${rel}`);
+  }
+  try {
+    const real = fs.realpathSync(abs);
+    if (!contains(fs.realpathSync(root), real)) {
+      throw new Error(`path resolves outside the app storage root: ${rel}`);
+    }
+  } catch (err) {
+    // "resolves outside" is a refusal; anything else (ENOENT for a file not
+    // written yet, EINVAL on odd platforms) leaves the lexical guard in force.
+    if (err instanceof Error && err.message.startsWith('path resolves')) throw err;
   }
   return abs;
 }
 
 const privateRoot = (): string => app.getPath('userData');
+
+/**
+ * Roots a renderer may name with an absolute path — only the folders the app
+ * itself writes into (see `saveFile`). Anything else (a path to someone else's
+ * document, a file on a network share) is refused: printing and `shell.openPath`
+ * both launch things, so they are the most dangerous paths in the surface.
+ */
+function withinAppRoots(abs: string): string {
+  const normalized = path.resolve(abs);
+  const roots = [privateRoot(), app.getPath('documents')];
+  if (!roots.some(root => contains(root, normalized))) {
+    throw new Error(`path is outside the app's own folders: ${abs}`);
+  }
+  return normalized;
+}
+
+/**
+ * Resolve whatever the renderer named for a print/open request. `{ filePath }`
+ * is the print channel's shape; a bare string still works because the file
+ * helpers pass app-relative paths (`PathoMitra/Backups/x.json`) to `pm:shell:show`.
+ */
+function resolveTarget(target: unknown): string {
+  const value =
+    typeof target === 'string'
+      ? target
+      : target && typeof target === 'object'
+        ? (target as { filePath?: unknown }).filePath
+        : undefined;
+  if (typeof value !== 'string' || !value) throw new Error('a filePath is required');
+  return path.isAbsolute(value) ? withinAppRoots(value) : within(privateRoot(), value);
+}
 
 interface SaveArgs {
   /** App-relative path, e.g. `PathoMitra/Report - John.pdf`; never absolute. */
@@ -133,20 +186,74 @@ export function registerIpc(): void {
     if (typeof rel !== 'string') throw new Error('bad path');
     return pathToFileURL(within(privateRoot(), rel)).href;
   });
+  /**
+   * Delete one app-owned file (the backup list's "delete old snapshots").
+   * Confined to the private root like every other files channel, non-recursive
+   * (a directory is refused), and narrowed further to the two backup folders
+   * the renderer actually lists — a compromised page still cannot wipe the
+   * Electron profile or the WAL sidecars of the database.
+   */
+  ipcMain.handle('pm:files:delete', (_e, rel: unknown) => {
+    if (typeof rel !== 'string') throw new Error('bad path');
+    const root = privateRoot();
+    const abs = within(root, rel);
+    const backupDirs = ['PathoMitra/Backups', 'PathLab OS/Backups'].map(dir =>
+      path.resolve(root, dir),
+    );
+    if (!backupDirs.some(dir => abs.startsWith(dir + path.sep))) {
+      throw new Error(`only backup snapshots may be deleted here: ${rel}`);
+    }
+    fs.rmSync(abs, { force: true });
+  });
 
   /* Print + shell ---------------------------------------------------------- */
-  ipcMain.handle('pm:print:pdf', (_e, base64: unknown, nameHint: unknown) => {
-    if (typeof base64 !== 'string' || typeof nameHint !== 'string')
-      throw new Error('bad print args');
-    return printPdfBase64(base64, nameHint);
+  /**
+   * Print a file that already exists (the saved report): the native print-or-
+   * open prompt lives in `print.ts`. Window-modal, so the prompt belongs to the
+   * window that asked for it.
+   */
+  ipcMain.handle('pm:files:print', (event, target: unknown) => {
+    const abs = resolveTarget(target);
+    return printPdfFile(abs, BrowserWindow.fromWebContents(event.sender) ?? undefined);
   });
   /** Open with the user's default handler, or reveal in Explorer. */
   ipcMain.handle('pm:shell:show', async (_e, target: unknown) => {
-    if (typeof target !== 'string') throw new Error('bad path');
-    const abs = path.isAbsolute(target) ? target : within(privateRoot(), target);
+    const abs = resolveTarget(target);
     const err = await shell.openPath(abs);
     if (err) throw new Error(err);
   });
+
+  /* In-app print dialog ---------------------------------------------------- */
+  /** Installed printers for the dialog's dropdown. */
+  ipcMain.handle('pm:print:printers', event =>
+    listPrinters(BrowserWindow.fromWebContents(event.sender) ?? undefined),
+  );
+  /**
+   * Spool a job the dialog already rendered. The payload is a page list of PNG
+   * data URLs — untrusted input by Electron's rules — so the shape is checked
+   * here and every page is re-checked in `print-window.ts` before it reaches the
+   * generated document. Failures come back as `{ ok: false }` rather than a
+   * rejection: the dialog shows them inline, it does not crash on them.
+   */
+  ipcMain.handle(
+    'pm:print:job',
+    (event, request: unknown): Promise<PrintJobResult> | PrintJobResult => {
+      const job = request as Partial<PrintJobRequest> | null;
+      if (
+        !job ||
+        !Array.isArray(job.pages) ||
+        typeof job.options?.deviceName !== 'string' ||
+        typeof job.sheetWidthMm !== 'number' ||
+        typeof job.sheetHeightMm !== 'number'
+      ) {
+        return { ok: false, error: 'The print job was not well formed.' };
+      }
+      return printJob(
+        job as PrintJobRequest,
+        BrowserWindow.fromWebContents(event.sender) ?? undefined,
+      );
+    },
+  );
 
   /* Secure storage (Windows Credential Manager) ---------------------------- */
   ipcMain.handle('pm:keyring:set', (_e, account: unknown, secret: unknown) => {

@@ -7,15 +7,23 @@
  * down on the bench — and the patient list stays open indefinitely, with the
  * device's own screen lock doing nothing because the app was already unlocked.
  *
- * Two independent triggers:
- *   - backgrounding: Android sends `appStateChange`, the browser gives
- *     `visibilitychange`. Either way the session locks as soon as the app stops
- *     being the foreground thing on the screen.
- *   - idle timeout: no pointer, keyboard or scroll activity for `idleMs`.
+ * One countdown, started by either trigger:
+ *   - idle: no pointer, keyboard or scroll activity for `idleMs`.
+ *   - backgrounding: leaving the app restarts the *same* `idleMs` countdown
+ *     instead of locking on the spot. Locking the instant the console left the
+ *     foreground turned every routine detour — opening a PDF in the device
+ *     viewer, the share sheet, another window on the desktop — into a sign-in,
+ *     and the owner asked for the 5-minute behaviour instead (2026-10-11,
+ *     desktop first, then the app). An abandoned console is still covered:
+ *     the clock keeps running while the app is away.
  *
- * `idleMs = 0` disables the idle timer (the "Never" option in Settings), while
- * background-locking always stays on — that one is not a convenience setting, it
- * is the behaviour that stops an abandoned desk from becoming an open record.
+ * Backgrounded JS timers are unreliable — Android freezes them and a hidden tab
+ * throttles them — so the elapsed time is also measured against the wall clock
+ * on the way back in. Without that, a timer that never got to fire while the
+ * process was frozen would hand the session straight back after an hour away.
+ *
+ * `idleMs = 0` (the "Never" option in Settings) disables the countdown on both
+ * paths, so backgrounding does not lock either.
  */
 import { App } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
@@ -31,6 +39,8 @@ const ACTIVITY_EVENTS = ['pointerdown', 'keydown', 'wheel', 'touchstart'] as con
 
 export function installSessionLock({ onLock, idleMs }: SessionLockOptions): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  /** Wall-clock ms of the last background transition; null while in foreground. */
+  let backgroundedAt: number | null = null;
   let disposed = false;
   const teardowns: Array<() => void> = [];
 
@@ -38,22 +48,49 @@ export function installSessionLock({ onLock, idleMs }: SessionLockOptions): () =
     if (!disposed) onLock();
   };
 
+  const cancelIdle = () => {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+  };
+
   const resetIdle = () => {
     if (idleMs <= 0) return;
-    if (timer) clearTimeout(timer);
+    cancelIdle();
     timer = setTimeout(fire, idleMs);
+  };
+
+  /**
+   * Coming back to the foreground.
+   *
+   * @returns true when the time away alone exceeded the interval, so the caller
+   *   is locked out rather than resuming an unattended session.
+   */
+  const resume = () => {
+    const awayMs = backgroundedAt === null ? 0 : Date.now() - backgroundedAt;
+    backgroundedAt = null;
+    cancelIdle();
+    if (idleMs > 0 && awayMs >= idleMs) {
+      fire();
+      return true;
+    }
+    resetIdle();
+    return false;
+  };
+
+  /** Leaving it: start the same countdown, and remember when we left. */
+  const leave = () => {
+    backgroundedAt = Date.now();
+    resetIdle();
   };
 
   // Background / foreground transition.
   if (Capacitor.isNativePlatform()) {
     void App.addListener('appStateChange', ({ isActive }) => {
       if (!isActive) {
-        fire();
+        leave();
         return;
       }
-      // Coming back to the foreground restarts the idle clock rather than
-      // leaving a timer that counted down while the app was away.
-      resetIdle();
+      resume();
     })
       .then(handle => {
         if (disposed) void handle.remove();
@@ -71,8 +108,8 @@ export function installSessionLock({ onLock, idleMs }: SessionLockOptions): () =
     // idle timer below is the desktop lock.
   } else {
     const onVisibility = () => {
-      if (document.visibilityState === 'hidden') fire();
-      else resetIdle();
+      if (document.visibilityState === 'hidden') leave();
+      else resume();
     };
     document.addEventListener('visibilitychange', onVisibility);
     teardowns.push(() => document.removeEventListener('visibilitychange', onVisibility));
@@ -89,7 +126,7 @@ export function installSessionLock({ onLock, idleMs }: SessionLockOptions): () =
 
   return () => {
     disposed = true;
-    if (timer) clearTimeout(timer);
+    cancelIdle();
     teardowns.forEach(off => off());
   };
 }

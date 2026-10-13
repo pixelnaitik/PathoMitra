@@ -8,7 +8,7 @@
 // bundle makes no cross-origin requests, so anything cross-origin is left to the
 // browser and never cached here.
 
-const CACHE_NAME = 'pathomitra-cache-v2';
+const CACHE_NAME = 'pathomitra-cache-v3';
 
 const STATIC_EXTENSIONS = ['.js', '.css', '.woff', '.woff2', '.ttf', '.png', '.jpg', '.jpeg', '.svg', '.ico', '.webp'];
 

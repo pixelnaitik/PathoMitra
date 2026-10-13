@@ -21,6 +21,62 @@ export interface DesktopSavedResult {
   isPrivate: boolean;
 }
 
+/**
+ * What the operator chose in the desktop print prompt. Mirrors `PrintChoice` in
+ * `electron/print.ts`; the two sides are paired by channel name, not by the
+ * compiler, so the union has to be written twice.
+ */
+export type DesktopPrintChoice = 'printed' | 'opened' | 'cancelled';
+
+/** One entry of `webContents.getPrintersAsync()`, narrowed to what the UI needs. */
+export interface DesktopPrinter {
+  /** OS name — this is what `deviceName` must be given. */
+  name: string;
+  /** Name as shown in the OS print UI. */
+  displayName: string;
+  /** Longer description of the printer type. */
+  description: string;
+  /** The system default. The dialog still lets the operator move off it. */
+  isDefault: boolean;
+}
+
+/** How the page image is fitted to the sheet. Mirrors `PrintScaleMode`. */
+export type DesktopPrintScale = 'fit' | 'actual' | 'shrink';
+
+/** Everything the main process needs to hand one job to the spooler. */
+export interface DesktopPrintRequest {
+  /** Job name for the spooler and the temp file. */
+  title: string;
+  /**
+   * Already-rendered pages, in print order, each rotated to the chosen sheet
+   * orientation. Rasterised by pdf.js in the renderer — Electron ships no PDF
+   * viewer, so a PDF file cannot be printed by the spooler directly.
+   */
+  pages: string[];
+  /** Sheet size in mm as it leaves the printer. */
+  sheetWidthMm: number;
+  sheetHeightMm: number;
+  /** The rendered image's own box in mm — drives `actual` / `shrink` fitting. */
+  imageWidthMm: number;
+  imageHeightMm: number;
+  options: {
+    deviceName: string;
+    copies: number;
+    collate: boolean;
+    duplex: 'simplex' | 'shortEdge' | 'longEdge';
+    landscape: boolean;
+    /** `A4` | `A5` | `Letter` | `Legal` — passed to `pageSize` unless custom. */
+    pageSize: string;
+    scale: DesktopPrintScale;
+  };
+}
+
+export interface DesktopPrintResult {
+  ok: boolean;
+  /** The spooler's own words when `ok` is false. */
+  error?: string;
+}
+
 export interface DesktopBridge {
   readonly kind: 'desktop';
   readonly version: string;
@@ -40,9 +96,25 @@ export interface DesktopBridge {
     readText(rel: string): Promise<string>;
     list(relDir: string, extension?: string): Promise<string[]>;
     uri(rel: string): Promise<string>;
+    /** Delete one app-owned file (a stored backup snapshot), private root only. */
+    remove(rel: string): Promise<void>;
+    /**
+     * The app's print prompt for a file that already exists on disk. The main
+     * process asks (print now / choose printer / open in PDF viewer / cancel)
+     * and reports the choice; `opened` only ever happens when the operator picks
+     * it — printing never opens the viewer by itself.
+     */
+    print(args: { filePath: string }): Promise<DesktopPrintChoice>;
   };
+  /** The in-app print dialog's backend. */
   print: {
-    pdfBase64(base64: string, nameHint: string): Promise<void>;
+    /** Installed printers, from `webContents.getPrintersAsync()`. */
+    printers(): Promise<DesktopPrinter[]>;
+    /**
+     * Spool an already-rendered job. Resolves with the spooler's verdict — the
+     * call is not optimistic: `ok` is true only when Chromium reported success.
+     */
+    job(request: DesktopPrintRequest): Promise<DesktopPrintResult>;
   };
   shell: {
     /** Open with the user's default handler — the desktop stand-in for both

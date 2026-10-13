@@ -55,6 +55,23 @@ describe('toCsv', () => {
     expect(rows).toHaveLength(2);
     expect(rows[1]?.startsWith('"Line\nBreak"')).toBe(true);
   });
+
+  it('neutralises spreadsheet formulas without touching signed numbers', () => {
+    const csv = toCsv(COLUMNS, [
+      { name: "=cmd|' /C calc'!A0", age: 30 },
+      { name: '+HYPERLINK("http://evil")', age: '45' },
+      { name: '-4.5', age: 22, note: 'low' }, // a real result value stays numeric
+      { name: 'normal, text', age: 28 },
+    ]);
+    const [, ...rows] = csv.split('\r\n');
+    // A leading apostrophe is what stops Excel evaluating the cell on open.
+    expect(rows[0]).toBe("'=cmd|' /C calc'!A0,30,");
+    // The apostrophe lands *before* the quotes RFC 4180 forces around the `"`s.
+    expect(rows[1]).toBe('"\'+HYPERLINK(""http://evil"")",45,');
+    // Plain signed numbers are data — guarding them would break the labs' math.
+    expect(rows[2]).toBe('-4.5,22,low');
+    expect(rows[3]).toBe('"normal, text",28,');
+  });
 });
 
 describe('downloadCsv', () => {

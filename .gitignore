@@ -18,3 +18,6 @@ coverage/
 dist-electron/
 release-desktop/
 
+# Collected build artifacts (APK / MSIX handed to the owner) — never committed
+buildoutput/
+

@@ -77,9 +77,27 @@ export async function hashPassword(password: string): Promise<PasswordHash> {
   return { alg: 'pbkdf2-sha256', iterations: ITERATIONS, salt, hash };
 }
 
+/**
+ * Accepted window for a stored iteration count. `hashPassword` always writes
+ * ITERATIONS; the bounds only guard against a hand-edited stored hash asking
+ * for a billion rounds (freezing the unlock screen) or one round (making the
+ * derivation a joke). A value outside the window fails verification rather
+ * than locking the operator out silently — re-creating the account is the
+ * documented recovery for a corrupt secure store either way.
+ */
+const MIN_ACCEPTED_ITERATIONS = 100_000;
+const MAX_ACCEPTED_ITERATIONS = 2_000_000;
+
 /** Verify a password against a stored hash. Never throws on mismatch. */
 export async function verifyPassword(password: string, stored: PasswordHash): Promise<boolean> {
   if (!stored || stored.alg !== 'pbkdf2-sha256') return false;
+  if (
+    !Number.isInteger(stored.iterations) ||
+    stored.iterations < MIN_ACCEPTED_ITERATIONS ||
+    stored.iterations > MAX_ACCEPTED_ITERATIONS
+  ) {
+    return false;
+  }
   const candidate = await derive(password, fromHex(stored.salt), stored.iterations);
   return safeEqual(candidate, stored.hash);
 }
