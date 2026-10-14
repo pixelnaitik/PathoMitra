@@ -43,6 +43,14 @@ export class DesktopRepository implements DataRepository {
   private queues = new Map<EntityName, Promise<void>>();
   /** Error callbacks registered alongside listeners (see `subscribe`). */
   private failures = new Map<EntityName, Set<(error: unknown) => void>>();
+  /**
+   * The active buffered transaction, or null when none is open. While set,
+   * every write goes into the collection's in-memory `buffers` instead of
+   * persisting, and listeners stay silent until the outcome is known — so
+   * {@link transaction} commits the whole buffer set as ONE atomic
+   * main-process write (`bridge.db.commit`) or not at all.
+   */
+  private tx: { buffers: Map<EntityName, Store>; touched: Set<EntityName> } | null = null;
 
   constructor() {
     const bridge = desktopBridge();
@@ -117,12 +125,37 @@ export class DesktopRepository implements DataRepository {
     return store[id] ? makeDoc(id, store[id]) : null;
   }
 
-  async set(entity: EntityName, id: string, value: Record<string, unknown>): Promise<void> {
+  /**
+   * Apply one document-level mutation to `entity`.
+   *
+   * Outside a transaction the change is queued per entity (read-copy-persist,
+   * then emit) exactly as before. Inside one (`this.tx` set) it mutates the
+   * collection's working buffer instead: nothing reaches the database or the
+   * listeners until {@link transaction} commits the whole buffer set atomically.
+   * A later write to the same entity within the transaction reads the pending
+   * buffer, so a merge sees the earlier one's change.
+   */
+  private async applyMutation(
+    entity: EntityName,
+    transform: (store: Store) => Store,
+  ): Promise<void> {
+    if (this.tx) {
+      const base = this.tx.buffers.get(entity) ?? (await this.store(entity));
+      this.tx.buffers.set(entity, transform({ ...base }));
+      this.tx.touched.add(entity);
+      return;
+    }
     await this.queue(entity, async () => {
-      const store = { ...(await this.store(entity)) };
-      store[id] = value;
+      const store = transform({ ...(await this.store(entity)) });
       await this.persist(entity, store);
       await this.emit(entity);
+    });
+  }
+
+  async set(entity: EntityName, id: string, value: Record<string, unknown>): Promise<void> {
+    await this.applyMutation(entity, store => {
+      store[id] = value;
+      return store;
     });
   }
 
@@ -133,20 +166,16 @@ export class DesktopRepository implements DataRepository {
   }
 
   async update(entity: EntityName, id: string, patch: Record<string, unknown>): Promise<void> {
-    await this.queue(entity, async () => {
-      const store = { ...(await this.store(entity)) };
+    await this.applyMutation(entity, store => {
       store[id] = { ...(store[id] ?? {}), ...patch };
-      await this.persist(entity, store);
-      await this.emit(entity);
+      return store;
     });
   }
 
   async delete(entity: EntityName, id: string): Promise<void> {
-    await this.queue(entity, async () => {
-      const store = { ...(await this.store(entity)) };
+    await this.applyMutation(entity, store => {
       delete store[id];
-      await this.persist(entity, store);
-      await this.emit(entity);
+      return store;
     });
   }
 
@@ -210,12 +239,53 @@ export class DesktopRepository implements DataRepository {
   }
 
   /**
-   * Sequential execution against this repository, matching WebRepository's
-   * honesty: SQLite atomicity arrives with the row-level main-process API;
-   * callers (the report save path) already tolerate replay between steps.
+   * Run several mutations as ONE atomic unit — the desktop counterpart of the
+   * native store's SQLCipher transaction (P0.4/P0.5).
+   *
+   * The body's writes are buffered per collection (see `applyMutation`) and sent
+   * through a single `bridge.db.commit`, which the main process runs inside one
+   * SQLite BEGIN/COMMIT. A report amendment and its history row therefore land
+   * together or not at all; a restore cannot half-apply. If the body throws, or
+   * the commit fails, nothing was ever promoted into the cache and the database
+   * received no partial batch — listeners re-read the unchanged state.
+   *
+   * Atomicity caveat kept honest: the localStorage (web/dev) adapter has no such
+   * guarantee and says so in `webRepository.ts`; this method only makes the
+   * desktop claim true, matching the native store.
    */
   async transaction(fn: (tx: DataRepository) => Promise<void>): Promise<void> {
-    await fn(this);
+    // Nested call joins the open transaction rather than flushing it early.
+    if (this.tx) {
+      await fn(this);
+      return;
+    }
+    // Let every queued mutation settle first so the buffer starts from committed
+    // state, not a mid-write cache snapshot.
+    await Promise.all(ALL_ENTITIES.map(entity => this.drain(entity)));
+
+    const tx: { buffers: Map<EntityName, Store>; touched: Set<EntityName> } = {
+      buffers: new Map(),
+      touched: new Set(),
+    };
+    this.tx = tx;
+    try {
+      await fn(this);
+      const entries = [...tx.buffers.entries()].map(([entity, store]) => ({
+        entity,
+        json: JSON.stringify(store),
+      }));
+      if (entries.length > 0) {
+        await this.bridge.db.commit(entries);
+        // Success: the committed stores become the new cache, so listeners re-read
+        // exactly what persisted and any later write chains off them.
+        for (const [entity, store] of tx.buffers) this.memory.set(entity, Promise.resolve(store));
+      }
+    } finally {
+      this.tx = null;
+      // Notify after the outcome is known — after a commit the rows are new; on a
+      // throw the touched collections are re-read from the untouched database.
+      for (const entity of tx.touched) await this.emit(entity);
+    }
   }
 
   /** Resolve when every mutation queued for `entity` has settled. */

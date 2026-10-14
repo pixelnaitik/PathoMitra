@@ -17,8 +17,12 @@ import { Capacitor } from '@capacitor/core';
 import { SecureStorage } from '@aparajita/capacitor-secure-storage';
 import type { DataType } from '@aparajita/capacitor-secure-storage';
 import { desktopBridge } from './desktop-bridge';
+import { RENDERER_CREDENTIAL_PREFIX } from './renderer-credentials';
 
-const PREFIX = 'pathlab_';
+// The same namespace the main process allow-lists (see renderer-credentials.ts):
+// every key this store writes is `pathlab_*`, and the IPC keyring handlers refuse
+// any account outside it — so the SQLCipher key (`db-key`) is never reachable.
+const PREFIX = RENDERER_CREDENTIAL_PREFIX;
 let prefixSet = false;
 
 async function ensurePrefix(): Promise<void> {

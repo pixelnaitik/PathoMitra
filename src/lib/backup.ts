@@ -328,9 +328,13 @@ function planRestore(backup: BackupFile): { steps: RestorePlanStep[]; skipped: s
  *
  * Everything is validated first (see {@link planRestore}) so a malformed file
  * never mutates the database. The writes then run inside a single store
- * transaction: on the native store that is a real SQLCipher transaction, so a
- * failure part-way through rolls every record back and the pre-restore data is
- * left exactly as it was — the restore either fully applies or fully does not.
+ * transaction. On the native store that is a real SQLCipher transaction, and on
+ * the desktop it is one atomic main-process write (`DesktopRepository.transaction`
+ * → `bridge.db.commit`, P0.4) — so a failure part-way through rolls every record
+ * back and the pre-restore data is left exactly as it was: the restore either
+ * fully applies or fully does not. The browser/localStorage adapter cannot offer
+ * that (it is a sequential upsert) and says so in `webRepository.ts`; it is a
+ * development store, never the one a lab's records live in.
  * Because restore is an *upsert and never a delete*, the previous dataset also
  * survives a snapshot later judged bad, and a retried restore converges rather
  * than duplicating. The success count is reported only for a completed

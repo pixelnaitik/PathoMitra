@@ -31,6 +31,9 @@ const api = {
     save: (entity: string, json: string): Promise<void> =>
       ipcRenderer.invoke('pm:db:save', entity, json),
     clear: (): Promise<void> => ipcRenderer.invoke('pm:db:clear'),
+    /** Write several collections as ONE main-process SQLite transaction. */
+    commit: (entries: Array<{ entity: string; json: string }>): Promise<void> =>
+      ipcRenderer.invoke('pm:db:commit', entries),
   },
 
   files: {

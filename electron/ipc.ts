@@ -17,8 +17,9 @@ import { BrowserWindow, app, ipcMain, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { clearEntities, loadEntity, openDatabase, saveEntity } from './db';
+import { clearEntities, loadEntity, openDatabase, saveEntitiesBulk, saveEntity } from './db';
 import { deleteSecret, getSecret, setSecret } from './keyring';
+import { isRendererCredentialAccount } from '../src/lib/renderer-credentials';
 import { printPdfFile } from './print';
 import { type PrintJobRequest, type PrintJobResult, listPrinters, printJob } from './print-window';
 
@@ -40,6 +41,21 @@ function assertEntity(entity: unknown): string {
     throw new Error(`unknown collection: ${String(entity)}`);
   }
   return entity;
+}
+
+/**
+ * The renderer may only name credentials in its own namespace (see
+ * `src/lib/renderer-credentials.ts`). The generic keyring channels used to
+ * forward any account string, so `get('db-key')` would have handed a compromised
+ * page the SQLCipher key; the allow-list refuses `db-key` and every unknown
+ * name at the trusted (main-process) boundary.
+ */
+function assertRendererAccount(account: unknown): string {
+  if (typeof account !== 'string') throw new Error('bad keyring args');
+  if (!isRendererCredentialAccount(account)) {
+    throw new Error(`credential not accessible from the renderer: ${account}`);
+  }
+  return account;
 }
 
 /** Containment test used by both guards; case-insensitive on Windows paths. */
@@ -160,6 +176,24 @@ export function registerIpc(): void {
     saveEntity(name, json);
   });
   ipcMain.handle('pm:db:clear', () => clearEntities());
+  /**
+   * Atomic multi-collection write (see `saveEntitiesBulk`). Each entry is
+   * validated exactly like a single `pm:db:save` — allow-listed collection name,
+   * JSON string payload — and the whole batch is committed inside one SQLite
+   * transaction, so the renderer's `transaction()` is only ever atomic or not at
+   * all, never half-applied.
+   */
+  ipcMain.handle('pm:db:commit', (_e, entries: unknown) => {
+    if (!Array.isArray(entries)) throw new Error('db commit expects an array of collections');
+    const rows = entries.map(entry => {
+      const row = entry as { entity?: unknown; json?: unknown } | null;
+      const name = assertEntity(row?.entity);
+      if (typeof row?.json !== 'string') throw new Error('db payload must be a JSON string');
+      JSON.parse(row.json); // the encrypted file must never hold something unparseable
+      return { entity: name, json: row.json };
+    });
+    saveEntitiesBulk(rows);
+  });
 
   /* Files ------------------------------------------------------------------ */
   ipcMain.handle('pm:files:save', (_e, args: SaveArgs) => saveFile(args));
@@ -256,17 +290,21 @@ export function registerIpc(): void {
   );
 
   /* Secure storage (Windows Credential Manager) ---------------------------- */
+  /**
+   * The auth records the UI legitimately needs, all namespaced `pathlab_*`. The
+   * database key is deliberately unreachable here — `assertRendererAccount`
+   * denies `db-key` and any name outside the renderer namespace, so this surface
+   * cannot read, overwrite or delete the SQLCipher key.
+   */
   ipcMain.handle('pm:keyring:set', (_e, account: unknown, secret: unknown) => {
-    if (typeof account !== 'string' || typeof secret !== 'string')
-      throw new Error('bad keyring args');
-    return setSecret(account, secret);
+    const name = assertRendererAccount(account);
+    if (typeof secret !== 'string') throw new Error('bad keyring args');
+    return setSecret(name, secret);
   });
-  ipcMain.handle('pm:keyring:get', (_e, account: unknown) => {
-    if (typeof account !== 'string') throw new Error('bad keyring args');
-    return getSecret(account);
-  });
-  ipcMain.handle('pm:keyring:delete', (_e, account: unknown) => {
-    if (typeof account !== 'string') throw new Error('bad keyring args');
-    return deleteSecret(account);
-  });
+  ipcMain.handle('pm:keyring:get', (_e, account: unknown) =>
+    getSecret(assertRendererAccount(account)),
+  );
+  ipcMain.handle('pm:keyring:delete', (_e, account: unknown) =>
+    deleteSecret(assertRendererAccount(account)),
+  );
 }

@@ -36,8 +36,21 @@ interface EncDb {
     get: (param?: string) => { json: string } | undefined;
     run: (...params: (string | number)[]) => unknown;
   };
+  /**
+   * better-sqlite3's transaction helper: wrapping `fn` yields a function that,
+   * when called, runs the body inside BEGIN/COMMIT and rolls back on a throw.
+   * This is what makes a multi-collection write (a report amendment, a restore)
+   * land atomically instead of half-applying (see `saveEntitiesBulk`).
+   */
+  transaction: (fn: (rows: BulkRow[]) => void) => (rows: BulkRow[]) => void;
   close: () => void;
 }
+
+/** One collection's whole JSON, as handed to the atomic bulk write. */
+type BulkRow = { entity: string; json: string };
+
+const UPSERT_SQL =
+  'INSERT INTO entities (name, json) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET json = excluded.json';
 
 /** Credential-manager account holding the DB key — distinct from the unlock secret. */
 const KEY_ACCOUNT = 'db-key';
@@ -113,9 +126,26 @@ export function loadEntity(entity: string): string | null {
 /** Replace the whole JSON for one collection (single-writer app — no merge needed). */
 export function saveEntity(entity: string, json: string): void {
   if (!db) throw new Error('database opened late: saveEntity before init');
-  db.prepare(
-    'INSERT INTO entities (name, json) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET json = excluded.json',
-  ).run(entity, json);
+  db.prepare(UPSERT_SQL).run(entity, json);
+}
+
+/**
+ * Write several collections inside ONE SQLite transaction — the desktop answer
+ * to the native store's `beginTransaction/commit/rollback`. Either every
+ * collection in `rows` is persisted or none is, so a crash or a refusal
+ * part-way through a multi-collection operation (a report amendment writing its
+ * history row *and* the live report; a restore across many collections) can
+ * never leave the database half-committed. The whole batch is one `db.transaction`
+ * call; better-sqlite3 issues the ROLLBACK for us if any statement throws.
+ */
+export function saveEntitiesBulk(rows: BulkRow[]): void {
+  if (!db) throw new Error('database opened late: saveEntitiesBulk before init');
+  if (rows.length === 0) return;
+  const write = db.prepare(UPSERT_SQL);
+  const apply = db.transaction(entries => {
+    for (const row of entries) write.run(row.entity, row.json);
+  });
+  apply(rows);
 }
 
 /** Drop every collection — "erase all data". */

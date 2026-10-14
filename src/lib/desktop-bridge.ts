@@ -85,6 +85,13 @@ export interface DesktopBridge {
     load(entity: string): Promise<string | null>;
     save(entity: string, json: string): Promise<void>;
     clear(): Promise<void>;
+    /**
+     * Write several collections as ONE atomic main-process SQLite transaction.
+     * Backs `DesktopRepository.transaction()` so a multi-collection change (a
+     * report amendment and its history row; a restore) commits together or not
+     * at all — the desktop counterpart of the native store's real transaction.
+     */
+    commit(entries: Array<{ entity: string; json: string }>): Promise<void>;
   };
   files: {
     save(args: {
