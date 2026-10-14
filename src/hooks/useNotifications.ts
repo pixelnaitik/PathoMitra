@@ -22,6 +22,7 @@
  *     only produce permission errors.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useRefreshHandler } from './useRefreshHandler';
 import {
   collection,
   doc,
@@ -51,6 +52,7 @@ import {
   type BannerPermission,
 } from '../lib/desktop-notifications';
 import { SETTINGS_UPDATED_EVENT, readSettings, writeSettings } from '../lib/settings';
+import { expandTestSelection } from '../lib/pathology-tests';
 import {
   DEFAULT_NOTIFICATION_PREFS,
   buildNotifications,
@@ -255,10 +257,12 @@ export function useNotifications(): UseNotificationsResult {
   useEffect(() => {
     if (!active) return;
     void load();
-    const onRefresh = () => void load();
-    window.addEventListener('app:refresh', onRefresh);
-    return () => window.removeEventListener('app:refresh', onRefresh);
   }, [active, load]);
+  // Pull-to-refresh goes through the shared registry instead of the raw
+  // `app:refresh` CustomEvent, so the gesture can await `load()` and report
+  // the real outcome (all reloaded / some failed) instead of a fixed-delay
+  // "You're up to date" toast that fires whether the read worked or not.
+  useRefreshHandler(() => load(), active);
 
   useEffect(() => {
     if (!active || network === 'offline') return;
@@ -327,6 +331,12 @@ export function useNotifications(): UseNotificationsResult {
         reports: allReports,
         invoices,
         prefs,
+        // Panels expand into their members on both sides of the delivered check,
+        // so "CBC was ordered, hemoglobin was reported" counts as delivered while
+        // the LFT ordered in the same visit still alerts. Without the expander the
+        // engine would compare booking lines against result lines and could neither
+        // silence a real delivery nor see a missing one.
+        expandNames: expandTestSelection,
         // Minute-granularity clock: re-deriving on every render would make ages
         // (and therefore ids) unstable while a panel is open.
         now: new Date(Math.floor(Date.now() / 60_000) * 60_000),

@@ -84,6 +84,7 @@ const BACKUP_COLLECTIONS: readonly EntityName[] = [
   'doctors',
   'reports',
   'reportNotes',
+  'reportVersions',
   'invoices',
   'labSettings',
   'notificationState',
@@ -293,32 +294,65 @@ export interface RestoreResult extends BackupSummary {
 }
 
 /**
- * Merge a snapshot into the local store, upserting by document id.
- *
- * Nothing is deleted and unknown collections are reported rather than guessed at.
- * The store is not wiped first — that is the caller's decision, and the only safe
- * order is restore-then-review, not destroy-then-hope.
+ * Turn the validated snapshot into a write plan, rejecting anything that must
+ * not reach the store. Runs entirely before the first write so a malformed file
+ * cannot leave a half-applied database behind.
  */
-export async function restoreBackup(backup: BackupFile): Promise<RestoreResult> {
-  const repo = await initDataStore();
+interface RestorePlanStep {
+  entity: EntityName;
+  docs: BackupDocuments[];
+}
+function planRestore(backup: BackupFile): { steps: RestorePlanStep[]; skipped: string[] } {
   const known = new Set<string>(BACKUP_COLLECTIONS);
-  const counts: BackupCounts = {};
   const skipped: string[] = [];
-  let restored = 0;
-
+  const steps: RestorePlanStep[] = [];
   for (const [collection, docs] of Object.entries(backup.data)) {
     if (!known.has(collection)) {
       skipped.push(collection);
       continue;
     }
-    const entity = collection as EntityName;
     for (const doc of docs) {
-      const { id, ...value } = doc;
-      await repo.set(entity, id, value);
-      restored += 1;
+      if (typeof doc.id !== 'string' || doc.id.length === 0) {
+        throw new Error(
+          `Restore aborted before any change: a document in "${collection}" has no valid id.`,
+        );
+      }
     }
-    counts[collection] = docs.length;
+    steps.push({ entity: collection as EntityName, docs });
   }
+  return { steps, skipped };
+}
+
+/**
+ * Merge a snapshot into the local store, upserting by document id.
+ *
+ * Everything is validated first (see {@link planRestore}) so a malformed file
+ * never mutates the database. The writes then run inside a single store
+ * transaction: on the native store that is a real SQLCipher transaction, so a
+ * failure part-way through rolls every record back and the pre-restore data is
+ * left exactly as it was — the restore either fully applies or fully does not.
+ * Because restore is an *upsert and never a delete*, the previous dataset also
+ * survives a snapshot later judged bad, and a retried restore converges rather
+ * than duplicating. The success count is reported only for a completed
+ * transaction; a mid-write failure throws instead of returning a partial count.
+ */
+export async function restoreBackup(backup: BackupFile): Promise<RestoreResult> {
+  const repo = await initDataStore();
+  const { steps, skipped } = planRestore(backup);
+
+  const counts: BackupCounts = {};
+  let restored = 0;
+
+  await repo.transaction(async tx => {
+    for (const { entity, docs } of steps) {
+      for (const doc of docs) {
+        const { id, ...value } = doc;
+        await tx.set(entity, id, value);
+        restored += 1;
+      }
+      counts[entity] = docs.length;
+    }
+  });
 
   return { createdAt: backup.createdAt, counts, totalRecords: restored, skipped };
 }

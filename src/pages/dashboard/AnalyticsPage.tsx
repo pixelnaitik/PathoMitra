@@ -17,13 +17,23 @@ import {
   LabelList,
 } from 'recharts';
 import { Users, Activity, TestTube, FileText } from 'lucide-react';
-import { collection, onSnapshot, query, where, db, type QueryConstraint } from '../../data/fs';
+import {
+  collection,
+  getDocs,
+  onSnapshot,
+  query,
+  where,
+  db,
+  type QueryConstraint,
+} from '../../data/fs';
 import { readPatients, readReports, type PatientRecord, type ReportRecord } from '../../lib/models';
 import { handleFirestoreError, OperationType } from '../../lib/firestore-errors';
 import { cn } from '../../lib/utils';
-import { findTestInfo } from '../../lib/pathology-tests';
+import { expandTestSelection, findTestInfo } from '../../lib/pathology-tests';
+import { groupByDoctorName } from '../../lib/doctor-registry';
 import { CalendarRangePicker, Card, SectionTitle, toIsoDay } from '../../components/ui';
-import { localDayEndIso, localDayStartIso } from '../../lib/date-range';
+import { localDayStartIso, localDayEndIso } from '../../lib/date-range';
+import { useRefreshHandler } from '../../hooks/useRefreshHandler';
 
 /** Reads a CSS custom property from <html> so charts follow the active palette + color mode. */
 const cssVar = (name: string) =>
@@ -44,6 +54,66 @@ const CHART_FALLBACK = {
   onSurface: '#1d1d1f',
 };
 
+const DAY_MS = 86_400_000;
+
+type TrendGrain = 'day' | 'week' | 'month';
+
+interface TrendPoint {
+  /** Stable bucket key — the ISO day the bucket starts on, never its label. */
+  key: string;
+  /** Axis label. */
+  name: string;
+  reports: number;
+  tests: number;
+}
+
+/**
+ * Grain for a window: daily to ~3 months, weekly to ~2 years, monthly beyond.
+ *
+ * Chosen so the axis stays readable *without* discarding data. The previous
+ * implementation capped the series at 90 daily points, so a year-long window
+ * quietly drew about a quarter of itself and the KPI totals below dropped the
+ * rest with no indication on screen.
+ */
+function trendGrainFor(daySpan: number): TrendGrain {
+  if (daySpan <= 92) return 'day';
+  if (daySpan <= 730) return 'week';
+  return 'month';
+}
+
+/** The bucket a day belongs to, keyed and labelled for the chosen grain. */
+function bucketFor(day: Date, grain: TrendGrain): TrendPoint {
+  const start = new Date(day);
+  if (grain === 'week') start.setDate(day.getDate() - ((day.getDay() + 6) % 7));
+  if (grain === 'month') start.setDate(1);
+  return {
+    key: toIsoDay(start),
+    name:
+      grain === 'day'
+        ? start.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })
+        : grain === 'week'
+          ? `${start.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} +wk`
+          : start.toLocaleDateString('en-IN', { month: 'short', year: '2-digit' }),
+    reports: 0,
+    tests: 0,
+  };
+}
+
+/**
+ * Tests a report contributes: the ordered panels expanded into their members, so
+ * a CBC counts as the ~20 tests it actually reports rather than as "1".
+ *
+ * `testSelection` mixes panel names with their components, so counting the list
+ * length meant the same figure could be booking lines or result lines depending
+ * on the document — month-to-month comparisons were meaningless. Documents with
+ * no ordered list (older records) fall back to what was recorded, so a report
+ * with results is never counted as zero tests.
+ */
+function testCountFor(report: ReportRecord): number {
+  const expanded = expandTestSelection(report.testSelection ?? []);
+  return expanded.length || Object.keys(report.resultData ?? {}).length;
+}
+
 export default function AnalyticsPage() {
   const [fromDate, setFromDate] = useState(() => {
     // default to 7 days ago
@@ -57,7 +127,21 @@ export default function AnalyticsPage() {
   const [toDate, setToDate] = useState(() => toIsoDay(new Date()));
 
   const [reports, setReports] = useState<ReportRecord[]>([]);
+  /**
+   * Patients *registered* inside the selected window. This is not the same
+   * population as the reports in the window — a returning patient was registered
+   * months ago — so it is never used as a denominator for report activity. See
+   * `roster` for the whole-register read, and `patientsTested` for who the
+   * reports in range actually belong to.
+   */
   const [patients, setPatients] = useState<PatientRecord[]>([]);
+  /**
+   * Every registered patient, read once. The referral join (which doctor sent
+   * whom) needs patients that are not in the date window, and "registered
+   * patients" has to mean the whole register — the windowed read used to silently
+   * turn every returning patient into "Unknown Doctor".
+   */
+  const [roster, setRoster] = useState<PatientRecord[]>([]);
 
   // Chart colors are resolved from CSS custom properties (never at module scope —
   // getComputedStyle would break SSR/tests) and re-read whenever the palette or
@@ -132,72 +216,109 @@ export default function AnalyticsPage() {
     };
   }, [fromDate, toDate]);
 
+  useEffect(() => {
+    // One-shot read of the whole register, refreshed with the rest of the app on
+    // pull-to-refresh. A listener would re-stream every patient on every write
+    // anywhere in the lab, which this page only needs for a name lookup.
+    let cancelled = false;
+    const loadRoster = () =>
+      getDocs(query(collection(db, 'patients')))
+        .then(snapshot => {
+          if (!cancelled) setRoster(readPatients(snapshot.docs));
+        })
+        .catch(error => handleFirestoreError(error, OperationType.GET, 'patients'));
+    void loadRoster();
+    return () => {
+      cancelled = true;
+    };
+  }, [reports]);
+  // Pull-to-refresh now flows through the shared registry, so the gesture
+  // awaits the roster read and can honestly say "refreshed" or report which
+  // view failed instead of a fixed-delay toast.
+  useRefreshHandler(() =>
+    getDocs(query(collection(db, 'patients')))
+      .then(snapshot => setRoster(readPatients(snapshot.docs)))
+      .catch(error => handleFirestoreError(error, OperationType.GET, 'patients')),
+  );
+
   const activeReportDates = useMemo(() => {
     return new Set(reports.filter(r => r.createdAt).map(r => toIsoDay(new Date(r.createdAt))));
   }, [reports]);
 
-  const { filteredReports } = useMemo(() => {
+  const { filteredReports, draftsInRange } = useMemo(() => {
+    // Analytics counts *issued* reports. A draft is work in progress that has not
+    // left the lab, so including it inflated "Total Reports — finalized in
+    // selected range" while the label promised otherwise.
+    //
     // Defensive re-check on the local day: a document whose `createdAt` cannot be
     // parsed must not silently land inside every range.
-    const fr = reports.filter(r => {
+    const inRange = reports.filter(r => {
       if (!r.createdAt) return false;
       const createdAtStr = toIsoDay(new Date(r.createdAt));
       if (fromDate && createdAtStr < fromDate) return false;
       if (toDate && createdAtStr > toDate) return false;
       return true;
     });
+    const issued = inRange.filter(r => r.status === 'final');
 
-    return { filteredReports: fr };
+    return { filteredReports: issued, draftsInRange: inRange.length - issued.length };
   }, [reports, fromDate, toDate]);
 
-  const trendData = useMemo(() => {
-    const daily: Record<string, { tests: number; reports: number }> = {};
+  /**
+   * The trend series for both volume charts, bucketed at the grain the window
+   * needs and keyed by ISO day so no two buckets can merge or be dropped.
+   */
+  const trend = useMemo(() => {
+    const start = new Date(fromDate || toDate || Date.now());
+    const end = new Date(toDate || fromDate || Date.now());
+    start.setHours(0, 0, 0, 0);
+    end.setHours(0, 0, 0, 0);
+    if (end < start) end.setTime(start.getTime());
 
-    // Generate dates between fromDate and toDate
-    const arr: string[] = [];
-    if (fromDate && toDate) {
-      const start = new Date(fromDate);
-      const end = new Date(toDate);
-      const limit = new Date(start);
-      // Let's cap at max 90 days to prevent chart layout explosions if range is huge
-      let count = 0;
-      while (limit <= end && count < 90) {
-        const dateStr = limit.toLocaleDateString('en-US', { day: 'numeric', month: 'short' });
-        daily[dateStr] = { tests: 0, reports: 0 };
-        arr.push(dateStr);
-        limit.setDate(limit.getDate() + 1);
-        count++;
-      }
-    } else {
-      // Default to last 7 days if not set
-      for (let i = 6; i >= 0; i--) {
-        const d = new Date();
-        d.setDate(d.getDate() - i);
-        const dateStr = d.toLocaleDateString('en-US', { day: 'numeric', month: 'short' });
-        daily[dateStr] = { tests: 0, reports: 0 };
-        arr.push(dateStr);
-      }
+    const daySpan = Math.max(1, Math.round((end.getTime() - start.getTime()) / DAY_MS) + 1);
+    const grain = trendGrainFor(daySpan);
+
+    const buckets = new Map<string, TrendPoint>();
+    const cursor = new Date(start);
+    if (grain === 'week') cursor.setDate(cursor.getDate() - ((cursor.getDay() + 6) % 7));
+    if (grain === 'month') cursor.setDate(1);
+
+    // 400 buckets is far beyond any readable axis; it exists so a mistyped range
+    // cannot build an unbounded array, and every report still lands in a bucket.
+    for (let guard = 0; cursor <= end && guard < 400; guard++) {
+      const point = bucketFor(cursor, grain);
+      buckets.set(point.key, point);
+      if (grain === 'day') cursor.setDate(cursor.getDate() + 1);
+      else if (grain === 'week') cursor.setDate(cursor.getDate() + 7);
+      else cursor.setMonth(cursor.getMonth() + 1);
+    }
+    if (buckets.size === 0) {
+      const only = bucketFor(start, grain);
+      buckets.set(only.key, only);
     }
 
     filteredReports.forEach(r => {
       if (!r.createdAt) return;
-      const d = new Date(r.createdAt);
-      const dateStr = d.toLocaleDateString('en-US', { day: 'numeric', month: 'short' });
-      if (daily[dateStr]) {
-        daily[dateStr].reports += 1;
-        // Tests per report: the ordered panel first, then whatever was actually
-        // recorded. (`r.results`/`r.tests` never existed on a report document,
-        // so this used to fall through to "1" for every report.)
-        const testsCount = r.testSelection?.length || Object.keys(r.resultData || {}).length;
-        daily[dateStr].tests += testsCount || 1;
-      }
+      const point = buckets.get(bucketFor(new Date(r.createdAt), grain).key);
+      if (!point) return;
+      point.reports += 1;
+      point.tests += testCountFor(r);
     });
 
-    return arr.map(dateStr => ({
-      name: dateStr,
-      ...daily[dateStr],
-    }));
+    return { points: [...buckets.values()], grain };
   }, [filteredReports, fromDate, toDate]);
+
+  const trendData = trend.points;
+  const trendGrain = trend.grain;
+
+  /**
+   * Distinct patients the issued reports in range belong to. This — not the
+   * registration window — is the population every per-patient figure here needs.
+   */
+  const patientsTested = useMemo(
+    () => new Set(filteredReports.map(r => r.patientId).filter(Boolean)).size,
+    [filteredReports],
+  );
 
   // Both breakdown charts used to share one dataset bucketed by `testType`, which
   // most reports never carry — so each rendered a single "Other" shape. Categories
@@ -233,54 +354,65 @@ export default function AnalyticsPage() {
       .slice(0, 10);
   }, [filteredReports]);
 
+  /**
+   * Reports per patient inside the window.
+   *
+   * Labelled for what it measures. This used to read "New vs recurring
+   * patients", but a patient with one report here is not new to the lab — they
+   * may have been registered years ago and simply visited once this month, and
+   * the underlying read included drafts as well.
+   */
   const patientInsightsData = useMemo(() => {
-    let newP = 0;
-    let recurringP = 0;
+    let single = 0;
+    let multiple = 0;
     const counts: Record<string, number> = {};
-    reports.forEach(r => {
+    filteredReports.forEach(r => {
       if (r.patientId) {
         counts[r.patientId] = (counts[r.patientId] || 0) + 1;
       }
     });
 
     Object.values(counts).forEach(c => {
-      if (c > 1) recurringP++;
-      else newP++;
+      if (c > 1) multiple++;
+      else single++;
     });
 
-    if (newP === 0 && recurringP === 0) return [{ name: 'No Data', value: 1 }];
+    if (single === 0 && multiple === 0) return [{ name: 'No reports in range', value: 1 }];
 
     return [
-      { name: 'New Patients', value: newP },
-      { name: 'Recurring Patients', value: recurringP },
+      { name: 'One report', value: single },
+      { name: 'Multiple reports', value: multiple },
     ];
-  }, [reports]);
+  }, [filteredReports]);
 
   const topDoctors = useMemo(() => {
     // A report carries no doctor — the referral lives on the patient. Joining
     // through `patientId` is what makes this chart more than one "Unknown
     // Doctor" bar.
-    const doctorByPatient = new Map(patients.map(p => [p.id, p.doctorName || 'Unknown Doctor']));
-    const stats: Record<string, { patients: Set<string>; reports: number }> = {};
-    reports.forEach(r => {
-      const docName = doctorByPatient.get(r.patientId) || 'Unknown Doctor';
-      if (!stats[docName]) stats[docName] = { patients: new Set(), reports: 0 };
-      stats[docName].reports += 1;
-      if (r.patientId) stats[docName].patients.add(r.patientId);
-    });
-
-    return Object.keys(stats)
-      .map(k => ({
-        name: k,
-        patients: stats[k].patients.size,
-        reports: stats[k].reports,
+    //
+    // The join reads the whole register (`roster`), not the date window: the
+    // patients who generate reports this month were mostly registered long ago,
+    // so joining through the windowed read labelled nearly every referral
+    // "Unknown Doctor" and ranked that as the top referrer.
+    //
+    // Grouped on `doctorNameKey`, not the raw string: `DR MANOJ KUMAR`,
+    // `DR.MANOJ KUMAR` and `Dr. Manoj Kumar (MBBS)` are one person to the lab and
+    // used to be three bars here, each under-counting the doctor's real referrals.
+    const doctorByPatient = new Map(roster.map(p => [p.id, p.doctorName || 'Unknown Doctor']));
+    return groupByDoctorName(filteredReports, report => doctorByPatient.get(report.patientId))
+      .map(group => ({
+        name: group.name,
+        patients: new Set(group.members.map(member => member.patientId).filter(Boolean)).size,
+        reports: group.members.length,
       }))
       .sort((a, b) => b.reports - a.reports)
       .slice(0, 5);
-  }, [reports, patients]);
+  }, [filteredReports, roster]);
 
   const totalReports = trendData.reduce((acc, curr) => acc + curr.reports, 0);
   const totalTests = trendData.reduce((acc, curr) => acc + curr.tests, 0);
+  /** Registrations opened inside the window — a different thing from activity. */
+  const newRegistrations = patients.length;
 
   return (
     <div className="space-y-6">
@@ -291,6 +423,13 @@ export default function AnalyticsPage() {
         <div>
           <h2 className="text-2xl font-bold tracking-[-0.03em] text-on-surface">Dashboard</h2>
           <p className="text-sm text-on-surface-variant">Overview of your lab performance</p>
+          {draftsInRange > 0 && (
+            <p className="mt-1 text-xs text-on-surface-variant">
+              {draftsInRange} draft{draftsInRange === 1 ? '' : 's'} in this window{' '}
+              {draftsInRange === 1 ? 'is' : 'are'} still unissued, so{' '}
+              {draftsInRange === 1 ? 'it is' : 'they are'} not counted below.
+            </p>
+          )}
         </div>
 
         <CalendarRangePicker
@@ -311,28 +450,36 @@ export default function AnalyticsPage() {
           {
             label: 'Total Reports',
             value: totalReports.toLocaleString(),
-            sub: 'finalized in selected range',
+            sub: 'issued reports in this range',
             icon: FileText,
             tint: 'bg-chart-1/12 text-chart-1',
           },
           {
             label: 'Total Tests',
             value: totalTests.toLocaleString(),
-            sub: 'tests ordered in range',
+            sub: 'individual tests (panels expanded)',
             icon: TestTube,
             tint: 'bg-chart-2/12 text-chart-2',
           },
           {
-            label: 'Unique Patients',
-            value: patients.length.toLocaleString(),
-            sub: 'unique registered patients',
+            label: 'Patients Tested',
+            value: patientsTested.toLocaleString(),
+            sub:
+              newRegistrations > 0
+                ? `${newRegistrations} newly registered`
+                : 'distinct patients served',
             icon: Users,
             tint: 'bg-chart-3/12 text-chart-3',
           },
           {
             label: 'Avg Tests/Patient',
-            value: totalReports > 0 ? (totalTests / patients.length).toFixed(1) : '0',
-            sub: 'completed tests per patient',
+            // Same window on both sides, and the divisor is the number of tested
+            // patients. This used to be `totalTests / patients.length` guarded by
+            // `totalReports > 0` — the wrong operand — so a range holding reports
+            // but no *new* registrations divided by zero and rendered the literal
+            // word "Infinity" on a clinical KPI card.
+            value: patientsTested > 0 ? (totalTests / patientsTested).toFixed(1) : '0',
+            sub: 'tests per tested patient',
             icon: Activity,
             tint: 'bg-chart-4/12 text-chart-4',
           },
@@ -382,11 +529,20 @@ export default function AnalyticsPage() {
               title="Report Volume Trend"
               action={
                 <span className="shrink-0 rounded-full bg-surface-container px-2.5 py-1 text-[11px] font-medium text-on-surface-variant">
-                  Selected range
+                  {trendGrain === 'day' ? 'Daily' : trendGrain === 'week' ? 'Weekly' : 'Monthly'}
                 </span>
               }
             />
-            <div className="flex-1 w-full min-h-0">
+            <div
+              className="flex-1 w-full min-h-0"
+              // UI-P1-07 — the chart's mouse tooltip is invisible to keyboard
+              // and screen-reader users, and the canvas renders as a
+              // unlabeled SVG. Naming the figure and stating the trend
+              // summary in text gives AT users the same "what does this
+              // show" answer without needing to hover a data point.
+              role="img"
+              aria-label={`Report volume across the selected range, shown per ${trendGrain}`}
+            >
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={trendData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                   <defs>
@@ -440,11 +596,15 @@ export default function AnalyticsPage() {
               title="Test Volume Trend"
               action={
                 <span className="shrink-0 rounded-full bg-surface-container px-2.5 py-1 text-[11px] font-medium text-on-surface-variant">
-                  Selected range
+                  {trendGrain === 'day' ? 'Daily' : trendGrain === 'week' ? 'Weekly' : 'Monthly'}
                 </span>
               }
             />
-            <div className="flex-1 w-full min-h-0">
+            <div
+              className="flex-1 w-full min-h-0"
+              role="img"
+              aria-label={`Test volume across the selected range, shown per ${trendGrain}`}
+            >
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={trendData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                   <defs>
@@ -497,7 +657,11 @@ export default function AnalyticsPage() {
         >
           <Card pad="lg" className="flex h-full flex-col">
             <SectionTitle title="Test Category Distribution" />
-            <div className="flex-1 w-full relative flex items-center justify-center min-h-0">
+            <div
+              className="flex-1 w-full relative flex items-center justify-center min-h-0"
+              role="img"
+              aria-label={`Test category distribution across ${categoryData.length} categories in the selected range${categoryData[0] ? `, largest is ${categoryData[0].name} with ${categoryData[0].value}` : ''}`}
+            >
               {categoryData.length === 0 ? (
                 <p className="text-sm text-on-surface-variant">No data available</p>
               ) : (
@@ -555,7 +719,11 @@ export default function AnalyticsPage() {
         >
           <Card pad="lg" className="flex h-full flex-col">
             <SectionTitle title="Top Tests by Volume" />
-            <div className="flex-1 w-full min-h-0">
+            <div
+              className="flex-1 w-full min-h-0"
+              role="img"
+              aria-label={`Top ${topTestsData.length} tests by volume in the selected range${topTestsData[0] ? `, most-ordered is ${topTestsData[0].name} with ${topTestsData[0].value}` : ''}`}
+            >
               {topTestsData.length === 0 ? (
                 <div className="h-full flex items-center justify-center">
                   <p className="text-sm text-on-surface-variant">No data available</p>
@@ -625,8 +793,12 @@ export default function AnalyticsPage() {
           className="lg:col-span-1 h-[300px]"
         >
           <Card pad="lg" className="flex h-full flex-col">
-            <SectionTitle title="Patient Insights" subtitle="New vs recurring patients" />
-            <div className="flex-1 w-full relative flex items-center justify-center min-h-0">
+            <SectionTitle title="Patient Insights" subtitle="Reports per patient in range" />
+            <div
+              className="flex-1 w-full relative flex items-center justify-center min-h-0"
+              role="img"
+              aria-label={`Patient insights: ${roster.length} registered patients split by reports per patient in the selected range`}
+            >
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
@@ -652,10 +824,10 @@ export default function AnalyticsPage() {
               </ResponsiveContainer>
               <div className="pointer-events-none absolute inset-x-0 top-0 bottom-9 flex flex-col items-center justify-center">
                 <span className="text-lg font-bold text-on-surface tabular-nums">
-                  {patients.length}
+                  {roster.length.toLocaleString()}
                 </span>
                 <span className="text-[9px] uppercase tracking-[0.08em] text-on-surface-variant">
-                  Total Patients
+                  Registered patients
                 </span>
               </div>
             </div>

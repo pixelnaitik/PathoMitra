@@ -37,6 +37,11 @@ export interface LocalAccount {
   /** Epoch ms the current lockout ends; 0 when not locked. */
   lockUntil: number;
   /**
+   * Epoch ms of the last recorded attempt, kept so a lockout cannot be ended by
+   * winding the device clock forward. See `verifyAccountPassword`.
+   */
+  lastAttemptAt: number;
+  /**
    * When and which version of the terms the operator accepted. Kept on the
    * account rather than in settings so "erase all data & delete account" removes
    * the acceptance record along with everything else.
@@ -68,6 +73,7 @@ function normalize(account: LocalAccount | null): LocalAccount | null {
     ...account,
     failedAttempts: Number.isFinite(account.failedAttempts) ? account.failedAttempts : 0,
     lockUntil: Number.isFinite(account.lockUntil) ? account.lockUntil : 0,
+    lastAttemptAt: Number.isFinite(account.lastAttemptAt) ? account.lastAttemptAt : 0,
     // An account predating the terms screen is not treated as having accepted
     // something it never saw: these stay empty and re-prompt once on unlock.
     termsAcceptedAt: typeof account.termsAcceptedAt === 'string' ? account.termsAcceptedAt : '',
@@ -92,6 +98,14 @@ export async function createAccount(
   biometricEnabled = false,
   termsAcceptedAt = '',
 ): Promise<LocalAccount> {
+  // The invariant lives here, not in the calling screen. An unlocked-but-stale
+  // console, a double-tapped create button, or two boot attempts racing could
+  // otherwise each call this and silently replace the operator's credential —
+  // locking the real lab out of its own device. Reading first (and refusing when
+  // an account already resolves) makes creation idempotent-safe at the service.
+  if (await hasAccount()) {
+    throw new Error('An account already exists on this device. Unlock instead.');
+  }
   const hash = await hashPassword(password);
   const account: LocalAccount = {
     name: name.trim(),
@@ -100,6 +114,7 @@ export async function createAccount(
     biometricEnabled,
     failedAttempts: 0,
     lockUntil: 0,
+    lastAttemptAt: 0,
     termsAcceptedAt,
     termsVersion: termsAcceptedAt ? TERMS_VERSION : '',
   };
@@ -153,9 +168,35 @@ export async function verifyAccountPassword(password: string): Promise<UnlockRes
 
   const current = (await getAccount()) ?? account;
 
+  // The lockout is measured against the wall clock, and on an offline device the
+  // wall clock belongs to whoever is holding the phone. Winding it forward used to
+  // end any lockout on the spot, which turns "one attempt per hour" back into "as
+  // many attempts as you like". A reading earlier than the last recorded attempt
+  // cannot be real time, so it is treated as tampering: the wait is served from
+  // now, the penalty is not shortened, and the record is re-anchored so the clock
+  // cannot be walked backwards repeatedly to dodge it.
+  if (current.lastAttemptAt > now) {
+    const owed = lockDurationFor(current.failedAttempts);
+    const unlocksAt = Math.max(current.lockUntil, current.lastAttemptAt + owed, now + 1000);
+    if (unlocksAt > current.lockUntil) {
+      await secureSet(KEY, { ...current, lockUntil: unlocksAt });
+    }
+    return {
+      ok: false,
+      reason: 'locked',
+      unlocksAt,
+      waitSeconds: Math.ceil((unlocksAt - now) / 1000),
+    };
+  }
+
   if (await verifyPassword(password, current.password)) {
-    if (current.failedAttempts !== 0 || current.lockUntil !== 0) {
-      await secureSet(KEY, { ...current, failedAttempts: 0, lockUntil: 0 });
+    if (current.failedAttempts !== 0 || current.lockUntil !== 0 || current.lastAttemptAt !== 0) {
+      await secureSet(KEY, {
+        ...current,
+        failedAttempts: 0,
+        lockUntil: 0,
+        lastAttemptAt: 0,
+      });
     }
     return { ok: true };
   }
@@ -166,6 +207,7 @@ export async function verifyAccountPassword(password: string): Promise<UnlockRes
     ...current,
     failedAttempts,
     lockUntil: lockMs > 0 ? now + lockMs : 0,
+    lastAttemptAt: now,
   });
 
   if (lockMs > 0) {
@@ -189,11 +231,35 @@ export async function setBiometricEnabled(enabled: boolean): Promise<void> {
   await secureSet(KEY, { ...account, biometricEnabled: enabled });
 }
 
-export async function changePassword(nextPassword: string): Promise<void> {
+/**
+ * Replace the unlock secret.
+ *
+ * The current secret is a required argument rather than something the caller is
+ * expected to check first. An *unlocked* console is not an *authenticated* one —
+ * a device left open on a bench, or handed over to show a colleague a report, is
+ * exactly the moment a passcode must not be changeable, because changing it
+ * without knowing the old one locks the real operator out of their own lab. The
+ * check goes through {@link verifyAccountPassword}, so guessing here runs into
+ * the same escalating backoff as guessing at the unlock screen.
+ */
+export async function changePassword(nextPassword: string, currentPassword: string): Promise<void> {
   const account = await getAccount();
-  if (!account) return;
+  if (!account) throw new Error('No account exists on this device.');
+
+  const verified = await verifyAccountPassword(currentPassword);
+  if (!verified.ok) {
+    throw new Error(
+      verified.reason === 'locked'
+        ? `Too many attempts — try again in ${Math.ceil(verified.waitSeconds / 60)} min.`
+        : 'Current passcode is incorrect.',
+    );
+  }
+
+  // Re-read: the verify above clears the failure counters, and the new hash must
+  // be written onto that record rather than the snapshot taken before it.
+  const current = (await getAccount()) ?? account;
   const hash = await hashPassword(nextPassword);
-  await secureSet(KEY, { ...account, password: hash });
+  await secureSet(KEY, { ...current, password: hash });
 }
 
 export async function updateAccountName(name: string): Promise<void> {

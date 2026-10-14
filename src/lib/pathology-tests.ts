@@ -2000,6 +2000,41 @@ export const findTestInfo = (query: string): PathologyTest | undefined => {
 };
 
 /**
+ * What was ordered, expanded into the individual tests it represents.
+ *
+ * `testSelection` mixes panel names (CBC) with their members (HEMOGLOBIN): the
+ * panel is what the lab books, the members are what gets reported. Counting that
+ * list as "tests" therefore means two different things depending on which entry
+ * a report happened to carry — a CBC counting as 1 in one report and as ~20 in
+ * another, which is exactly how the analytics "Total Tests" figure stopped being
+ * comparable month to month.
+ *
+ * Everything that needs a test count goes through here so there is one answer:
+ * a panel contributes its members, a member contributes itself, a member already
+ * listed separately is not counted twice, and section headers contribute nothing.
+ */
+export function expandTestSelection(names: readonly string[] = []): string[] {
+  const leaves = new Set<string>();
+  for (const raw of names) {
+    const name = String(raw ?? '').trim();
+    if (!name) continue;
+    const info = findTestInfo(name);
+    if (info?.isHeader) continue;
+    const members = info?.isGroup ? (info.includedTests ?? []) : [];
+    if (members.length > 0) {
+      for (const member of members) {
+        const trimmed = String(member ?? '').trim();
+        if (trimmed) leaves.add(trimmed);
+      }
+      continue;
+    }
+    // A known group with no members listed is a catalogue gap, not a test.
+    if (!info?.isGroup) leaves.add(name);
+  }
+  return [...leaves];
+}
+
+/**
  * Fold the ways the same test gets typed into one comparable form, so a lab
  * assistant doesn't need to know the catalogue's spelling:
  *

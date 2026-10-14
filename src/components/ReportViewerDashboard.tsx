@@ -29,7 +29,7 @@ import { Button, Sheet, StatusPill } from './ui';
 import { cn } from '../lib/utils';
 import { findTestInfo, resolveReferenceRange } from '../lib/pathology-tests';
 import { ageAsNumber, type PatientRecord, type ReportRecord } from '../lib/models';
-import { buildReportLegalLines } from '../lib/report-compliance';
+import { buildReportLegalLines, resolveSigner } from '../lib/report-compliance';
 import { readSettings } from '../lib/settings';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -143,7 +143,20 @@ export function ReportViewerDashboard({
     if (!shown) return [];
     const age = patient ? ageAsNumber(patient) : undefined;
     const gender = patient?.gender;
-    return (shown.testSelection || []).map<ResultRow>(name => {
+    // Ordered panels *plus* every value that was actually recorded.
+    //
+    // Deriving the rows from `testSelection` alone meant a result stored under a
+    // key that is not in that list was invisible here — and on the printed
+    // report, which builds its table the same way. A lab could look at a report
+    // on screen, see nothing unusual, and hand over a document missing a value
+    // that exists in the database.
+    const names = [
+      ...(shown.testSelection || []),
+      ...Object.keys(shown.resultData ?? {}).filter(
+        key => !(shown.testSelection || []).includes(key),
+      ),
+    ];
+    return names.map<ResultRow>(name => {
       const info = findTestInfo(name);
       const category = info?.category || 'General';
       if (info?.isGroup || info?.isHeader) {
@@ -192,7 +205,7 @@ export function ReportViewerDashboard({
   const meta = useMemo(() => {
     if (!shown) return null;
     const s = readSettings();
-    const signer = shown.signature || user?.displayName || '';
+    const signer = resolveSigner(shown);
     const legal = buildReportLegalLines({
       accreditationBody: s.accreditationBody,
       accreditationNumber: s.accreditationNumber,
@@ -405,9 +418,12 @@ export function ReportViewerDashboard({
           </section>
         )}
 
-        {/* Signature & compliance block */}
+        {/* Issue & compliance block. Named "issue" not "signature" because
+            the build produces no verifiable digital signature (see
+            lib/report-compliance.ts) — the section describes who pressed
+            "Issue" and when, not an assurance a third party could check. */}
         <section
-          aria-label="Signature"
+          aria-label="Issue details"
           className="rounded-2xl border border-outline-variant/30 bg-surface-container-low p-4"
         >
           <div className="flex items-center gap-3">
@@ -425,7 +441,11 @@ export function ReportViewerDashboard({
               <p className="truncate text-[13px] font-bold text-on-surface">
                 {draft
                   ? 'Not yet issued'
-                  : `Digitally signed by ${meta.signer || 'the issuing operator'}`}
+                  : // The build writes no verifiable signature (see
+                    // lib/report-compliance.ts); `meta.signer` is the
+                    // display name captured at issue time. Saying "Issued
+                    // by" describes the operation the app really does.
+                    `Issued by ${meta.signer || 'the lab operator'}`}
               </p>
               <p className="text-[11px] text-on-surface-variant">
                 {draft

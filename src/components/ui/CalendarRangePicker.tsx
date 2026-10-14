@@ -177,7 +177,16 @@ export function CalendarRangePicker({
               initial={{ opacity: 0, scale: 0.95, y: -10 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: -10 }}
-              className="absolute right-0 z-50 mt-2 max-h-[min(26rem,70vh)] w-80 origin-top-right overflow-y-auto overscroll-contain rounded-3xl border border-outline-variant/30 bg-surface-container-lowest p-4 shadow-float"
+              // The audit (UI-P1-02) flags the fixed `w-80` (320 px) panel
+              // anchored `right-0`: a 320 px viewport with page gutters
+              // cannot host a 320 px panel, so the day grid was clipped.
+              // On phones the panel now stretches the full width of the
+              // trigger (which every page already sizes to `w-full`),
+              // and at >= sm it reverts to the old right-anchored 20 rem
+              // popover. `max-w-[calc(100vw-1rem)]` clamps the wider
+              // case too, so a foldable / narrow-window desktop resize
+              // still fits.
+              className="absolute left-0 right-0 z-50 mt-2 max-h-[min(26rem,70vh)] origin-top-right overflow-y-auto overscroll-contain rounded-3xl border border-outline-variant/30 bg-surface-container-lowest p-4 shadow-float max-w-[calc(100vw-1rem)] sm:left-auto sm:w-80"
             >
               <div className="mb-3 flex items-center justify-between">
                 <button

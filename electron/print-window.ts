@@ -20,9 +20,9 @@
  *      path here), so passing both is a coin flip on whether a landscape job
  *      comes out rotated twice.
  */
-import { BrowserWindow, webContents } from 'electron';
+import { BrowserWindow, app, webContents } from 'electron';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { readPrintQueue } from './print';
 
@@ -67,6 +67,37 @@ export interface PrintJobResult {
 /** A print job longer than this is a mistake, not a workflow. */
 const MAX_PAGES = 200;
 const MM_TO_PX = 96 / 25.4;
+
+/**
+ * Where a spooled job is staged: the app's own profile directory, never the
+ * shared temp folder.
+ *
+ * The staging document is the report — every page rendered, patient name and
+ * results included. It used to be written to `%TEMP%\PathoMitra\Print\` with a
+ * filename derived from the job title, i.e. plaintext PHI in a directory other
+ * applications and any user of that machine can read, in a folder the lab's own
+ * backup tools sweep. That sat badly beside shipping the Android build with
+ * screenshot protection on by default. Under `userData` the path is per-user,
+ * outside every indexer, and the file gets a random name — the title never
+ * touches the filesystem.
+ */
+function printStagingDir(): string {
+  return path.join(app.getPath('userData'), 'Print');
+}
+
+/** Anything left behind by a crash is deleted on the next job. */
+function sweepStaleStaging(dir: string, except: string): void {
+  try {
+    for (const entry of fs.readdirSync(dir)) {
+      const full = path.join(dir, entry);
+      if (full === except) continue;
+      fs.rm(full, { force: true }, () => {});
+    }
+  } catch {
+    // Nothing to sweep, or the directory is not ours to read. Never fail a job
+    // over housekeeping.
+  }
+}
 
 /**
  * Installed printers.
@@ -191,14 +222,16 @@ export async function printJob(
   const invalid = validate(request);
   if (invalid) return { ok: false, error: invalid };
 
-  const safeTitle = (request.title.replace(/[\\/:*?"<>|]/g, '-') || 'print-job').slice(0, 60);
-  const dir = path.join(os.tmpdir(), 'PathoMitra', 'Print');
-  const file = path.join(dir, `${Date.now()}-${safeTitle}.html`);
+  const dir = printStagingDir();
+  // Random name, no title: the filename must not be a second copy of the
+  // patient's identity.
+  const file = path.join(dir, `${crypto.randomUUID()}.html`);
   let win: BrowserWindow | undefined;
 
   try {
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(file, buildDocument(request), 'utf8');
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    sweepStaleStaging(dir, file);
+    fs.writeFileSync(file, buildDocument(request), { encoding: 'utf8', mode: 0o600 });
 
     const widthPx = Math.round(request.sheetWidthMm * MM_TO_PX);
     const heightPx = Math.round(request.sheetHeightMm * MM_TO_PX);
@@ -252,7 +285,9 @@ export async function printJob(
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   } finally {
     win?.destroy();
-    // The spooler has the bytes by now; the temp document is ours and disposable.
+    // The spooler has the bytes by now; the staging document is ours and
+    // disposable, and it holds patient data — so it is removed even when the job
+    // threw.
     fs.rm(file, { force: true }, () => {});
   }
 }

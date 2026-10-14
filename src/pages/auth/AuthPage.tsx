@@ -11,6 +11,8 @@ import {
   HelpCircle,
   Lock,
   BarChart3,
+  ShieldAlert,
+  RefreshCw,
 } from 'lucide-react';
 import { Navigate, useNavigate } from 'react-router-dom';
 import {
@@ -464,14 +466,17 @@ function CreateAccountForm() {
 
       <div className="space-y-3.5">
         <div>
-          <FieldLabel htmlFor="account-name">Your name</FieldLabel>
+          {/* Owner ask 2026-10-14: this field carries the LAB identity, not a
+              person's name — label and placeholder say so. 'organization' is the
+              correct autofill token for it (was 'name'). */}
+          <FieldLabel htmlFor="account-name">Lab name</FieldLabel>
           <input
             id="account-name"
             type="text"
             value={name}
             onChange={e => setName(e.target.value)}
-            placeholder="Printed on reports you issue"
-            autoComplete="name"
+            placeholder="Enter your lab name"
+            autoComplete="organization"
             className={inputClass}
           />
         </div>
@@ -752,6 +757,36 @@ export default function AuthPage() {
       <div className="flex min-h-dvh items-center justify-center bg-background">
         <Loader2 className="h-10 w-10 animate-spin text-accent" aria-label="Loading" />
       </div>
+    );
+  }
+
+  // Secure storage could not be read on boot. Do NOT offer account creation —
+  // that is the path that would overwrite an account we merely failed to see.
+  // Fail closed: explain, and give a retry that re-runs the boot read.
+  if (status === 'error') {
+    return (
+      <Shell>
+        <div role="alert" aria-live="assertive" className="text-center">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-error-container/60">
+            <ShieldAlert className="h-6 w-6 text-on-error-container" aria-hidden="true" />
+          </div>
+          <h1 className="text-lg font-bold text-on-surface">Secure storage unavailable</h1>
+          <p className="mt-3 text-sm leading-relaxed text-on-surface-variant">
+            PathoMitra could not read this device&apos;s protected storage, so it cannot tell
+            whether a lab account is already set up. Your records have <strong>not</strong> been
+            removed. Creating a new account is disabled until the storage can be read again, so
+            nothing existing is overwritten.
+          </p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary px-6 py-3 text-sm font-bold text-on-primary transition active:scale-[0.98]"
+          >
+            <RefreshCw className="h-4 w-4" aria-hidden="true" />
+            Try again
+          </button>
+        </div>
+      </Shell>
     );
   }
 

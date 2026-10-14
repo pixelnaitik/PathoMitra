@@ -286,8 +286,20 @@ export function writeBatch(_db: unknown): Batch {
     delete(ref) {
       ops.push(() => deleteDoc(ref));
     },
+    /**
+     * Commit as one unit.
+     *
+     * This used to be a bare sequential loop while the calling code promised
+     * "committed batches, so a partial failure cannot leave orphaned records".
+     * On the native store the loop is now a real SQLCipher transaction: either
+     * every document in the chunk goes, or none of them do. The localStorage
+     * adapter still runs them sequentially and says so in its own comment — the
+     * browser store has no atomicity to offer.
+     */
     async commit() {
-      for (const op of ops) await op();
+      await getRepository().transaction(async () => {
+        for (const op of ops) await op();
+      });
     },
   };
 }

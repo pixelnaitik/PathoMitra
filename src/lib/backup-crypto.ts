@@ -53,6 +53,20 @@ export const MIN_BACKUP_PASSPHRASE = 12;
 const MIN_ACCEPTED_ITERATIONS = 100_000;
 const MAX_ACCEPTED_ITERATIONS = 2_000_000;
 
+/**
+ * The one envelope shape this build writes and reads, asserted rather than
+ * assumed.
+ *
+ * `kdf.alg` and `cipher.alg` used to be parsed and then ignored: a file claiming
+ * `scrypt` or `AES-CBC` was decrypted with PBKDF2 and AES-GCM anyway, so the
+ * header described nothing about the bytes under it and a future algorithm change
+ * had nowhere to be detected. Same for `schemaVersion` — written, never read.
+ * Anything that does not match exactly what this app produces is refused by name.
+ */
+const KDF_ALG = 'pbkdf2-sha256';
+const CIPHER_ALG = 'AES-GCM';
+const ENVELOPE_SCHEMA_VERSION = 1;
+
 export interface EncryptedBackupEnvelope {
   app: 'PathoMitra';
   /** Distinguishes a sealed snapshot from a plaintext one. */
@@ -98,6 +112,25 @@ function fromHex(hex: string): Uint8Array {
   const out = new Uint8Array(hex.length / 2);
   for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   return out;
+}
+
+const HEX_RE = /^[0-9a-fA-F]+$/;
+
+/**
+ * Read a hex field that must be exactly `bytes` long.
+ *
+ * `fromHex` on its own is forgiving in the worst way: an odd-length string
+ * silently loses its last nibble and a non-hex character becomes `NaN`, which a
+ * `Uint8Array` stores as `0`. A mistyped envelope then produces a quietly wrong
+ * key, and the operator is told their passphrase is wrong when the file is what
+ * is broken. Exactly the length, all hex characters, or refuse it by name.
+ */
+function parseFixedHex(value: string | undefined, bytes: number, label: string): Uint8Array {
+  const hex = (value ?? '').trim();
+  if (hex.length !== bytes * 2 || !HEX_RE.test(hex)) {
+    throw new Error(`That encrypted backup has a malformed ${label}.`);
+  }
+  return fromHex(hex);
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -170,10 +203,10 @@ export async function sealPayload(plain: string, passphrase: string): Promise<st
   const envelope: EncryptedBackupEnvelope = {
     app: 'PathoMitra',
     kind: 'backup-encrypted',
-    schemaVersion: 1,
+    schemaVersion: ENVELOPE_SCHEMA_VERSION,
     createdAt: new Date().toISOString(),
-    kdf: { alg: 'pbkdf2-sha256', iterations: ITERATIONS, salt: toHex(salt) },
-    cipher: { alg: 'AES-GCM', iv: toHex(iv) },
+    kdf: { alg: KDF_ALG, iterations: ITERATIONS, salt: toHex(salt) },
+    cipher: { alg: CIPHER_ALG, iv: toHex(iv) },
     ciphertext: toBase64(new Uint8Array(ciphertext)),
   };
   return JSON.stringify(envelope, null, 2);
@@ -191,14 +224,21 @@ export async function openPayload(envelopeText: string, passphrase: string): Pro
   if (!envelope || envelope.kind !== 'backup-encrypted' || !envelope.ciphertext) {
     throw new Error('That file is not an encrypted PathoMitra backup.');
   }
-  const salt = fromHex(envelope.kdf?.salt ?? '');
-  const iv = fromHex(envelope.cipher?.iv ?? '');
-  const iterations = envelope.kdf?.iterations ?? ITERATIONS;
-  if (!salt.length || !iv.length)
-    throw new Error('That encrypted backup is missing its salt or IV.');
-  if (salt.length > 1024 || iv.length > 128) {
-    throw new Error('That encrypted backup has an implausibly large salt or IV.');
+  if (envelope.kdf?.alg !== KDF_ALG) {
+    throw new Error('That encrypted backup asks for a key derivation this build cannot perform.');
   }
+  if (envelope.cipher?.alg !== CIPHER_ALG) {
+    throw new Error('That encrypted backup asks for a cipher this build cannot perform.');
+  }
+  if (envelope.schemaVersion !== ENVELOPE_SCHEMA_VERSION) {
+    throw new Error(
+      `That encrypted backup uses schema version ${String(envelope.schemaVersion)}; this build reads version ${ENVELOPE_SCHEMA_VERSION}.`,
+    );
+  }
+  // Exact lengths, asserted before any key material is derived.
+  const salt = parseFixedHex(envelope.kdf?.salt, SALT_BYTES, 'salt');
+  const iv = parseFixedHex(envelope.cipher?.iv, IV_BYTES, 'initialisation vector');
+  const iterations = envelope.kdf?.iterations ?? ITERATIONS;
   if (
     !Number.isInteger(iterations) ||
     iterations < MIN_ACCEPTED_ITERATIONS ||

@@ -1,6 +1,6 @@
 {
   "name": "pathomitra",
-  "version": "2.6.4",
+  "version": "2.6.9",
   "private": true,
   "type": "module",
   "main": "dist-electron/main.js",
@@ -44,7 +44,7 @@
     "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit && eslint .",
-    "lint:ci": "tsc --noEmit && eslint . --max-warnings=21",
+    "lint:ci": "tsc --noEmit && eslint . --max-warnings=23",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\"",

@@ -100,6 +100,25 @@ export function formatIssuedStamp(iso: string | undefined): string {
   });
 }
 
+/**
+ * The name that may be printed as the issuing operator.
+ *
+ * `signature` holds it on every report written since that column was repurposed.
+ * Older documents — restored backups, records from before the change — carry
+ * nothing, and the honest answer then is *nobody*, not "whoever is looking at it".
+ * Both the PDF pipeline and the on-screen viewer used to fall back to the viewing
+ * operator's own name, which is a fresh misattribution: it puts a colleague's
+ * report under the name of the person standing at the keyboard.
+ */
+export function resolveSigner(issue: { signature?: string; createdBy?: string }): string {
+  const signer = clean(issue.signature);
+  if (signer) return signer.slice(0, 128);
+  // `createdBy` is written with the issuing operator's name (see `operatorStamp`
+  // in lib/models.ts) — the same person this line is meant to name.
+  const author = clean(issue.createdBy);
+  return author === 'unknown' ? '' : author.slice(0, 128);
+}
+
 /** Build every claim-bearing line on the report from one input. */
 export function buildReportLegalLines(input: ReportLegalInput = {}): ReportLegalLines {
   const attested = hasAttestedAccreditation(input);

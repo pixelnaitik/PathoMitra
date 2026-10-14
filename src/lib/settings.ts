@@ -13,6 +13,7 @@
  */
 import { applyAppearance, applyTheme } from './theme';
 import { RECOMMENDED_LAYOUT_DEFAULTS } from './report-layout';
+import { REPORT_FIELDS, sanitizeFieldValue, type LayoutFieldKey } from './report-layout-spec';
 import { DEFAULT_NOTIFICATION_PREFS, type NotificationPrefs } from './notification-engine';
 import type { PathologyTest } from './pathology-tests';
 
@@ -42,6 +43,32 @@ export function isBrandLogoDataUrl(value: unknown): value is string {
     value.startsWith('data:image/') &&
     value.length > 0 &&
     value.length <= BRAND_LOGO_MAX_CHARS
+  );
+}
+
+/**
+ * Ceiling for the stored share-letterhead data URL, sized to the 4 MB file the
+ * upload form already refuses (base64 text is ~4/3 of the bytes).
+ */
+export const LETTERHEAD_MAX_CHARS = 5_600_000;
+
+/**
+ * The share-mode letterhead is drawn on every page of the report a lab hands
+ * over, so what is stored must be an image this app can actually draw: never a
+ * remote address (the build ships without INTERNET, and a URL is a tracking
+ * vector), never an arbitrary string from a restored backup or a hand-edited
+ * store.
+ *
+ * The only thing that used to stop a bad value was a `try/catch` around
+ * `addImage`, which failed as a console error at print time — the moment a lab
+ * cannot afford. This is the same rule applied where the value is written.
+ */
+export function isLetterheadDataUrl(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.startsWith('data:image/') &&
+    value.length > 0 &&
+    value.length <= LETTERHEAD_MAX_CHARS
   );
 }
 
@@ -251,6 +278,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Clamp every report-layout number on the way through the store boundary.
+ *
+ * The sliders in Settings already enforce these ranges, and the PDF pipeline
+ * refuses a sheet with no printable area — but nothing bounded the *stored*
+ * values. A hand-edited or corrupted document could therefore put the lab in a
+ * state where every print, preview and share is refused, with no way back except
+ * editing each of eighteen fields by hand. Clamping on read (and the values
+ * defaulting to the recommended ones when a field is not a number at all) keeps
+ * the store inside the range the renderer assumes.
+ */
+function clampLayoutFields(s: Record<string, unknown>): void {
+  for (const key of Object.keys(REPORT_FIELDS) as LayoutFieldKey[]) {
+    if (s[key] === undefined) continue;
+    s[key] = sanitizeFieldValue(REPORT_FIELDS[key], Number(s[key]));
+  }
+}
+
+/**
  * Upgrade legacy stored values to the current defaults. Safe to run on every
  * read — it only rewrites values that match known old defaults.
  */
@@ -264,6 +309,7 @@ export function migrateSettings(parsed: Record<string, unknown>): Record<string,
   const bodyFont = (s.tableBodyFontSize as number) ?? DEFAULT_SETTINGS.tableBodyFontSize;
   if (s.reportTableBodyFontSize === undefined) s.reportTableBodyFontSize = bodyFont;
   if (s.shareTableBodyFontSize === undefined) s.shareTableBodyFontSize = bodyFont;
+  clampLayoutFields(s);
   if (s.themeMode === undefined) s.themeMode = DEFAULT_SETTINGS.themeMode;
   // Appearance prefs are enumerated — a corrupt or hand-edited stored value
   // must not stick (an unknown textSize would silently disable the scale).
@@ -288,6 +334,14 @@ export function migrateSettings(parsed: Record<string, unknown>): Record<string,
   // corrupt) falls back to the built-in microscope rather than being rendered
   // or bloating every later write.
   if (!isBrandLogoDataUrl(s.brandLogoUrl)) s.brandLogoUrl = DEFAULT_SETTINGS.brandLogoUrl;
+  // The share letterhead is an inline image or nothing at all. An empty string is
+  // a meaningful value here ("no letterhead, use the plain template"), so only a
+  // non-empty value that is not a drawable data URL is dropped.
+  if (typeof s.sharingTemplateImage !== 'string') {
+    s.sharingTemplateImage = DEFAULT_SETTINGS.sharingTemplateImage;
+  } else if (s.sharingTemplateImage && !isLetterheadDataUrl(s.sharingTemplateImage)) {
+    s.sharingTemplateImage = '';
+  }
   // Legal-footer credentials are claims printed on a clinical document, so a
   // corrupt or hand-edited stored value is dropped rather than rendered, and an
   // attestation flag that is not a real timestamp disables the claim entirely.
@@ -338,8 +392,15 @@ export function readSettings(): LabSettings {
 /** Persist settings, apply the theme and notify other mounted components. */
 export function writeSettings(settings: LabSettings): void {
   const prefs = sanitizeNotificationPrefs(settings.notificationPrefs);
+  // Clamp the layout numbers on the way out too: `migrateSettings` protects a
+  // read, but a bad write must not be able to put an unprintable margin or a
+  // 900 pt title into the store in the first place — that is the state where
+  // every later print, preview and share is refused.
+  const layout: Record<string, unknown> = { ...settings };
+  clampLayoutFields(layout);
   const stamped: LabSettings = {
     ...settings,
+    ...layout,
     notificationPrefs: prefs,
     updatedAt: new Date().toISOString(),
   };

@@ -104,4 +104,24 @@ describe('CalendarRangePicker', () => {
     expect(today.toDate).toBe(toIsoDay(new Date()));
     expect(presetRange('thisMonth').fromDate).toBe(iso(1));
   });
+
+  it('clamps the popover to the viewport so a 320 px phone cannot lose a day column (UI-P1-02)', () => {
+    // The panel used to be `absolute right-0 w-80` (a fixed 320 px popover).
+    // On a 320 px viewport with page gutters that clipped the day grid.
+    // The contract now: the popover stretches to its trigger on phones and
+    // caps its width against the viewport at every size. We test the class
+    // contract (the geometry itself is a CSS concern verified by visual QA).
+    const { open } = renderPicker();
+    open();
+    const panel = screen.getByRole('dialog', { name: 'Choose date range' });
+    const classes = panel.getAttribute('class') ?? '';
+    // Full-width on phones, right-anchored at sm+, viewport-clamped always.
+    expect(classes).toContain('left-0');
+    expect(classes).toContain('right-0');
+    expect(classes).toMatch(/sm:left-auto/);
+    expect(classes).toMatch(/sm:w-80/);
+    expect(classes).toMatch(/max-w-\[calc\(100vw-1rem\)\]/);
+    // The old hard-coded `w-80` without a responsive prefix must be gone.
+    expect(classes).not.toMatch(/(^|\s)w-80(\s|$)/);
+  });
 });

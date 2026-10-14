@@ -194,7 +194,11 @@ describe('buildNotifications — drafts', () => {
       now: NOW,
     });
     expect(items[0]?.category).toBe('draft');
-    expect(items[0]?.body).toContain('invisible to the patient');
+    // Honest wording: this build has no patient-facing surface and no signing
+    // service, so a draft alert must not promise a visibility or a signature that
+    // cannot exist (see lib/report-compliance).
+    expect(items[0]?.body).toContain('It stays in the lab until the report is issued.');
+    expect(items[0]?.body).not.toMatch(/invisible to the patient|signed/i);
   });
 
   it('judges a draft by its last edit, not by when it was created', () => {

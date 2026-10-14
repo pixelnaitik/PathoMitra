@@ -15,9 +15,10 @@ import {
 import { deletePatientCascade, deleteReportCascade } from '../../lib/cascades';
 import { readReports, readPatients } from '../../lib/models';
 import { handleFirestoreError, OperationType } from '../../lib/firestore-errors';
-import { Users, FileText, ShieldCheck, Plus, Trash2, UserPlus } from 'lucide-react';
+import { Users, FileText, Plus, Trash2, UserPlus } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { listStaggerProps } from '../../lib/motion';
+import { reportStatusView } from '../../lib/report-status';
 import { useAuth } from '../../contexts/AuthContext';
 import CountUp from '../../components/CountUp';
 import {
@@ -146,11 +147,16 @@ export default function OverviewPage({
       meta: 'Registered in this lab',
     },
     {
-      label: 'Reports Finalized',
+      // Wording is deliberately not "Reports Finalized / Digitally signed
+      // outputs": the build cannot substantiate a digital signature (see
+      // lib/report-compliance.ts) and the audit (UI-P0-01) requires every
+      // surface that names an operation to describe the operation the app
+      // really does. "Issued" is the stored status; "Signed" is not.
+      label: 'Reports Issued',
       value: stats.reports,
       icon: FileText,
       tint: 'bg-chart-2/12 text-chart-2',
-      meta: 'Digitally signed outputs',
+      meta: 'Given to the patient or referring doctor',
     },
   ];
 
@@ -177,7 +183,7 @@ export default function OverviewPage({
                 </h2>
                 <p className="mx-auto mt-1 max-w-md text-[13px] leading-relaxed text-on-surface-variant">
                   Your lab is set up and ready. Get started by registering your first patient, then
-                  create a signed report from their profile.
+                  build and issue their report from their profile.
                 </p>
               </div>
               <div className="mt-1 flex flex-wrap items-center justify-center gap-3">
@@ -405,7 +411,14 @@ export default function OverviewPage({
                 <tr className="border-b border-outline-variant/60 text-[11px] uppercase tracking-[0.06em] text-on-surface-variant">
                   <th className="pb-3 pr-4 font-semibold">Patient & test</th>
                   <th className="pb-3 px-4 font-semibold">Status</th>
-                  <th className="pb-3 px-4 font-semibold">Signature</th>
+                  {/*
+                    The "Signature" column used to sit here and read
+                    "Unsigned" on every row — the app has no signing service
+                    (see lib/report-compliance.ts) and the `signature` field
+                    is written empty, so the column could never say anything
+                    useful. Deleting it removes a claim the build cannot
+                    substantiate (UI-P0-01).
+                  */}
                   <th className="pb-3 px-4 font-semibold">Date</th>
                   {role !== 'guest' && (
                     <th className="pb-3 pl-4 text-right font-semibold">Actions</th>
@@ -421,9 +434,12 @@ export default function OverviewPage({
                     : item.testSelection?.length > 0
                       ? item.testSelection.join(', ')
                       : 'No test selected';
-                  const status = isReport ? item.status || 'final' : 'pending';
-                  const isFinal = status === 'finalized' || status === 'final';
-                  const isSecured = isReport && !!item.signature;
+                  // Same state model as the Reports tab card and the detail
+                  // sheet — one source of truth for Draft / Issued / Amended
+                  // so the overview cannot disagree with the record it links to.
+                  const statusView = isReport
+                    ? reportStatusView({ status: item.status, version: item.version })
+                    : null;
                   const date = item.createdAt
                     ? new Date(item.createdAt).toLocaleDateString('en-IN')
                     : 'N/A';
@@ -452,17 +468,14 @@ export default function OverviewPage({
                         </div>
                       </td>
                       <td className="py-3.5 px-4">
-                        <StatusPill tone={isFinal ? 'success' : 'warning'} dot>
-                          {isFinal ? 'Final' : 'Awaiting'}
-                        </StatusPill>
-                      </td>
-                      <td className="py-3.5 px-4">
-                        {isSecured ? (
-                          <span className="inline-flex items-center gap-1 text-xs font-semibold text-success">
-                            <ShieldCheck className="w-3.5 h-3.5" aria-hidden="true" /> Secured
-                          </span>
+                        {statusView ? (
+                          <StatusPill tone={statusView.tone} dot>
+                            {statusView.label}
+                          </StatusPill>
                         ) : (
-                          <span className="text-xs font-medium text-outline">Unsigned</span>
+                          <StatusPill tone="neutral" dot>
+                            Awaiting report
+                          </StatusPill>
                         )}
                       </td>
                       <td className="py-3.5 px-4 text-xs font-medium text-on-surface-variant">
@@ -488,7 +501,7 @@ export default function OverviewPage({
                 {combinedReports.length === 0 && (
                   <tr>
                     <td
-                      colSpan={role !== 'guest' ? 5 : 4}
+                      colSpan={role !== 'guest' ? 4 : 3}
                       className="py-8 text-center text-sm text-on-surface-variant"
                     >
                       No reports yet — create one from the Reports tab
@@ -509,9 +522,9 @@ export default function OverviewPage({
                 : item.testSelection?.length > 0
                   ? item.testSelection.join(', ')
                   : 'No test selected';
-              const status = isReport ? item.status || 'final' : 'pending';
-              const isFinal = status === 'finalized' || status === 'final';
-              const isSecured = isReport && !!item.signature;
+              const statusView = isReport
+                ? reportStatusView({ status: item.status, version: item.version })
+                : null;
               const date = item.createdAt
                 ? new Date(item.createdAt).toLocaleDateString('en-IN')
                 : 'N/A';
@@ -539,13 +552,14 @@ export default function OverviewPage({
                     <p className="truncate text-[15px] font-semibold text-on-surface">{name}</p>
                     <p className="truncate text-[13px] text-on-surface-variant">{testSub}</p>
                     <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                      <StatusPill tone={isFinal ? 'success' : 'warning'} dot>
-                        {isFinal ? 'Final' : 'Awaiting'}
-                      </StatusPill>
-                      {isSecured && (
-                        <span className="inline-flex items-center gap-1 text-xs font-semibold text-success">
-                          <ShieldCheck className="w-3.5 h-3.5" aria-hidden="true" /> Secured
-                        </span>
+                      {statusView ? (
+                        <StatusPill tone={statusView.tone} dot>
+                          {statusView.label}
+                        </StatusPill>
+                      ) : (
+                        <StatusPill tone="neutral" dot>
+                          Awaiting report
+                        </StatusPill>
                       )}
                       <span className="ml-auto text-xs text-on-surface-variant">{date}</span>
                     </div>
@@ -569,7 +583,7 @@ export default function OverviewPage({
               <EmptyState
                 icon={<FileText className="h-7 w-7" aria-hidden="true" />}
                 title="No reports yet"
-                description="Create a signed report from a patient's profile."
+                description="Issue a report from a patient's profile to see it here."
                 action={
                   role !== 'guest' ? (
                     <Button

@@ -60,6 +60,7 @@ export function ListRow({
   subtitle,
   trailing,
   onClick,
+  primaryLabel,
   className,
 }: {
   leading?: ReactNode;
@@ -67,8 +68,59 @@ export function ListRow({
   subtitle?: ReactNode;
   trailing?: ReactNode;
   onClick?: () => void;
+  /**
+   * Accessible name for the primary action. When the title is composed of
+   * rich content (a name + inline badges), `aria-label` on the button is the
+   * only reliable announcement TalkBack / VoiceOver gets. Falls back to the
+   * text content of `title` when not given.
+   */
+  primaryLabel?: string;
   className?: string;
 }) {
+  // When `onClick` is set AND `trailing` contains further interactive controls
+  // (the pattern every mobile list row in this app is), the whole row cannot
+  // be a single <button> — nesting a button inside a button is invalid HTML
+  // and TalkBack announces the wrapper first, so the trailing Edit / Delete
+  // never receive their own focus stop (UI-P0-04). The row then splits into
+  // a primary button (leading + title + subtitle) and a sibling action strip
+  // for the trailing controls. Without trailing there is no conflict and the
+  // row stays a single full-width button.
+  if (onClick && trailing) {
+    return (
+      <div
+        className={cn(
+          'cv-row group flex min-h-[60px] w-full items-center gap-3.5 px-4 py-3 text-left transition-colors',
+          className,
+        )}
+      >
+        <button
+          type="button"
+          onClick={() => {
+            hapticTap();
+            onClick();
+          }}
+          aria-label={primaryLabel}
+          className="-mx-2 flex min-w-0 flex-1 items-center gap-3.5 rounded-2xl px-2 py-1 text-left transition-colors hover:bg-surface-container-low active:bg-surface-container-high focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        >
+          {leading && (
+            <div className="icon-pop flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden">
+              {leading}
+            </div>
+          )}
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[15px] font-semibold text-on-surface">{title}</p>
+            {subtitle && (
+              <p className="mt-0.5 truncate text-[13px] text-on-surface-variant">{subtitle}</p>
+            )}
+          </div>
+        </button>
+        {/* Each trailing control is a sibling of the primary button, so
+            Tab reaches it directly and TalkBack announces it separately. */}
+        <div className="icon-slide flex shrink-0 items-center gap-1.5">{trailing}</div>
+      </div>
+    );
+  }
+
   const Tag = onClick ? 'button' : 'div';
   return (
     <Tag
@@ -83,6 +135,7 @@ export function ListRow({
             }
           : undefined
       }
+      aria-label={onClick ? primaryLabel : undefined}
       className={cn(
         'cv-row group flex min-h-[60px] w-full items-center gap-3.5 px-4 py-3 text-left transition-colors',
         onClick && 'hover:bg-surface-container-low active:bg-surface-container-high',

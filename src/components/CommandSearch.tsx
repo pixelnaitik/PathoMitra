@@ -1,15 +1,32 @@
 /**
  * CommandSearch — global search overlay (Ctrl+K / Cmd+K).
  * Searches across patients, reports, and doctors with keyboard navigation.
+ *
+ * What it searches: every record the store holds, matched on every field a
+ * person at a counter would actually type — a patient's registration number, a
+ * phone number in any formatting, a test or panel name, not just display names.
+ * It used to load the 200 newest of each collection and search only those, so a
+ * lab with any history got "No results found" for a patient who plainly existed.
+ * The local store materialises the whole collection on any read anyway, so the
+ * ceiling was costing correctness and buying nothing.
  */
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
-import { Search, Users, FileText, Stethoscope, ArrowRight, CornerDownLeft, X } from 'lucide-react';
-import { collection, getDocs, query, limit, orderBy, db } from '../data/fs';
+import {
+  Search,
+  Users,
+  FileText,
+  Stethoscope,
+  ArrowRight,
+  CornerDownLeft,
+  X,
+  AlertTriangle,
+} from 'lucide-react';
+import { collection, getDocs, query, orderBy, db } from '../data/fs';
 import { cn } from '../lib/utils';
 import { BACK_PRIORITY, useBackHandler } from '../lib/back-button';
-import { useAuth } from '../contexts/AuthContext';
+import { normalisePhone } from '../lib/patient-registry';
 
 interface SearchResult {
   id: string;
@@ -17,6 +34,19 @@ interface SearchResult {
   title: string;
   subtitle: string;
 }
+
+/** A result plus the text it can be matched against, built once per load. */
+interface IndexedResult extends SearchResult {
+  haystack: string;
+}
+
+/**
+ * How many results to offer per record type. Patients first, then reports, then
+ * doctors: a flat cap let twelve old reports crowd out the patient record someone
+ * was actually looking for.
+ */
+const PER_TYPE_LIMIT = 6;
+const TYPE_RANK: Record<SearchResult['type'], number> = { patient: 0, report: 1, doctor: 2 };
 
 const TYPE_ICONS = {
   patient: Users,
@@ -30,6 +60,41 @@ const TYPE_LABELS = {
   doctor: 'Doctor',
 };
 
+/** Lowercase, diacritic-folded, whitespace-collapsed — match-insensitive by construction. */
+function fold(value: unknown): string {
+  return String(value ?? '')
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Token-AND matching: every word typed must appear somewhere in the record.
+ *
+ * Plain `includes` made "rao asha" miss "Asha Rao" — the word order a lab
+ * assistant types in is frequently not the order the record was entered in.
+ */
+function matches(haystack: string, terms: readonly string[]): boolean {
+  return terms.every(term => haystack.includes(term));
+}
+
+/**
+ * Everything a search may match against, folded into one string.
+ *
+ * Lists are flattened (a report's ordered panels), and a phone number goes in
+ * both as stored and as digits only, so typing `9876543210` finds a record held
+ * as `+91 98765 43210`.
+ */
+function haystackOf(...parts: unknown[]): string {
+  const flat: string[] = [];
+  for (const part of parts) {
+    if (Array.isArray(part)) flat.push(...part.map(item => fold(item)));
+    else if (part !== undefined && part !== null && part !== '') flat.push(fold(part));
+  }
+  return flat.filter(Boolean).join(' ');
+}
+
 export function CommandSearch({
   open,
   onClose,
@@ -39,75 +104,136 @@ export function CommandSearch({
   onClose: () => void;
   onNavigate: (tab: string, id?: string) => void;
 }) {
-  const { role } = useAuth();
   const [search, setSearch] = useState('');
   const [activeIdx, setActiveIdx] = useState(0);
   const [loading, setLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // Load all searchable data on open
-  const [allData, setAllData] = useState<SearchResult[]>([]);
+  /**
+   * The searchable index, built once per open.
+   *
+   * `failedSources` matters as much as the index: a collection that could not be
+   * read is reported on screen. Silently leaving its records out — which is what
+   * `.catch(() => ({ docs: [] }))` did — turns a read failure into "No results
+   * found" about a patient who exists.
+   */
+  const [allData, setAllData] = useState<IndexedResult[]>([]);
+  const [failedSources, setFailedSources] = useState<number>(0);
 
   useEffect(() => {
-    if (!open || role === 'guest') return;
+    // No role gate: this build has exactly one local account (lib/local-account),
+    // and the old `role === 'guest'` branch was a holdover from the guest access
+    // that was removed — it could only ever confuse a reader about who may search.
+    if (!open) return;
     let cancelled = false;
     setLoading(true);
+    setFailedSources(0);
 
-    Promise.all([
-      getDocs(query(collection(db, 'patients'), orderBy('createdAt', 'desc'), limit(200))).catch(
-        () => ({ docs: [] }),
-      ),
-      getDocs(query(collection(db, 'reports'), orderBy('createdAt', 'desc'), limit(200))).catch(
-        () => ({ docs: [] }),
-      ),
-      getDocs(query(collection(db, 'doctors'), orderBy('createdAt', 'desc'), limit(200))).catch(
-        () => ({ docs: [] }),
-      ),
-    ]).then(([patients, reports, doctors]) => {
+    const load = async (path: 'patients' | 'reports' | 'doctors') => {
+      const snapshot = await getDocs(query(collection(db, path), orderBy('createdAt', 'desc')));
+      return { path, docs: snapshot.docs };
+    };
+
+    // allSettled, not all: one collection failing must not blank the other two.
+    void Promise.allSettled([load('patients'), load('reports'), load('doctors')]).then(outcomes => {
       if (cancelled) return;
-      const items: SearchResult[] = [
-        ...patients.docs.map(d => ({
-          id: d.id,
-          type: 'patient' as const,
-          title: d.data().name || 'Unknown Patient',
-          subtitle: `${d.data().age || '?'}y · ${d.data().gender || '—'}`,
-        })),
-        ...reports.docs.map(d => ({
-          id: d.id,
-          type: 'report' as const,
-          title: d.data().patientName || 'Report',
-          subtitle: `Signed ${d.data().createdAt ? new Date(d.data().createdAt).toLocaleDateString() : '—'}`,
-        })),
-        ...doctors.docs.map(d => ({
-          id: d.id,
-          type: 'doctor' as const,
-          title: d.data().name || 'Unknown Doctor',
-          subtitle: d.data().phone || 'No phone',
-        })),
-      ];
+      const items: IndexedResult[] = [];
+      let failed = 0;
+
+      for (const outcome of outcomes) {
+        if (outcome.status !== 'fulfilled') {
+          failed += 1;
+          continue;
+        }
+        const { path, docs } = outcome.value;
+        for (const record of docs) {
+          const data = record.data();
+          if (path === 'patients') {
+            const phone = String(data.phone ?? '');
+            items.push({
+              id: record.id,
+              type: 'patient',
+              title: data.name || 'Unknown Patient',
+              subtitle: `${data.age || '?'}y · ${data.gender || '—'} · #${record.id}`,
+              haystack: haystackOf(
+                data.name,
+                record.id,
+                phone,
+                normalisePhone(phone),
+                data.doctorName,
+                data.gender,
+                data.age,
+                data.testSelection,
+              ),
+            });
+            continue;
+          }
+          if (path === 'reports') {
+            const issued = data.status !== 'draft';
+            items.push({
+              id: record.id,
+              type: 'report',
+              title: data.patientName || 'Report',
+              subtitle: issued
+                ? `${data.testType ? `${data.testType} · ` : ''}issued ${
+                    data.createdAt ? new Date(data.createdAt).toLocaleDateString() : '—'
+                  }`
+                : `Draft · ${data.testType ?? 'no panel named'}`,
+              // The registration number of the patient, the report's own id, and
+              // every ordered panel/test name — none of which used to be searchable.
+              haystack: haystackOf(
+                data.patientName,
+                record.id,
+                data.patientId,
+                data.testType,
+                data.testSelection,
+                data.signature,
+                Object.keys((data.resultData as Record<string, unknown>) ?? {}),
+              ),
+            });
+            continue;
+          }
+          const phone = String(data.phone ?? '');
+          items.push({
+            id: record.id,
+            type: 'doctor',
+            title: data.name || 'Unknown Doctor',
+            subtitle: phone || 'No phone',
+            haystack: haystackOf(data.name, record.id, phone, normalisePhone(phone)),
+          });
+        }
+      }
       setAllData(items);
+      setFailedSources(failed);
       setLoading(false);
     });
 
     return () => {
       cancelled = true;
     };
-  }, [open, role]);
+  }, [open]);
+
+  const terms = useMemo(() => fold(search).split(' ').filter(Boolean), [search]);
 
   // Filter results based on search
   const filtered = useMemo(() => {
-    if (!search.trim()) return allData.slice(0, 8);
-    const q = search.toLowerCase();
-    return allData
-      .filter(
-        r =>
-          r.title.toLowerCase().includes(q) ||
-          r.subtitle.toLowerCase().includes(q) ||
-          r.type.includes(q),
-      )
-      .slice(0, 12);
-  }, [search, allData]);
+    const pool =
+      terms.length === 0 ? allData : allData.filter(item => matches(item.haystack, terms));
+
+    // Per-type budget instead of one flat cap: twelve old reports used to crowd
+    // out the patient record someone was actually looking for. Each type keeps
+    // the newest-first order it arrived in.
+    const taken: Record<SearchResult['type'], number> = { patient: 0, report: 0, doctor: 0 };
+    return pool
+      .slice()
+      .sort((a, b) => TYPE_RANK[a.type] - TYPE_RANK[b.type])
+      .filter(item => {
+        if (taken[item.type] >= PER_TYPE_LIMIT) return false;
+        taken[item.type] += 1;
+        return true;
+      });
+  }, [allData, terms]);
 
   useEffect(() => {
     setActiveIdx(0);
@@ -269,10 +395,29 @@ export function CommandSearch({
                   <p className="text-sm font-medium text-on-surface-variant">
                     {search ? 'No results found' : 'Start typing to search'}
                   </p>
-                  {search && (
-                    <p className="mt-1 text-xs text-outline">Try a different name or keyword</p>
+                  {search ? (
+                    <p className="mt-1 text-xs text-outline">
+                      Searched all {allData.length} record{allData.length === 1 ? '' : 's'} — try
+                      fewer letters, a patient number, or a test name
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-xs text-outline">
+                      Try a name, a patient number or a test
+                    </p>
                   )}
                 </div>
+              )}
+              {!loading && failedSources > 0 && (
+                <p
+                  role="alert"
+                  className="flex items-start gap-2 rounded-xl bg-error/10 px-3.5 py-2.5 text-xs font-medium text-error"
+                >
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span className="min-w-0">
+                    {failedSources} record {failedSources === 1 ? 'source could' : 'sources could'}
+                    not be read, so it is missing from these results. This is not "no matches".
+                  </span>
+                </p>
               )}
               {!loading &&
                 filtered.map((result, idx) => {

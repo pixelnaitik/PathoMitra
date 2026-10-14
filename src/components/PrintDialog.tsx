@@ -23,6 +23,7 @@ import { openPdf, renderPageInto, renderPageToPng, type OpenedPdf } from '../lib
 import {
   COPIES_MAX,
   COPIES_MIN,
+  MAX_PRINT_PAGES,
   PRINT_PAGE_SIZES,
   PRINT_RENDER_SCALE,
   clampCopies,
@@ -193,6 +194,16 @@ export function PrintDialog({ open, job, currentPage = 1, onClose, onPrinted }: 
     const pages = selectedPages(settings, pdf.pageCount);
     if (pages.error || pages.pages.length === 0) {
       setError(pages.error ?? 'No pages selected.');
+      return;
+    }
+    // Refuse an oversized job before rasterising it, not after. The page ceiling
+    // lives in the main process, which only sees the payload once every page has
+    // already been drawn — so a mistake used to cost a minute of rendering before
+    // being rejected.
+    if (pages.pages.length > MAX_PRINT_PAGES) {
+      setError(
+        `A single print job is limited to ${MAX_PRINT_PAGES} pages — this one has ${pages.pages.length}.`,
+      );
       return;
     }
     setError(null);

@@ -19,6 +19,8 @@ type Store = Record<string, Record<string, unknown>>;
 export class WebRepository implements DataRepository {
   private memory = new Map<EntityName, Store>();
   private listeners = new Map<EntityName, Set<(docs: LocalDoc[]) => void>>();
+  /** Error callbacks registered alongside listeners (see `subscribe`). */
+  private failures = new Map<EntityName, Set<(error: unknown) => void>>();
   private ready: Promise<void> | null = null;
 
   private get storage(): Storage | null {
@@ -110,24 +112,51 @@ export class WebRepository implements DataRepository {
     return applyQuery(this.toDocs(entity), { where }).length;
   }
 
-  subscribe(entity: EntityName, cb: (docs: LocalDoc[]) => void): () => void {
+  subscribe(
+    entity: EntityName,
+    cb: (docs: LocalDoc[]) => void,
+    onError?: (error: unknown) => void,
+  ): () => void {
     let set = this.listeners.get(entity);
     if (!set) {
       set = new Set();
       this.listeners.set(entity, set);
     }
     set.add(cb);
-    cb(this.toDocs(entity));
+    if (onError) {
+      let failed = this.failures.get(entity);
+      if (!failed) {
+        failed = new Set();
+        this.failures.set(entity, failed);
+      }
+      failed.add(onError);
+    }
+    // The empty replay keeps the contract every page relies on (a subscriber is
+    // always called back, so nothing can sit in "loading"); the error callback is
+    // what stops that empty list being read as "the lab has no records".
+    try {
+      cb(this.toDocs(entity));
+    } catch (error) {
+      onError?.(error);
+      cb([]);
+    }
     return () => {
       set?.delete(cb);
+      if (onError) this.failures.get(entity)?.delete(onError);
     };
   }
 
   private async emit(entity: EntityName): Promise<void> {
     const set = this.listeners.get(entity);
     if (!set || set.size === 0) return;
-    const docs = this.toDocs(entity);
-    set.forEach(cb => cb(docs));
+    // A localStorage write can be refused (quota, private mode); the listeners
+    // must learn that the collection they are showing may no longer match disk.
+    try {
+      const docs = this.toDocs(entity);
+      set.forEach(cb => cb(docs));
+    } catch (error) {
+      this.failures.get(entity)?.forEach(cb => cb(error));
+    }
   }
 
   async transaction(fn: (tx: DataRepository) => Promise<void>): Promise<void> {
@@ -141,6 +170,7 @@ export class WebRepository implements DataRepository {
       'doctors',
       'reports',
       'reportNotes',
+      'reportVersions',
       'invoices',
       'labSettings',
       'notificationState',

@@ -95,14 +95,38 @@ describe('readReport', () => {
     expect(report.status).toBe('draft');
   });
 
-  it('rejects an unknown status and falls back safely', () => {
+  it('never lets an unknown status silently become a final report', () => {
+    // P0.3: an unrecognised status is the ambiguous case — the only safe reading
+    // is "needs review", so it is forced to draft (not final) and flagged, while
+    // the results/patient link survive so the record stays recoverable.
     const report = readReport('r3', { ...valid, status: 'published-by-mistake' });
+    expect(report.status).toBe('draft');
+    expect(report.needsReview).toBe(true);
+    expect(report.patientId).toBe('p1');
+    expect(report.patientName).toBe('Asha Rao');
+    expect(report.resultData).toEqual({ HB: 12.1 });
+    expect(captureError).not.toHaveBeenCalled();
+  });
+
+  it('forces a missing status to a reviewable draft instead of final', () => {
+    const { status: _dropped, ...noStatus } = valid;
+    const report = readReport('r5', noStatus);
+    expect(report.status).toBe('draft');
+    expect(report.needsReview).toBe(true);
+    expect(report.patientId).toBe('p1');
+  });
+
+  it('keeps a genuinely final report unflagged', () => {
+    const report = readReport('r6', valid);
     expect(report.status).toBe('final');
-    expect(captureError).toHaveBeenCalled();
+    expect(report.needsReview).toBeUndefined();
   });
 
   it('does not throw on a completely empty document', () => {
-    expect(() => readReport('r4', undefined)).not.toThrow();
+    const report = readReport('r4', undefined);
+    expect(() => report).not.toThrow();
+    expect(report.status).toBe('draft');
+    expect(report.needsReview).toBe(true);
   });
 });
 

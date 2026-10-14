@@ -27,7 +27,6 @@ import {
   Microscope,
 } from 'lucide-react';
 import { useAuth, isValidPasscode, PIN_ERROR } from '../../contexts/AuthContext';
-import { verifyAccountPassword } from '../../lib/local-account';
 import { isNative } from '../../data';
 import { THEME_OPTIONS, applyAppearance, applyTheme } from '../../lib/theme';
 import {
@@ -349,18 +348,11 @@ export default function SettingsPage({
     }
     setPasscodeBusy(true);
     try {
-      // Checked through the same path as unlocking, so repeated guesses here run
-      // into the same exponential backoff rather than being a free oracle.
-      const verified = await verifyAccountPassword(currentPasscode);
-      if (!verified.ok) {
-        setPasscodeError(
-          verified.reason === 'locked'
-            ? `Too many attempts — try again in ${Math.ceil(verified.waitSeconds / 60)} min.`
-            : 'Current passcode is incorrect.',
-        );
-        return;
-      }
-      await changePassword(newPasscode);
+      // The current passcode is verified inside the account store, through the
+      // same escalating backoff as unlocking, so repeated guesses here are not a
+      // free oracle. It is verified once: checking it here as well as there would
+      // count a single typo as two failures.
+      await changePassword(newPasscode, currentPasscode);
       setCurrentPasscode('');
       setNewPasscode('');
       setConfirmPasscode('');
@@ -707,7 +699,7 @@ export default function SettingsPage({
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.2 }}
-            className="bg-surface-container-lowest rounded-3xl p-8 border border-outline-variant/30 shadow-card"
+            className="bg-surface-container-lowest rounded-3xl p-4 sm:p-6 md:p-8 border border-outline-variant/30 shadow-card"
           >
             {activeTab === 'profile' && (
               <div className="space-y-6">

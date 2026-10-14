@@ -26,13 +26,22 @@ export type EntityName =
   | 'doctors'
   | 'reports'
   | 'reportNotes'
+  | 'reportVersions'
   | 'invoices'
   | 'labSettings'
   | 'notificationState'
   | 'meta';
 
-/** Comparison operators supported by {@link WhereFilter}. */
-export type WhereOp = '==' | '!=' | '<' | '<=' | '>' | '>=' | 'in' | 'array-contains';
+/**
+ * Comparison operators supported by {@link WhereFilter}.
+ *
+ * `contains` is the local store's addition: case-insensitive substring matching.
+ * Firestore never had it (which is why every search box in this app used to pull
+ * a page of documents into memory and filter them in JS — and why the search
+ * boxes could only ever find what they had loaded). Having it in the contract
+ * lets the SQLite adapter run a real `LIKE` over the whole collection instead.
+ */
+export type WhereOp = '==' | '!=' | '<' | '<=' | '>' | '>=' | 'in' | 'array-contains' | 'contains';
 
 /** One filter clause, evaluated in memory over the local collection. */
 export interface WhereFilter {
@@ -83,10 +92,26 @@ export interface DataRepository {
    * Subscribe to changes on a collection. Returns an unsubscribe function.
    * Local stores emit synchronously after each mutation, so this is a thin
    * observer over writes rather than a network listener.
+   *
+   * `onError` matters: a failed read is not an empty collection, and replaying
+   * `[]` without telling anyone lets a page show "no patients found" while the
+   * database never actually answered. Callers that have an error state should
+   * pass it; the empty replay still happens so no UI can hang in "loading".
    */
-  subscribe(entity: EntityName, cb: (docs: LocalDoc[]) => void): () => void;
+  subscribe(
+    entity: EntityName,
+    cb: (docs: LocalDoc[]) => void,
+    onError?: (error: unknown) => void,
+  ): () => void;
 
-  /** Run several mutations atomically (used by the report save path). */
+  /**
+   * Run several mutations as one unit.
+   *
+   * On the native store this is a real SQLCipher transaction: either every
+   * statement survives or none of them do, and listeners are notified once the
+   * outcome is known. The localStorage adapter cannot offer that, and says so in
+   * its own comment.
+   */
   transaction(fn: (tx: DataRepository) => Promise<void>): Promise<void>;
 
   /** Wipe every collection — used by "erase all data" in settings. */

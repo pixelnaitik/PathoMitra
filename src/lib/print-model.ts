@@ -61,6 +61,16 @@ export const MM_TO_PX = 96 / 25.4;
 export const COPIES_MIN = 1;
 export const COPIES_MAX = 99;
 
+/**
+ * Pages one job may carry.
+ *
+ * Declared here because both halves of the pipeline enforce the same number: the
+ * dialog refuses an oversized selection *before* spending a minute rasterising it,
+ * and `electron/print-window.ts` refuses it again before building the document,
+ * because the main process cannot trust a renderer it does not control.
+ */
+export const MAX_PRINT_PAGES = 200;
+
 export function pageSize(id: PrintPageSizeId): (typeof PRINT_PAGE_SIZES)[number] {
   return PRINT_PAGE_SIZES.find(p => p.id === id) ?? PRINT_PAGE_SIZES[0];
 }

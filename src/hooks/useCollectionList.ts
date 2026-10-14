@@ -9,7 +9,7 @@
  * small enough that this is both simpler and faster than round-tripping a
  * backend, and it keeps working with no network at all.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getRepository } from '../data';
 import { applyQuery } from '../data/query';
 import type { EntityName, LocalDoc, WhereOp } from '../data/types';
@@ -77,6 +77,14 @@ export function useCollectionList<T extends Identified>(
   // inline, so its identity cannot decide when to recompute.
   const filterKey = JSON.stringify(filters ?? []);
 
+  // The error callback lives on a ref: callers pass an inline closure, and the
+  // subscription must not be torn down and re-read on every render to keep it
+  // current.
+  const onErrorRef = useRef(onError);
+  useEffect(() => {
+    onErrorRef.current = onError;
+  });
+
   useEffect(() => {
     let active = true;
     setLoading(true);
@@ -85,11 +93,23 @@ export function useCollectionList<T extends Identified>(
 
     let unsubscribe: (() => void) | null = null;
     try {
-      unsubscribe = getRepository().subscribe(path as EntityName, next => {
-        if (!active) return;
-        setDocs(next);
-        setLoading(false);
-      });
+      unsubscribe = getRepository().subscribe(
+        path as EntityName,
+        next => {
+          if (!active) return;
+          setDocs(next);
+          setLoading(false);
+        },
+        // A failed read is recorded as an error and the previous documents are
+        // kept: showing an empty list for a store that never answered is how a
+        // lab concludes a patient does not exist.
+        error => {
+          if (!active) return;
+          setError(error instanceof Error ? error.message : String(error));
+          setLoading(false);
+          onErrorRef.current?.(error);
+        },
+      );
     } catch (err) {
       if (active) {
         setLoading(false);

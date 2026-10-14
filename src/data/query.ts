@@ -53,6 +53,13 @@ function matches(doc: LocalDoc, filter: WhereFilter): boolean {
       return Array.isArray(filter.value) && filter.value.includes(actual as string | number);
     case 'array-contains':
       return Array.isArray(actual) && actual.includes(filter.value as string | number);
+    case 'contains':
+      // Case-insensitive substring, matching what the SQLite adapter does with
+      // LIKE so a search means the same thing on every platform.
+      return (
+        typeof actual === 'string' &&
+        actual.toLowerCase().includes(String(filter.value ?? '').toLowerCase())
+      );
     default:
       return true;
   }

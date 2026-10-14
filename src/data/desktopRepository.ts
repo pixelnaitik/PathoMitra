@@ -27,6 +27,7 @@ const ALL_ENTITIES: EntityName[] = [
   'doctors',
   'reports',
   'reportNotes',
+  'reportVersions',
   'invoices',
   'labSettings',
   'notificationState',
@@ -40,6 +41,8 @@ export class DesktopRepository implements DataRepository {
   private ready: Promise<void> | null = null;
   /** Tail of the per-entity mutation chain (see `queue`). */
   private queues = new Map<EntityName, Promise<void>>();
+  /** Error callbacks registered alongside listeners (see `subscribe`). */
+  private failures = new Map<EntityName, Set<(error: unknown) => void>>();
 
   constructor() {
     const bridge = desktopBridge();
@@ -156,34 +159,54 @@ export class DesktopRepository implements DataRepository {
    * but the initial replay is async because the first read hits the main
    * process. Unsubscribe stays synchronous, matching Firestore's contract.
    */
-  subscribe(entity: EntityName, cb: (docs: LocalDoc[]) => void): () => void {
+  subscribe(
+    entity: EntityName,
+    cb: (docs: LocalDoc[]) => void,
+    onError?: (error: unknown) => void,
+  ): () => void {
     let set = this.listeners.get(entity);
     if (!set) {
       set = new Set();
       this.listeners.set(entity, set);
     }
     set.add(cb);
+    if (onError) {
+      let failed = this.failures.get(entity);
+      if (!failed) {
+        failed = new Set();
+        this.failures.set(entity, failed);
+      }
+      failed.add(onError);
+    }
     // The first read is async — drop the replay if the caller already
-    // unsubscribed (component gone). A failed first read replays an empty
-    // list exactly like SqliteRepository does: the UI must never hang in
-    // "loading", and the mutation paths surface the real error.
+    // unsubscribed (component gone). A failed first read replays an empty list
+    // *and* reports the error: the UI must never hang in "loading", but an empty
+    // list must never be presented as "the lab has no records" either.
     void this.toDocs(entity)
       .then(docs => {
         if (set?.has(cb)) cb(docs);
       })
-      .catch(() => {
-        if (set?.has(cb)) cb([]);
+      .catch(error => {
+        if (set?.has(cb)) {
+          onError?.(error);
+          cb([]);
+        }
       });
     return () => {
       set?.delete(cb);
+      if (onError) this.failures.get(entity)?.delete(onError);
     };
   }
 
   private async emit(entity: EntityName): Promise<void> {
     const set = this.listeners.get(entity);
     if (!set || set.size === 0) return;
-    const docs = await this.toDocs(entity);
-    set.forEach(cb => cb(docs));
+    try {
+      const docs = await this.toDocs(entity);
+      set.forEach(cb => cb(docs));
+    } catch (error) {
+      this.failures.get(entity)?.forEach(cb => cb(error));
+    }
   }
 
   /**

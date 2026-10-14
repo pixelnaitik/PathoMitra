@@ -8,7 +8,7 @@ import {
   doc,
   getDoc,
   setDoc,
-  updateDoc,
+  writeBatch,
   db,
 } from '../../data/fs';
 import { deleteReportCascade } from '../../lib/cascades';
@@ -25,7 +25,12 @@ import {
   ShieldCheck,
   X,
   Plus,
-  CheckCircle2,
+  // Per-status card icon: the check-circle used to sit on every report (draft
+  // or issued) and read as a success mark regardless of state. The state model
+  // in lib/report-status maps each view status to its own glyph.
+  Send,
+  GitCompare,
+  FileClock,
   AlertCircle,
   Loader2,
   Trash2,
@@ -34,6 +39,7 @@ import {
   Eye,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import { reportStatusView, ISSUE_REPORT_LABEL, SAVE_DRAFT_LABEL } from '../../lib/report-status';
 import {
   CalendarRangePicker,
   Card,
@@ -55,13 +61,18 @@ import {
   findTestInfo,
   searchPathologyTests,
   isNumericTest,
+  expandTestSelection,
   type PathologyTest,
 } from '../../lib/pathology-tests';
 import { recalculateCBC } from '../../lib/report-calculations';
 import { THEME_OPTIONS } from '../../lib/theme';
 import { readSettings } from '../../lib/settings';
 import { getPrintableArea, getColumnWidths } from '../../lib/report-layout';
-import { buildReportLegalLines, type ReportLegalInput } from '../../lib/report-compliance';
+import {
+  buildReportLegalLines,
+  resolveSigner,
+  type ReportLegalInput,
+} from '../../lib/report-compliance';
 import { pdfToBase64, printPdf, previewPdf, savePdf, sharePdf } from '../../lib/native-print';
 import { getShellKind, hasShellOutput } from '../../lib/native-files';
 import { FILE_CHANNEL_ID, showBannerWithPermission } from '../../lib/desktop-notifications';
@@ -71,15 +82,17 @@ import { ReportResultsEditor } from '../../components/ReportResultsEditor';
 import { createdAtRangeFilters } from '../../lib/date-range';
 import { generateDefaultTemplateImage } from '../../lib/default-template';
 import {
-  toReportDoc,
   readReports,
   readPatients,
   ageAsNumber,
+  operatorStamp,
   type PatientRecord,
   type ReportRecord,
   type ReportStatus,
 } from '../../lib/models';
+import { findMissingResults, planReportWrite, type ReportWriteOp } from '../../lib/report-workflow';
 import { downloadCsv, toCsv } from '../../lib/export-csv';
+import { normalisePhone } from '../../lib/patient-registry';
 
 /** A report plus the staff-only note hydrated from `reportNotes`. */
 type SelectedReport = ReportRecord & { privateNotes?: string };
@@ -88,12 +101,6 @@ type SelectedReport = ReportRecord & { privateNotes?: string };
 type ListEntry =
   | (ReportRecord & { itemType: 'report'; timestamp: string })
   | (PatientRecord & { itemType: 'patient'; timestamp: string });
-
-/**
- * How far the name search will walk older pages when the loaded window holds no
- * match. Bounded on purpose: a mistyped name must not read the entire lab.
- */
-const SEARCH_SCAN_CEILING = 250;
 
 /**
  * `resultData` is validated loosely at the boundary (legacy documents hold
@@ -137,6 +144,11 @@ export default function ReportsPage({
   const [loading, setLoading] = useState(false);
   const [savingNote, setSavingNote] = useState(false);
   const [savingResults, setSavingResults] = useState(false);
+  // P0.4: an edit to an already-issued report must carry an amendment reason, so
+  // the change is attributable. Kept in state (not just the function argument)
+  // so an inline field-level error can name it without discarding typed values.
+  const [amendReason, setAmendReason] = useState('');
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
 
   // Row menus: dismiss on any outside click or Escape, and only while a menu is
@@ -199,6 +211,31 @@ export default function ReportsPage({
     testSelection: [] as string[],
     results: {} as Record<string, string>,
   });
+
+  // UI-P0-02 — the "review" the audit asks for is not a separate screen; it
+  // is the composer telling the operator, live, which ordered tests still
+  // have no value so the Issue action cannot fire while the clinical payload
+  // is incomplete. The old behaviour was: leave the button enabled, let the
+  // submit path throw "Cannot issue: N ordered tests still has no value", and
+  // hope the operator read the error panel. Same rules as `handleCreateReport`
+  // uses at submit time, computed from the same source (`findMissingResults`)
+  // so the preconditions on the button and the preconditions inside the
+  // handler can never disagree.
+  const composerMissing = useMemo(() => {
+    if (!isModalOpen || newReport.testSelection.length === 0) return [];
+    return findMissingResults(
+      {
+        patientId: newReport.patientId,
+        patientName: '',
+        resultData: newReport.results,
+        signature: '',
+        createdAt: '',
+        createdBy: '',
+        testSelection: newReport.testSelection,
+      },
+      expandTestSelection,
+    );
+  }, [isModalOpen, newReport.patientId, newReport.testSelection, newReport.results]);
 
   const filteredAvailableTests = useMemo(
     () =>
@@ -357,6 +394,25 @@ export default function ReportsPage({
     return () => unsubscribe();
   }, []);
 
+  /**
+   * Commit a domain write plan as one unit.
+   *
+   * The plan from `planReportWrite` is executed through `writeBatch` so the
+   * amendment-history row and the report row land together (a real SQLCipher
+   * transaction on the native store). Reports merge (so an immutable field like
+   * `createdBy` is never blanked by a patch); history rows are written whole.
+   */
+  const commitReportOps = async (ops: ReportWriteOp[]): Promise<void> => {
+    if (ops.length === 0) return;
+    const batch = writeBatch(db);
+    for (const op of ops) {
+      const ref = doc(collection(db, op.entity), op.id);
+      if (op.entity === 'reports') batch.set(ref, op.value, { merge: true });
+      else batch.set(ref, op.value);
+    }
+    await batch.commit();
+  };
+
   const handleCreateReport = async (e: React.FormEvent, status: ReportStatus = 'final') => {
     e.preventDefault();
     setLoading(true);
@@ -385,19 +441,38 @@ export default function ReportsPage({
       // printable signer — rather than being left empty while the document
       // claimed an electronic verification that never happened.
       const reportRef = doc(collection(db, 'reports'));
-      await setDoc(
-        reportRef,
-        toReportDoc({
-          patientId: newReport.patientId,
-          patientName,
-          resultData: sanitizedResults,
-          signature: (user?.displayName ?? '').slice(0, 128),
-          status,
-          createdAt: timestamp,
-          createdBy: user?.uid || 'unknown',
-          testSelection: newReport.testSelection,
-        }),
-      );
+      const content = {
+        patientId: newReport.patientId,
+        patientName,
+        resultData: sanitizedResults,
+        signature: (user?.displayName ?? '').slice(0, 128),
+        createdAt: timestamp,
+        createdBy: operatorStamp(user),
+        testSelection: newReport.testSelection,
+      };
+      // P0.5: the issuance gate is a domain rule, not a button. A blank value is
+      // not a result — so an ordered panel member with nothing recorded blocks
+      // issuing. A draft saves incomplete; only a complete report can be final.
+      if (status === 'final') {
+        const missing = findMissingResults(content, expandTestSelection);
+        if (missing.length > 0) {
+          throw new Error(
+            `Cannot issue: ${missing.length} ordered test${missing.length === 1 ? '' : 's'} ` +
+              `still has no value (${missing.slice(0, 6).join(', ')}${missing.length > 6 ? ', …' : ''}). ` +
+              'Fill every result, or save as a draft.',
+          );
+        }
+      }
+      const plan = planReportWrite({
+        existing: null,
+        newId: reportRef.id,
+        next: { ...content, status },
+        operator: operatorStamp(user),
+        now: timestamp,
+        expandNames: expandTestSelection,
+      });
+      if (!plan.ok) throw new Error(plan.error ?? 'Report could not be saved.');
+      await commitReportOps(plan.ops);
 
       setIsModalOpen(false);
       setNewReport({ patientId: '', testSelection: [], results: {} });
@@ -418,32 +493,54 @@ export default function ReportsPage({
   };
 
   /**
-   * Persist edited results. `issue` promotes a draft to a final report. Offline
-   * there is no signing service, QR mirror or billing — the report document is
-   * simply updated in the encrypted local store.
+   * Persist edited results through the report-workflow domain rules.
+   *
+   * The decision (may this issue? does it need a reason? must the prior version
+   * be retained?) is made once, in `planReportWrite`. This screen only collects
+   * input, runs the plan, and reports the outcome — it cannot walk past a rule.
    */
-  const handleSaveResults = async (amendReason?: string, issue = false) => {
+  const handleSaveResults = async (reasonOverride?: string, issue = false) => {
     if (!selectedReport) return;
     setSavingResults(true);
+    setDetailError(null);
+    const target = selectedReport;
     try {
       const now = new Date().toISOString();
-      const isDraft = selectedReport.status === 'draft';
-      const issuing = isDraft && issue;
-
-      await updateDoc(doc(db, 'reports', selectedReport.id), {
-        resultData: selectedReport.resultData,
-        ...(issuing ? { status: 'final' } : {}),
-        // Audit trail: an amended report is a new version, attributable to
-        // whoever amended it.
-        version: (Number(selectedReport.version) || 1) + 1,
-        updatedBy: user?.uid || 'unknown',
-        updatedAt: now,
-        ...(amendReason ? { amendReason } : {}),
+      const targetStatus: ReportStatus =
+        issue && target.status === 'draft' ? 'final' : target.status;
+      const content = {
+        patientId: target.patientId,
+        patientName: target.patientName,
+        resultData: target.resultData,
+        signature: target.signature,
+        createdAt: target.createdAt,
+        createdBy: target.createdBy,
+        testType: target.testType,
+        testSelection: target.testSelection ?? [],
+      };
+      const plan = planReportWrite({
+        existing: { ...content, id: target.id, status: target.status, version: target.version },
+        next: { ...content, status: targetStatus },
+        reason: reasonOverride ?? amendReason,
+        operator: operatorStamp(user),
+        now,
+        expandNames: expandTestSelection,
       });
-
+      if (!plan.ok) {
+        // A domain rule refused the write. Keep the sheet open and every value
+        // already entered; only tell the operator what is blocking them.
+        setDetailError(plan.error ?? 'The report could not be saved.');
+        return;
+      }
+      await commitReportOps(plan.ops);
       setSelectedReport(null);
+      setAmendReason('');
       toast.success(
-        issuing ? `Report issued for ${selectedReport.patientName}.` : 'Results saved.',
+        plan.amended
+          ? `Report amended (v${plan.nextVersion}).`
+          : plan.issuing
+            ? `Report issued for ${target.patientName}.`
+            : 'Results saved.',
       );
       // Updating UI is handled by the local store subscription
     } catch (err) {
@@ -490,8 +587,16 @@ export default function ReportsPage({
       createdAt: report.createdAt,
     };
 
-    const formattedPatientName = patient.name.toLowerCase().replace(/\s+/g, '_');
-    const filename = `${formattedPatientName}_lab_report.pdf`;
+    // Filename carries the report's identity, not only the patient's name.
+    // `<name>_lab_report.pdf` meant two patients with the same name wrote over
+    // each other's file, a v2 amendment silently replaced the v1 that had already
+    // been handed over, and the patient's name appeared in a path that Windows
+    // indexes and any file browser shows. The name stays inside the document.
+    const reportVersion = Number(report.version) || 1;
+    const issuedDay = toIsoDay(
+      new Date(report.updatedAt || report.createdAt || new Date().toISOString()),
+    );
+    const filename = `PathoMitra-${issuedDay}-${String(report.id || 'draft').slice(-6)}-v${reportVersion}.pdf`;
 
     // Get template, margins and typography from centrally-managed lab settings
     const s = readSettings();
@@ -517,7 +622,7 @@ export default function ReportsPage({
       accreditationNumber: s.accreditationNumber,
       licenceNumber: s.licenceNumber,
       accreditationAttestedAt: s.accreditationAttestedAt,
-      signerName: report.signature || user?.displayName || '',
+      signerName: resolveSigner(report),
       signedAt: report.updatedAt || report.createdAt,
     };
     const legal = buildReportLegalLines(legalInput);
@@ -1407,40 +1512,45 @@ export default function ReportsPage({
     [reports, patients],
   );
 
-  // Reports are already narrowed by Firestore; what is left for the client is
-  // the substring match (which Firestore cannot do) and the date check on the
-  // patient rows, which come from a separate subscription.
+  // What is left for the client is the substring match. Every word typed has to
+  // appear somewhere on the row, and the row is matched on more than the name: a
+  // patient's registration number, a report id, a phone in any formatting and the
+  // ordered panel/test names all identify a report at the bench, and none of them
+  // used to be searchable — "Filter by patient name" was the only door.
   const deferredSearch = useDeferredValue(searchTerm.trim().toLowerCase());
-  const filteredCombinedList = useMemo(
-    () =>
-      combinedList.filter(item => {
-        const name = (
-          item.itemType === 'report' ? item.patientName : item.name || ''
-        ).toLowerCase();
-        if (deferredSearch && !name.includes(deferredSearch)) return false;
-        if (!item.createdAt) return true;
-        const day = toIsoDay(new Date(item.createdAt));
-        if (fromDate && day < fromDate) return false;
-        if (toDate && day > toDate) return false;
-        return true;
-      }),
-    [combinedList, deferredSearch, fromDate, toDate],
-  );
+  const filteredCombinedList = useMemo(() => {
+    const terms = deferredSearch.split(/\s+/).filter(Boolean);
+    return combinedList.filter(item => {
+      if (terms.length > 0) {
+        const haystack = [
+          item.itemType === 'report' ? item.patientName : item.name || '',
+          item.id,
+          item.itemType === 'report' ? item.patientId : '',
+          'phone' in item ? (item.phone ?? '') : '',
+          'phone' in item ? normalisePhone(String(item.phone ?? '')) : '',
+          item.testType ?? '',
+          ...(item.testSelection ?? []),
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        if (!terms.every(term => haystack.includes(term))) return false;
+      }
+      if (!item.createdAt) return true;
+      const day = toIsoDay(new Date(item.createdAt));
+      if (fromDate && day < fromDate) return false;
+      if (toDate && day > toDate) return false;
+      return true;
+    });
+  }, [combinedList, deferredSearch, fromDate, toDate]);
 
   // An empty window used to look like an empty lab: searching for last month's
-  // patient returned "no results" because only the newest page was loaded. Walk
-  // older pages while a name search shows nothing, and stop at the ceiling so a
-  // typo cannot bill the whole collection.
+  // patient returned "no results" because only the newest page was loaded, and the
+  // walk stopped at 250 records — so a settled lab's older history was simply
+  // unfindable. The local store keeps the collection in memory already, so walking
+  // the rest costs a re-slice and nothing else.
   const scanning =
-    deferredSearch.length > 0 &&
-    filteredCombinedList.length === 0 &&
-    reportsList.hasMore &&
-    reports.length < SEARCH_SCAN_CEILING;
-  const scanCapped =
-    deferredSearch.length > 0 &&
-    filteredCombinedList.length === 0 &&
-    reportsList.hasMore &&
-    reports.length >= SEARCH_SCAN_CEILING;
+    deferredSearch.length > 0 && filteredCombinedList.length === 0 && reportsList.hasMore;
 
   useEffect(() => {
     if (!scanning || reportsList.loadingMore) return;
@@ -1484,7 +1594,7 @@ export default function ReportsPage({
         <div className="flex flex-col sm:flex-row flex-1 max-w-md gap-2">
           <SearchField
             className="flex-1"
-            placeholder="Filter by patient name…"
+            placeholder="Filter by name, patient number, report id or test…"
             aria-label="Filter reports by patient name"
             value={searchTerm}
             onChange={event => setSearchTerm(event.target.value)}
@@ -1573,7 +1683,7 @@ export default function ReportsPage({
             description={
               deferredSearch
                 ? 'Nothing matched in the loaded records. Narrow the date range, or clear the filter to browse everything.'
-                : 'Register a patient, then build their first signed report.'
+                : 'Register a patient, then build their first issued report.'
             }
             action={
               deferredSearch ? (
@@ -1605,6 +1715,28 @@ export default function ReportsPage({
           {filteredCombinedList.map((item, idx) => {
             if (item.itemType === 'report') {
               const report = item;
+              // One source of truth for every state visual on the card. Before
+              // this, the same Draft card wore a check-circle "success" mark,
+              // a green test-type pill that read as an issued badge, AND a
+              // small amber "Draft" pill lower down — three different visual
+              // answers to "has this report gone out?". The state model picks
+              // the icon, tone, label and distribution gate from one lookup.
+              const statusView = reportStatusView({
+                status: report.status,
+                version: report.version,
+              });
+              const StatusIcon =
+                statusView.icon === 'draft'
+                  ? FileClock
+                  : statusView.icon === 'amended'
+                    ? GitCompare
+                    : Send;
+              const statusTint =
+                statusView.tone === 'warning'
+                  ? 'bg-warning-container text-on-warning-container'
+                  : statusView.tone === 'info'
+                    ? 'bg-info-container text-on-info-container'
+                    : 'bg-success-container text-on-success-container';
               return (
                 <motion.div
                   key={`report-${report.id}`}
@@ -1624,13 +1756,24 @@ export default function ReportsPage({
                   <div className="absolute top-0 right-0 w-24 h-24 bg-accent/5 rounded-full -mr-8 -mt-8 transition duration-300 group-hover:scale-150 group-hover:bg-accent/10" />
 
                   <div className="flex justify-between items-start mb-6 relative z-20">
-                    <div className="w-12 h-12 bg-surface-container rounded-2xl flex items-center justify-center text-primary-container shadow-inner">
-                      <CheckCircle2 className="w-6 h-6" />
+                    <div
+                      className={cn(
+                        'w-12 h-12 rounded-2xl flex items-center justify-center shadow-inner',
+                        statusTint,
+                      )}
+                      aria-hidden="true"
+                    >
+                      <StatusIcon className="w-6 h-6" />
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="px-3 py-1 bg-success-container text-on-success-container text-xs font-black uppercase tracking-widest rounded-full">
-                        {report.testType || 'Final'}
-                      </span>
+                      {/* The old pill printed the test type against a hard-coded
+                          success container — every card looked issued-green. The
+                          state pill is now the only upper-right badge, and it
+                          reads from the same statusView that drives the icon. */}
+                      <StatusPill tone={statusView.tone} dot>
+                        {statusView.label}
+                        {statusView.icon === 'amended' && ` v${Number(report.version) || 2}`}
+                      </StatusPill>
                       <div className="relative">
                         <button
                           type="button"
@@ -1720,24 +1863,19 @@ export default function ReportsPage({
                     <h3 className="text-xl font-bold text-primary truncate">
                       {report.patientName}
                     </h3>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <p className="text-xs text-on-surface-variant font-medium">
-                        {report.status === 'draft'
-                          ? 'Draft — not yet issued'
-                          : 'Issued Pathology Report'}
+                    {/* Test type moved here from the removed upper-right badge so
+                        the card still tells the operator what panel was ordered.
+                        The status pill sits top-right and reads from the same
+                        state model as the icon — no duplicate Draft / Issued
+                        chip further down the card. */}
+                    <p className="text-xs text-on-surface-variant font-medium">
+                      {statusView.description}
+                    </p>
+                    {report.testType && (
+                      <p className="text-[13px] font-semibold text-on-surface-variant truncate">
+                        {report.testType}
                       </p>
-                      {report.status === 'draft' ? (
-                        <StatusPill tone="warning" dot>
-                          Draft
-                        </StatusPill>
-                      ) : (
-                        Number(report.version) > 1 && (
-                          <StatusPill tone="info" dot>
-                            v{report.version} amended
-                          </StatusPill>
-                        )
-                      )}
-                    </div>
+                    )}
                   </div>
 
                   <div className="flex items-center justify-between pt-6 border-t border-outline-variant/10 relative z-10">
@@ -1887,10 +2025,11 @@ export default function ReportsPage({
         </div>
       )}
 
-      {scanCapped && (
-        <p role="status" className="text-center text-xs font-semibold text-warning">
-          Scan stopped after {reports.length} records — a name search only walks so far. Narrow the
-          date range to search deeper history.
+      {!scanning && !reportsList.loading && !reportsList.hasMore && (
+        <p className="text-center text-xs text-on-surface-variant">
+          {deferredSearch
+            ? `${reports.length + patients.length} record${reports.length + patients.length === 1 ? '' : 's'} searched — nothing matched that`
+            : `${reports.length} report${reports.length === 1 ? '' : 's'} loaded in this session`}
         </p>
       )}
 
@@ -1928,7 +2067,7 @@ export default function ReportsPage({
               disabled={!newReport.patientId || loading}
               onClick={e => handleCreateReport(e, 'draft')}
             >
-              <span className="truncate">Save as draft</span>
+              <span className="truncate">{SAVE_DRAFT_LABEL}</span>
             </Button>
             <Button
               type="submit"
@@ -1936,10 +2075,19 @@ export default function ReportsPage({
               variant="brand"
               className="w-full sm:flex-1"
               loading={loading}
-              disabled={!newReport.patientId}
+              disabled={!newReport.patientId || composerMissing.length > 0}
+              title={
+                composerMissing.length > 0
+                  ? `Enter a value for ${composerMissing.length} pending test${composerMissing.length === 1 ? '' : 's'} before issuing, or Save as draft`
+                  : undefined
+              }
             >
-              {!loading && <CheckCircle2 className="h-5 w-5 shrink-0" />}
-              <span className="truncate">Finalize & Sign Report</span>
+              {!loading && <Send className="h-5 w-5 shrink-0" aria-hidden="true" />}
+              <span className="truncate">
+                {composerMissing.length > 0
+                  ? `Issue report (${composerMissing.length} incomplete)`
+                  : ISSUE_REPORT_LABEL}
+              </span>
             </Button>
           </div>
         }
@@ -1949,7 +2097,7 @@ export default function ReportsPage({
             <div className="p-4 bg-error-container border border-error/30 text-on-error-container rounded-2xl flex items-start gap-2.5 shadow-card text-sm">
               <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 text-error" />
               <div className="flex-1">
-                <h5 className="font-bold">Failed to finalise report</h5>
+                <h5 className="font-bold">Could not issue the report</h5>
                 <p className="text-xs mt-0.5 opacity-90">{modalError}</p>
               </div>
               <button
@@ -2105,6 +2253,33 @@ export default function ReportsPage({
               <div className="flex items-center justify-between border-b border-outline-variant/10 pb-2">
                 <h4 className="text-sm font-bold text-primary">Test Results Data</h4>
               </div>
+
+              {/* UI-P0-02 review strip. Sits ABOVE the results grid so the
+                  operator sees "what is still missing" before scanning the
+                  inputs, and disappears the moment every value is filled. A
+                  failed submit used to be the only signal; this makes the
+                  precondition visible without needing to press the button
+                  first. The list is capped because a 30-parameter profile
+                  can produce a long block; the count is always visible. */}
+              {composerMissing.length > 0 && (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  className="rounded-2xl border border-warning/40 bg-warning-container px-4 py-3 text-[13px] leading-relaxed text-on-warning-container"
+                >
+                  <p className="font-bold">
+                    {composerMissing.length} result{composerMissing.length === 1 ? '' : 's'} still
+                    empty — issue is blocked
+                  </p>
+                  <p className="mt-1 opacity-90">
+                    {composerMissing.slice(0, 8).join(', ')}
+                    {composerMissing.length > 8 ? ` +${composerMissing.length - 8} more` : ''}
+                  </p>
+                  <p className="mt-1 text-[12px] opacity-80">
+                    Fill every value to issue the report, or Save as draft to continue later.
+                  </p>
+                </div>
+              )}
 
               <div className="space-y-3">
                 {newReport.testSelection.length === 0 && (
@@ -2326,13 +2501,17 @@ export default function ReportsPage({
       {/* Report Details Modal */}
       <Sheet
         open={!!selectedReport}
-        onClose={() => setSelectedReport(null)}
+        onClose={() => {
+          setSelectedReport(null);
+          setAmendReason('');
+          setDetailError(null);
+        }}
         title={selectedReport ? `Report Details: ${selectedReport.patientName}` : 'Report Details'}
         description={
           selectedReport
             ? selectedReport.status === 'draft'
-              ? 'Draft — unsigned and invisible to the patient until it is issued.'
-              : `Signed v${Number(selectedReport.version) || 1}` +
+              ? 'Draft — not issued yet, so nothing has been printed as final.'
+              : `Issued v${Number(selectedReport.version) || 1}` +
                 (selectedReport.updatedAt
                   ? ` · amended ${new Date(selectedReport.updatedAt).toLocaleDateString('en-IN')}`
                   : '') +
@@ -2362,26 +2541,63 @@ export default function ReportsPage({
                 onNavigate={handleInputKeyDown}
               />
               {canEdit && (
-                <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
-                  <button
-                    onClick={() => handleSaveResults()}
-                    disabled={savingResults}
-                    className="px-4 py-2 bg-secondary text-on-secondary text-sm font-bold rounded-lg hover:opacity-90 transition flex items-center gap-2"
-                  >
-                    {savingResults ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save Results'}
-                  </button>
-                  {/* Drafts have no patient-facing copy and no signature of
-                        record: issuing is the step that makes the report real. */}
-                  {selectedReport.status === 'draft' && (
-                    <button
-                      onClick={() => handleSaveResults(undefined, true)}
-                      disabled={savingResults}
-                      className="px-4 py-2 bg-primary-container text-on-primary-container text-sm font-bold rounded-lg hover:opacity-90 transition flex items-center gap-2"
+                <div className="mt-3">
+                  {detailError && (
+                    <p
+                      role="alert"
+                      className="mb-3 flex items-start gap-2 rounded-lg bg-error-container/60 px-3 py-2 text-xs font-medium text-on-error-container"
                     >
-                      <FileSignature className="w-4 h-4" aria-hidden="true" />
-                      Issue &amp; sign report
-                    </button>
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
+                      <span>{detailError}</span>
+                    </p>
                   )}
+                  {/* P0.4: editing a report that is already issued is an amendment
+                      — it must state a reason, and the prior version is retained. */}
+                  {selectedReport.status === 'final' && (
+                    <div className="mb-3">
+                      <label
+                        htmlFor="amend-reason"
+                        className="text-xs font-black text-primary uppercase mb-1 block"
+                      >
+                        Amendment reason (required)
+                      </label>
+                      <input
+                        id="amend-reason"
+                        type="text"
+                        value={amendReason}
+                        onChange={e => setAmendReason(e.target.value)}
+                        placeholder="Why is this issued report being changed?"
+                        className="w-full text-sm px-4 py-2 bg-surface-container-low border border-outline-variant/30 rounded-lg focus:border-accent focus:outline-none transition"
+                      />
+                    </div>
+                  )}
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <button
+                      onClick={() => handleSaveResults()}
+                      disabled={savingResults}
+                      className="px-4 py-2 bg-secondary text-on-secondary text-sm font-bold rounded-lg hover:opacity-90 transition flex items-center gap-2"
+                    >
+                      {savingResults ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : selectedReport.status === 'final' ? (
+                        'Save amendment'
+                      ) : (
+                        'Save Results'
+                      )}
+                    </button>
+                    {/* Drafts have no patient-facing copy and no signature of
+                          record: issuing is the step that makes the report real. */}
+                    {selectedReport.status === 'draft' && (
+                      <button
+                        onClick={() => handleSaveResults(undefined, true)}
+                        disabled={savingResults}
+                        className="px-4 py-2 bg-primary-container text-on-primary-container text-sm font-bold rounded-lg hover:opacity-90 transition flex items-center gap-2"
+                      >
+                        <FileSignature className="w-4 h-4" aria-hidden="true" />
+                        Issue &amp; sign report
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
             </div>

@@ -100,9 +100,23 @@ export interface NotificationSource {
   reports: ReportRecord[];
   invoices: InvoiceRecord[];
   prefs?: NotificationPrefsPatch;
+  /**
+   * Expands what was ordered into the individual tests it covers — panels to
+   * members. Injected rather than imported so this module stays free of the test
+   * catalogue and of any storage read, exactly like `now` keeps it free of the
+   * clock. Callers pass `expandTestSelection`; tests can pass their own.
+   */
+  expandNames?: (names: readonly string[]) => string[];
   /** Injectable for tests; defaults to a fresh Date per call. */
   now?: Date;
 }
+
+/**
+ * A report that records no panel list covers everything or nothing — there is no
+ * way to tell, and guessing "nothing" would shout "still awaiting a report" about
+ * a patient who plainly has one. Treated as covering the whole order.
+ */
+const COVERS_EVERYTHING = '*';
 
 const HOUR_MS = 3_600_000;
 
@@ -198,27 +212,48 @@ export function buildNotifications(source: NotificationSource): NotificationItem
   const now = source.now ?? new Date();
   const items: NotificationItem[] = [];
 
-  // Reports that exist at all, by patient — one pass, reused by two rules.
-  const patientIdsWithReport = new Set(
-    source.reports.map(report => report.patientId).filter(Boolean),
-  );
+  // What each patient already has a report for, per ordered test.
+  //
+  // The rule used to be "does this patient have any report at all", which went
+  // quiet the moment the first draft was saved: one CBC draft silenced the LFT
+  // and the lipid panel ordered in the same visit and still sitting unreported.
+  // The ordered list came from `patient.testSelection` — the very field a patient
+  // edit rewrites — so alert state also moved whenever someone corrected a phone
+  // number.
+  const expand = source.expandNames ?? ((names: readonly string[]) => [...names]);
+  const deliveredByPatient = new Map<string, Set<string>>();
+  for (const report of source.reports) {
+    if (!report.patientId) continue;
+    let delivered = deliveredByPatient.get(report.patientId);
+    if (!delivered) {
+      delivered = new Set<string>();
+      deliveredByPatient.set(report.patientId, delivered);
+    }
+    const leaves = expand(report.testSelection ?? []);
+    if (leaves.length === 0) delivered.add(COVERS_EVERYTHING);
+    else leaves.forEach(leaf => delivered!.add(leaf));
+  }
 
   if (prefs.categories.overdue) {
     for (const patient of source.patients) {
-      if (!patient.testSelection || patient.testSelection.length === 0) continue;
-      if (patientIdsWithReport.has(patient.id)) continue;
+      const ordered = expand(patient.testSelection ?? []);
+      if (ordered.length === 0) continue;
+      const delivered = deliveredByPatient.get(patient.id);
+      if (delivered?.has(COVERS_EVERYTHING)) continue;
+      const outstanding = delivered ? ordered.filter(name => !delivered.has(name)) : ordered;
+      if (outstanding.length === 0) continue;
       const age = hoursBetween(patient.createdAt, now);
       if (age === null) continue;
       const severity = escalate(age, prefs.overdueHours);
       if (!severity) continue;
-      const label = patient.testSelection.slice(0, 2).join(', ');
-      const extra = patient.testSelection.length > 2 ? ` +${patient.testSelection.length - 2}` : '';
+      const label = outstanding.slice(0, 2).join(', ');
+      const extra = outstanding.length > 2 ? ` +${outstanding.length - 2} more` : '';
       items.push({
         id: `overdue:${patient.id}`,
         category: 'overdue',
         severity,
         title: `${patient.name} is still awaiting a report`,
-        body: `${patient.testSelection.length} ${pluralTests(patient.testSelection.length)} collected ${formatAge(age)} ago (${label}${extra}). No report issued yet.`,
+        body: `${outstanding.length} of ${ordered.length} ${pluralTests(ordered.length)} collected ${formatAge(age)} ago have no report yet (${label}${extra}).`,
         entityName: patient.name,
         entityId: patient.id,
         ageHours: age,
@@ -240,7 +275,7 @@ export function buildNotifications(source: NotificationSource): NotificationItem
         category: 'draft',
         severity,
         title: `Draft for ${report.patientName} was never issued`,
-        body: `Last edited ${formatAge(age)} ago${report.testType ? ` · ${report.testType}` : ''}. It stays invisible to the patient until it is finalized and signed.`,
+        body: `Last edited ${formatAge(age)} ago${report.testType ? ` · ${report.testType}` : ''}. It stays in the lab until the report is issued.`,
         entityName: report.patientName,
         entityId: report.id,
         ageHours: age,
@@ -259,7 +294,11 @@ export function buildNotifications(source: NotificationSource): NotificationItem
       if (age > AMENDED_WINDOW_DAYS * 24) continue;
       const reAmended = (report.version ?? 1) > 2;
       items.push({
-        id: `amended:${report.id}`,
+        // Versioned id: a second amendment to a report whose first one was
+        // silenced must alert again. Keyed only on the report, the newer version
+        // inherited the old "muted" and the bench never heard about the change
+        // that mattered most.
+        id: `amended:${report.id}:v${report.version ?? 1}`,
         category: 'amended',
         severity: reAmended ? 'warning' : 'info',
         title: `Issued report for ${report.patientName} was amended`,

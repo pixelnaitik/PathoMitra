@@ -78,6 +78,92 @@ export function ageAsNumber(patient: Pick<PatientRecord, 'age'>): number | undef
   return Number.isFinite(n) && n >= 0 && n <= 150 ? n : undefined;
 }
 
+/**
+ * Who to attribute a write to.
+ *
+ * The local account's `uid` is the fixed string `local-admin` (AuthContext), so
+ * storing it alone records nothing a human can read on an audit line — the
+ * display name is the readable operator, and `uid` is the fallback for a session
+ * that somehow has no name. Never write the raw `uid` at a call site again.
+ */
+export function operatorStamp(
+  user?: { uid?: string | null; displayName?: string | null } | null,
+): string {
+  const name = (user?.displayName ?? '').trim();
+  return name || user?.uid || 'unknown';
+}
+
+/**
+ * Write builder for `patients/{id}` — the counterpart of `toReportDoc`.
+ *
+ * Patient writes used to persist the form object verbatim, so the shape of a
+ * clinical record was decided by whichever screen saved last, and a stray form
+ * field or a `NaN` age went straight into the encrypted store. Everything the
+ * UI saves crosses `PatientSchema` here first, and the schema guarantees the
+ * bounds the rest of the app already assumes (`age` 0-150, whole years).
+ */
+export interface PatientDraftInput {
+  name: string;
+  /** Raw form value — numeric string, number, or empty.
+   */
+  age: string | number;
+  gender: string;
+  phone?: string;
+  doctorName?: string;
+  address?: string;
+  testSelection?: string[];
+  createdAt?: string;
+}
+
+/** Input for {@link toPatientUpdateDoc} — same fields, no `createdAt`. */
+export type PatientPatchInput = Omit<PatientDraftInput, 'createdAt'>;
+
+/** Shared construction for both patient write builders. */
+function patientDocFields(input: PatientDraftInput): Record<string, unknown> {
+  const parsed = Number.parseInt(String(input.age ?? '').trim(), 10);
+  const doc: Record<string, unknown> = {
+    name: input.name.trim(),
+    age: Number.isFinite(parsed) ? Math.min(150, Math.max(0, parsed)) : 0,
+    gender: input.gender,
+    createdAt: input.createdAt ?? new Date().toISOString(),
+  };
+  const phone = (input.phone ?? '').trim();
+  if (phone) doc.phone = phone;
+  const doctorName = (input.doctorName ?? '').trim();
+  if (doctorName) doc.doctorName = doctorName;
+  const address = (input.address ?? '').trim();
+  if (address) doc.address = address;
+  doc.testSelection = (input.testSelection ?? []).map(name => name.trim()).filter(Boolean);
+
+  // Final validation against the schema; a value the schema rejects is a bug at
+  // the call site, so this throws rather than writing a document the readers will
+  // have to stub.
+  return PatientSchema.parse(doc) as Record<string, unknown>;
+}
+
+/** Build the exact document stored in `patients/{id}`. */
+export function toPatientDoc(input: PatientDraftInput): Record<string, unknown> {
+  return patientDocFields({
+    ...input,
+    createdAt: input.createdAt || new Date().toISOString(),
+  });
+}
+
+/**
+ * Build the update payload for an existing patient.
+ *
+ * `createdAt` is dropped from the result on purpose: the registration date is
+ * what the overdue alerts and the analytics window measure against, and the
+ * schema's default would otherwise stamp an empty date over the real one.
+ */
+export function toPatientUpdateDoc(input: PatientPatchInput): Record<string, unknown> {
+  const { createdAt: _registrationDate, ...editable } = patientDocFields({
+    ...input,
+    createdAt: '',
+  });
+  return editable;
+}
+
 // ---------------------------------------------------------------------------
 // Doctors (referral register)
 // ---------------------------------------------------------------------------
@@ -98,7 +184,11 @@ export const ReportSchema = z.looseObject({
   patientName: z.string().max(100).default(''),
   resultData: z.record(z.string(), z.unknown()).default({}),
   signature: z.string().max(128).default(''),
-  status: ReportStatusSchema.default('final'),
+  // No default. A missing or unknown status used to fall through to `final`, so
+  // a malformed historical document was silently presented — and printable — as
+  // an issued clinical report. `readReport` normalises the status to a reviewable
+  // draft instead; see {@link normalizeReportStatus}.
+  status: ReportStatusSchema,
   createdAt: timestampString.default(''),
   createdBy: z.string().max(128).default(''),
   testType: z.string().max(128).optional(),
@@ -109,8 +199,34 @@ export const ReportSchema = z.looseObject({
   updatedBy: z.string().max(128).optional(),
   updatedAt: timestampString.optional(),
   amendReason: z.string().max(500).optional(),
+
+  /**
+   * True when the stored status was missing or unrecognised, so the record was
+   * forced into `draft` to keep it inspectable without letting it issue, share or
+   * print as a validated final report. The operator must re-verify before use.
+   */
+  needsReview: z.boolean().optional(),
 });
 export type ReportRecord = z.infer<typeof ReportSchema> & { id: string };
+
+/**
+ * Coerce a stored report's `status` into the validated domain *before* parsing,
+ * without throwing away the fields a malformed record still carries.
+ *
+ * A document whose status is absent or not a known value is not deleted or
+ * stubbed — the results, patient link and timestamps are kept so the record
+ * remains recoverable — but it is downgraded to `draft` and flagged
+ * `needsReview`, which is the only safe reading of "we cannot tell what this
+ * was." It can then never issue, share, or print as a final report until an
+ * operator re-validates it. Returns the input untouched for a genuine object so
+ * a valid report pays no cost.
+ */
+export function normalizeReportStatus(data: unknown): unknown {
+  if (typeof data !== 'object' || data === null) return data;
+  const record = data as Record<string, unknown>;
+  if (record.status === 'draft' || record.status === 'final') return record;
+  return { ...record, status: 'draft', needsReview: true };
+}
 
 /** Payload accepted by the report write path. */
 export interface ReportDraftInput {
@@ -229,15 +345,22 @@ export function readDoctor(id: string, data: unknown): DoctorRecord {
 }
 
 export function readReport(id: string, data: unknown): ReportRecord {
-  return readAtBoundary(ReportSchema, 'report', id, data, {
+  // Normalise the status first so a missing/unknown value keeps the rest of the
+  // document (recoverable) and lands in a reviewable draft, never a silent final.
+  const status =
+    data && typeof data === 'object' && (data as { status?: unknown }).status === 'final'
+      ? ('final' as const)
+      : ('draft' as const);
+  return readAtBoundary(ReportSchema, 'report', id, normalizeReportStatus(data), {
     patientId: '',
     patientName: `Report ${id.slice(0, 6)}`,
     resultData: {},
     signature: '',
-    status: 'final',
+    status,
     createdAt: '',
     createdBy: '',
     version: 1,
+    needsReview: true,
   });
 }
 

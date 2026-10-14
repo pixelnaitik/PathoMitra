@@ -33,6 +33,8 @@ import { useBrandLogo, DEFAULT_BRAND_LOGO_SRC, SPLASH_BRAND_LOGO_SRC } from '../
 import { startSettingsSync } from '../../lib/settings-sync';
 import { BACK_PRIORITY, useBackHandler } from '../../lib/back-button';
 import { hapticTap } from '../../lib/haptics';
+import { StorageModeBanner } from '../../components/StorageModeBanner';
+import { runRegisteredRefreshes } from '../../lib/refresh-registry';
 
 interface NavItem {
   id: string;
@@ -272,26 +274,41 @@ export default function DashboardLayout({
       setPullDistance(0);
     }
   };
-  const handlePullTouchEnd = () => {
+  const handlePullTouchEnd = async () => {
     setIsDragging(false);
     pullStartY.current = null;
     if (isPullRefreshing) return;
-    if (pullDistance >= PULL_THRESHOLD) {
-      // Hold the badge open and spin it while the refresh settles, so the gesture
-      // resolves into a smooth animation instead of a frozen icon.
-      setIsPullRefreshing(true);
-      setPullDistance(56);
-      // Dashboard data is live via Firestore onSnapshot, so no network reload is
-      // needed. Broadcast a refresh event for any one-shot loaders, then settle.
-      window.dispatchEvent(new CustomEvent('app:refresh'));
-      setTimeout(() => {
-        setIsPullRefreshing(false);
-        setPullDistance(0);
-        toast.success("You're up to date");
-      }, 900);
-    } else {
+    if (pullDistance < PULL_THRESHOLD) {
       setPullDistance(0);
+      return;
     }
+    // Hold the badge open while the reloads are in flight — the indicator
+    // settles when the last awaited reload resolves, not after a fixed
+    // 900 ms timer. Before this, the gesture always toasted "You're up to
+    // date" whether or not a handler ran, which is the exact failure mode
+    // UI-P1-04 calls out (a timer presented as a completed operation).
+    setIsPullRefreshing(true);
+    setPullDistance(56);
+    // Legacy one-shot listeners still subscribe to the CustomEvent; keep
+    // dispatching it so the app refresh broadcast reaches those too.
+    window.dispatchEvent(new CustomEvent('app:refresh'));
+    const outcome = await runRegisteredRefreshes();
+    setIsPullRefreshing(false);
+    setPullDistance(0);
+    if (outcome.total === 0) {
+      // Nothing registered to reload — live listeners already reflect the
+      // latest data, but claiming "refreshed" here would be a lie about an
+      // operation that did not happen.
+      toast.info('Live views update on their own');
+      return;
+    }
+    if (outcome.rejected > 0) {
+      toast.warning(
+        `Refreshed ${outcome.fulfilled} of ${outcome.total} views — some data is still loading`,
+      );
+      return;
+    }
+    toast.success('Refreshed');
   };
 
   return (
@@ -511,13 +528,16 @@ export default function DashboardLayout({
                 </motion.span>
               </AnimatePresence>
             </button>
-            <div
-              className="flex items-center gap-3 cursor-pointer rounded-full p-1.5 pr-1 transition-colors hover:bg-surface-container-high/70"
+            {/* Profile / settings affordance. This used to be a plain <div>
+                wearing `role="button"` with an Enter-only key handler, so
+                Space did nothing and screen readers announced a control that
+                partially acted like a button (UI-P0-04). A native <button>
+                gets Enter + Space, focus, and correct semantics for free. */}
+            <button
+              type="button"
               onClick={() => setActiveTab('settings')}
-              role="button"
-              tabIndex={0}
               aria-label="Open settings"
-              onKeyDown={e => e.key === 'Enter' && setActiveTab('settings')}
+              className="flex items-center gap-3 cursor-pointer rounded-full p-1.5 pr-1 transition-colors hover:bg-surface-container-high/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             >
               <div className="flex flex-col items-end hidden sm:flex">
                 <span className="text-[13px] font-bold text-on-surface leading-tight">
@@ -530,7 +550,7 @@ export default function DashboardLayout({
               <div className="w-9 h-9 rounded-full bg-surface-container border border-[var(--elevated-border)] flex items-center justify-center overflow-hidden">
                 <AvatarIcon seed={avatarSeed} />
               </div>
-            </div>
+            </button>
           </div>
         </header>
 
@@ -584,6 +604,7 @@ export default function DashboardLayout({
               />
             </div>
           </div>
+          <StorageModeBanner />
           <div className="max-w-7xl mx-auto">{children}</div>
         </div>
 

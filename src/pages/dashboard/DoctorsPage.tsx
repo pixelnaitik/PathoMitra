@@ -210,12 +210,52 @@ export default function DoctorsPage() {
       </div>
 
       {filteredDoctors.length === 0 ? (
+        // Two different empty states, not one generic. The audit (UI-P1-05)
+        // calls out the older copy — "No doctors found. Add a doctor, or
+        // adjust your search and date filters." — because the operator reads
+        // that as either "the register is empty" or "my filters are too
+        // tight" without any way to tell which. The action and the wording
+        // now split by state, and the guest role never sees an "Add Doctor"
+        // CTA it cannot trigger.
         <Card pad="none">
-          <EmptyState
-            icon={<Users className="h-7 w-7" />}
-            title="No doctors found"
-            description="Add a doctor, or adjust your search and date filters."
-          />
+          {doctors.length === 0 && !searchTerm.trim() && !fromDate && !toDate ? (
+            <EmptyState
+              icon={<Users className="h-7 w-7" aria-hidden="true" />}
+              title="No doctors registered yet"
+              description="Add the physicians who refer patients here; the register will start showing their referrals."
+              action={
+                role !== 'guest' ? (
+                  <Button
+                    variant="brand"
+                    onClick={() => {
+                      setIsModalOpen(true);
+                    }}
+                  >
+                    <Plus className="w-4 h-4" aria-hidden="true" />
+                    Add first doctor
+                  </Button>
+                ) : undefined
+              }
+            />
+          ) : (
+            <EmptyState
+              icon={<Users className="h-7 w-7" aria-hidden="true" />}
+              title="No doctor matches the current filters"
+              description={`${doctors.length} doctor${doctors.length === 1 ? '' : 's'} in the register, none match this search or date range.`}
+              action={
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setSearchTerm('');
+                    setFromDate('');
+                    setToDate('');
+                  }}
+                >
+                  Clear filters
+                </Button>
+              }
+            />
+          )}
         </Card>
       ) : (
         <>
@@ -313,7 +353,13 @@ export default function DoctorsPage() {
             </div>
           </Card>
 
-          {/* Mobile inset list — staggered entrance */}
+          {/* Mobile inset list — staggered entrance. Same shape as the
+              patient list: primary button for "open the referral sheet",
+              sibling IconButtons for Edit / Delete. Nesting actions inside
+              a row-sized `role="button"` wrapper (which this used to be)
+              gave TalkBack one announcement instead of three and left
+              Tab to walk through an interactive element inside another
+              interactive element (UI-P0-04). */}
           <div className="md:hidden">
             <ListGroup>
               {filteredDoctors.map((docItem, dIdx) => {
@@ -324,28 +370,8 @@ export default function DoctorsPage() {
                     initial={{ opacity: 0, y: 8 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: Math.min(dIdx * 0.045, 0.45), duration: 0.25 }}
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`View ${docItem.name}'s referrals`}
-                    onClick={() =>
-                      setSelectedDoctor({
-                        id: docItem.id,
-                        name: docItem.name,
-                        phone: docItem.phone,
-                      })
-                    }
-                    onKeyDown={e => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        setSelectedDoctor({
-                          id: docItem.id,
-                          name: docItem.name,
-                          phone: docItem.phone,
-                        });
-                      }
-                    }}
                     className={cn(
-                      'cursor-pointer transition-colors active:bg-surface-container-high',
+                      'transition-colors',
                       selectedDoctor?.id === docItem.id && 'bg-accent/8',
                     )}
                   >
@@ -357,6 +383,14 @@ export default function DoctorsPage() {
                       }
                       title={docItem.name}
                       subtitle={`${stats.patientsCount} patient${stats.patientsCount === 1 ? '' : 's'} referred${docItem.phone ? ` · ${docItem.phone}` : ''}`}
+                      primaryLabel={`View ${docItem.name}'s referrals`}
+                      onClick={() =>
+                        setSelectedDoctor({
+                          id: docItem.id,
+                          name: docItem.name,
+                          phone: docItem.phone,
+                        })
+                      }
                       trailing={
                         role !== 'guest' && !docItem.isDefault ? (
                           <>

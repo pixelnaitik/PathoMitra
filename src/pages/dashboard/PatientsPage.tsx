@@ -10,14 +10,27 @@ import {
   updateDoc,
   where,
   getDocs,
-  getDoc,
   setDoc,
+  limit,
   db,
 } from '../../data/fs';
 import { deletePatientCascade } from '../../lib/cascades';
+import {
+  allocatePatientId,
+  findProbableDuplicates,
+  normalisePhone,
+  validatePatientForm,
+  type ProbableDuplicate,
+} from '../../lib/patient-registry';
 import { useCollectionList, type ListFilter } from '../../hooks/useCollectionList';
 import { createdAtRangeFilters } from '../../lib/date-range';
-import { readPatients, type PatientRecord } from '../../lib/models';
+import {
+  readPatients,
+  toPatientDoc,
+  toPatientUpdateDoc,
+  operatorStamp,
+  type PatientRecord,
+} from '../../lib/models';
 import { downloadCsv, toCsv, type CsvColumn } from '../../lib/export-csv';
 import { handleFirestoreError, OperationType } from '../../lib/firestore-errors';
 import {
@@ -62,10 +75,8 @@ import {
   searchPathologyTests,
 } from '../../lib/pathology-tests';
 import { DEFAULT_DOCTORS } from '../../lib/doctors';
+import { doctorMatchesQuery, doctorNameKey } from '../../lib/doctor-registry';
 import { PatientDetailSheet } from '../../components/PatientDetailSheet';
-
-/** Ceiling for how far a name search walks into older pages. */
-const SEARCH_SCAN_CEILING = 250;
 
 export default function PatientsPage({
   initialAction,
@@ -200,42 +211,74 @@ export default function PatientsPage({
 
   const [formError, setFormError] = useState('');
 
+  /**
+   * A parked duplicate warning: the form is valid, but something already in the
+   * store looks like the same person. The operator answers it, and a confirmed
+   * registration continues into `savePatient`.
+   */
+  const [duplicateCheck, setDuplicateCheck] = useState<ProbableDuplicate[] | null>(null);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError('');
 
-    if (!formData.name.trim()) {
-      setFormError('Patient Full Name is required.');
-      return;
-    }
-    if (!formData.age) {
-      setFormError('Patient Age is required.');
+    const invalid = validatePatientForm(formData);
+    if (invalid) {
+      setFormError(invalid);
       return;
     }
 
+    // A second record for the same patient is the one mistake that cannot be
+    // undone later by editing a field — it splits one person's history in two,
+    // and each half looks complete on its own. Checked against the most recent
+    // registrations, which is where a duplicate realistically comes from.
+    if (!editingPatient) {
+      const recentSnapshot = await getDocs(
+        query(collection(db, 'patients'), orderBy('createdAt', 'desc'), limit(500)),
+      );
+      const matches = findProbableDuplicates(formData, readPatients(recentSnapshot.docs));
+      if (matches.length > 0) {
+        setDuplicateCheck(matches);
+        return;
+      }
+    }
+
+    await savePatient();
+  };
+
+  /** The write itself, once the form is valid and any duplicate warning was answered. */
+  const savePatient = async () => {
     const path = 'patients';
+    setFormError('');
     try {
       if (editingPatient) {
-        await updateDoc(doc(db, path, editingPatient.id), {
-          ...formData,
-          age: parseInt(formData.age),
-        });
+        await updateDoc(doc(db, path, editingPatient.id), toPatientUpdateDoc(formData));
 
-        // Synchronize with related reports
+        // Sync the ordered-panel list onto the patient's DRAFTS only.
+        //
+        // This loop used to touch every report under the patient, issued ones
+        // included. A `final` report is a document that has already left the lab
+        // (lib/models.ts: immutable without an amendment entry), so rewriting its
+        // `testSelection` changed what a handed-over report claims was ordered,
+        // bumped its version, and made the alert engine announce "Amended report"
+        // for every one of them — because correcting a phone number is not an
+        // amendment. Amending an issued report stays deliberate: it happens in the
+        // report editor, which records a reason.
         try {
-          const reportsRef = collection(db, 'reports');
-          const q = query(reportsRef, where('patientId', '==', editingPatient.id));
+          const q = query(
+            collection(db, 'reports'),
+            where('patientId', '==', editingPatient.id),
+            where('status', '==', 'draft'),
+          );
           const querySnapshot = await getDocs(q);
 
           for (const reportDoc of querySnapshot.docs) {
             const currentReport = reportDoc.data();
             try {
-              // Offline: no signing, no QR mirror — just carry the updated test
-              // selection onto the report and version the amendment.
               await updateDoc(doc(db, 'reports', reportDoc.id), {
                 testSelection: formData.testSelection,
                 version: (Number(currentReport.version) || 1) + 1,
-                updatedBy: user?.uid || 'unknown',
+                updatedBy: operatorStamp(user),
                 updatedAt: new Date().toISOString(),
               });
             } catch (reportSyncErr) {
@@ -243,44 +286,25 @@ export default function PatientsPage({
             }
           }
         } catch (syncErr) {
-          console.error('Failed to sync reports: ', syncErr);
+          console.error('Failed to sync drafts: ', syncErr);
         }
       } else {
-        // Patient ids are human-readable (YYMM + 3 digits = 1000 ids/month),
-        // so collisions are likely at modest volumes. Blindly calling setDoc
-        // with a colliding id would silently overwrite another patient's
-        // record — probe first and retry with a fresh suffix.
-        const d = new Date();
-        const yy = d.getFullYear().toString().slice(-2);
-        const mm = (d.getMonth() + 1).toString().padStart(2, '0');
-        const chars = '0123456789';
-        let patientId = '';
-        for (let attempt = 0; attempt < 10; attempt++) {
-          let randomPart = '';
-          for (let i = 0; i < 3; i++) {
-            randomPart += chars.charAt(Math.floor(Math.random() * chars.length));
-          }
-          const candidate = `${yy}${mm}${randomPart}`;
-          const existing = await getDoc(doc(db, path, candidate));
-          if (!existing.exists()) {
-            patientId = candidate;
-            break;
-          }
-        }
-        if (!patientId) {
-          throw new Error(
-            'Could not allocate a unique patient id (ID space nearly full for this month). Please try again.',
-          );
-        }
+        // Registration number comes from the per-month sequence held in the
+        // `meta` store: ordered, and collision-free by construction (the
+        // allocator still probes each candidate). It replaces `YYMM` + three
+        // random digits, which ran out at a few hundred registrations a month
+        // and failed with "could not allocate a unique patient id" while a
+        // patient stood at the counter. See lib/patient-registry.
+        const patientId = await allocatePatientId();
 
-        await setDoc(doc(db, path, patientId), {
-          ...formData,
-          age: parseInt(formData.age),
-          createdAt: new Date().toISOString(),
-        });
+        await setDoc(
+          doc(db, path, patientId),
+          toPatientDoc({ ...formData, createdAt: new Date().toISOString() }),
+        );
       }
       setIsModalOpen(false);
       resetForm();
+      setDuplicateCheck(null);
       toast.success(
         editingPatient ? `${formData.name}'s record updated.` : `${formData.name} registered.`,
       );
@@ -309,18 +333,36 @@ export default function PatientsPage({
     setFormError('');
   };
 
-  // Only the name can be matched client-side (Firestore has no substring
-  // query), so an empty window must send the list walking into older pages
-  // instead of reporting "no patients found" for someone who exists.
+  // Name, registration number, phone digits and age are all matchable, and every
+  // word typed has to appear somewhere on the record — "rao asha" finds Asha Rao.
+  // Searching only the name is what made a staff member read a patient number out
+  // to a colleague instead of looking it up.
   const deferredSearch = useDeferredValue(searchTerm.trim().toLowerCase());
-  const filteredPatients = useMemo(
-    () => patients.filter(p => !deferredSearch || p.name.toLowerCase().includes(deferredSearch)),
-    [patients, deferredSearch],
-  );
+  const filteredPatients = useMemo(() => {
+    if (!deferredSearch) return patients;
+    const terms = deferredSearch.split(/\s+/).filter(Boolean);
+    return patients.filter(p => {
+      const haystack = [
+        p.name,
+        p.id,
+        p.phone ?? '',
+        normalisePhone(p.phone),
+        String(p.age ?? ''),
+        p.doctorName ?? '',
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return terms.every(term => haystack.includes(term));
+    });
+  }, [patients, deferredSearch]);
 
   const searching = deferredSearch.length > 0 && filteredPatients.length === 0;
-  const scanning = searching && patientsList.hasMore && patients.length < SEARCH_SCAN_CEILING;
-  const scanCapped = searching && patientsList.hasMore && patients.length >= SEARCH_SCAN_CEILING;
+  // The old 250-record walk ceiling is gone on purpose: the local store already
+  // holds the whole collection in memory, so walking further costs a re-slice and
+  // nothing else — while the cap silently guaranteed that an older patient could
+  // never be found by search at all.
+  const scanning = searching && patientsList.hasMore;
 
   useEffect(() => {
     if (!scanning || patientsList.loadingMore) return;
@@ -441,15 +483,29 @@ export default function PatientsPage({
     }));
   };
 
+  /**
+   * Suggestions: the lab's own register first, then the seeded list, folded on
+   * `doctorNameKey` so one doctor cannot appear as `DR MANOJ KUMAR`,
+   * `DR.MANOJ KUMAR` and `Dr. Manoj Kumar (MBBS)` in the same dropdown. Choosing a
+   * suggestion still stores the name string (a patient carries `doctorName`, not a
+   * doctor id), which is exactly why the spelling has to be stable here rather than
+   * patched up at read time.
+   */
   const allDoctors = React.useMemo(() => {
-    const uniqueDynamic = doctors.filter(
-      d => !DEFAULT_DOCTORS.some(defaultName => defaultName.toLowerCase() === d.name.toLowerCase()),
-    );
-    return [...DEFAULT_DOCTORS.map(name => ({ id: `default_${name}`, name })), ...uniqueDynamic];
+    const byKey = new Map<string, { id: string; name: string }>();
+    for (const doctor of doctors) {
+      const key = doctorNameKey(doctor.name);
+      if (key && !byKey.has(key)) byKey.set(key, { id: doctor.id, name: doctor.name });
+    }
+    for (const name of DEFAULT_DOCTORS) {
+      const key = doctorNameKey(name);
+      if (key && !byKey.has(key)) byKey.set(key, { id: `default_${name}`, name });
+    }
+    return [...byKey.values()];
   }, [doctors]);
 
-  const filteredDoctorsDropdown = allDoctors.filter(d =>
-    d.name.toLowerCase().includes(formData.doctorName.toLowerCase()),
+  const filteredDoctorsDropdown = allDoctors.filter(doctor =>
+    doctorMatchesQuery(doctor.name, formData.doctorName),
   );
 
   const showAddDoctorButton =
@@ -646,25 +702,22 @@ export default function PatientsPage({
             </div>
           </Card>
 
-          {/* Mobile inset list — edit/delete actions, staggered entrance */}
+          {/* Mobile inset list — edit/delete actions, staggered entrance.
+              The row is a primary button (name / history opens the detail
+              sheet) plus sibling action buttons (Edit, Delete). Previously
+              the whole row was a fake `role="button"` wrapper and the two
+              action buttons sat inside it: invalid nesting, awkward Tab
+              order, and TalkBack announced the wrapper as a single control
+              rather than naming the patient, then each action separately
+              (UI-P0-04). */}
           <div className="md:hidden">
             <ListGroup>
               {filteredPatients.map((patient, pIdx) => (
                 <motion.div
                   key={patient.id}
                   {...listStaggerProps(pIdx)}
-                  role="button"
-                  tabIndex={0}
-                  aria-label={`View ${patient.name}'s history`}
-                  onClick={() => setSelectedPatient(patient)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      setSelectedPatient(patient);
-                    }
-                  }}
                   className={cn(
-                    'cursor-pointer transition-colors active:bg-surface-container-high',
+                    'transition-colors',
                     selectedPatient?.id === patient.id && 'bg-accent/8',
                   )}
                 >
@@ -676,6 +729,8 @@ export default function PatientsPage({
                     }
                     title={patient.name}
                     subtitle={`${patient.age}y · ${patient.gender} · ${new Date(patient.createdAt).toLocaleDateString('en-IN')}`}
+                    primaryLabel={`View ${patient.name}'s history`}
+                    onClick={() => setSelectedPatient(patient)}
                     trailing={
                       role !== 'guest' ? (
                         <>
@@ -712,8 +767,8 @@ export default function PatientsPage({
         </>
       ) : null}
 
-      {/* Older pages are fetched on demand; the live subscription only keeps the
-          newest window so the table cannot grow without bound. */}
+      {/* Older pages load on demand; a search walks through all of them, because
+          the local store already holds the whole collection in memory. */}
       {!patientsList.loading && patientsList.hasMore && (
         <div className="flex flex-wrap items-center justify-center gap-3">
           <Button
@@ -729,10 +784,10 @@ export default function PatientsPage({
         </div>
       )}
 
-      {scanCapped && (
-        <p role="status" className="text-center text-xs font-semibold text-warning">
-          Scan stopped after {patients.length} records — a name search only walks so far. Narrow the
-          registration range to search deeper history.
+      {!patientsList.loading && !patientsList.hasMore && deferredSearch && (
+        <p className="text-center text-xs text-on-surface-variant">
+          {patients.length} patient{patients.length === 1 ? '' : 's'} searched — nothing matched
+          that. Try fewer letters, or part of a patient number.
         </p>
       )}
 
@@ -1014,6 +1069,36 @@ export default function PatientsPage({
           </Field>
         </form>
       </Sheet>
+
+      <ConfirmSheet
+        open={!!duplicateCheck}
+        onClose={() => setDuplicateCheck(null)}
+        onConfirm={() => void savePatient()}
+        title="Possible duplicate patient"
+        confirmLabel="Register as a new patient"
+        message={
+          <>
+            <p>
+              This looks like it could be the same person as{' '}
+              <strong className="font-semibold text-on-surface">
+                {duplicateCheck?.length} existing record{duplicateCheck?.length === 1 ? '' : 's'}
+              </strong>
+              . Registering them again splits one patient's history across two files.
+            </p>
+            <ul className="mt-3 space-y-1.5">
+              {(duplicateCheck ?? []).slice(0, 4).map(match => (
+                <li key={match.id} className="text-xs text-on-surface-variant">
+                  <span className="font-semibold text-on-surface">{match.name}</span> · #{match.id}{' '}
+                  <span className="font-mono">({match.reason})</span>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-3 text-xs text-on-surface-variant">
+              If it is the same person, close this and open the existing record instead.
+            </p>
+          </>
+        }
+      />
 
       <ConfirmSheet
         open={!!patientToDelete}

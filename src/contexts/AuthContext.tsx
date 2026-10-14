@@ -62,7 +62,7 @@ export interface AuthUser {
 /** Kept as an alias so existing imports of `AuthRole` keep compiling. */
 export type AuthRole = Role | null;
 
-export type AuthStatus = 'loading' | 'onboarding' | 'locked' | 'unlocked';
+export type AuthStatus = 'loading' | 'onboarding' | 'locked' | 'unlocked' | 'error';
 
 interface AuthContextType {
   /** Coarse lifecycle state — drives which auth screen (if any) shows. */
@@ -94,7 +94,12 @@ interface AuthContextType {
   unlockWithPassword: (password: string) => Promise<UnlockResult>;
   unlockWithBiometric: () => Promise<boolean>;
   setBiometric: (enabled: boolean) => Promise<void>;
-  changePassword: (nextPassword: string) => Promise<void>;
+  /**
+   * Replace the unlock secret. Both secrets are required: the store verifies the
+   * current one (through the same backoff as unlocking) before replacing it, so
+   * an unlocked-but-unattended device cannot be permanently taken over.
+   */
+  changePassword: (nextPassword: string, currentPassword: string) => Promise<void>;
   renameAccount: (name: string) => Promise<void>;
   /** Lock the session (return to the unlock screen) without erasing data. */
   lock: () => void;
@@ -142,22 +147,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     let active = true;
     (async () => {
+      // Biometric capability is a nice-to-have; a failure here must never gate
+      // the unlock path, so it degrades to "unavailable" rather than erroring.
+      let bio = { available: false };
       try {
-        const bio = await checkBiometric();
-        const account = await getAccount();
-        if (!active) return;
-        setBiometricAvailable(bio.available);
-        setTermsPending(needsTermsAcceptance(account));
-        if (account) {
-          setUserName(account.name);
-          setBiometricEnabled(account.biometricEnabled && bio.available);
-          setStatus('locked');
-        } else {
-          setStatus('onboarding');
-        }
+        bio = await checkBiometric();
       } catch (error) {
-        console.error('PathoMitra: auth bootstrap failed', error);
-        if (active) setStatus('onboarding');
+        console.error('PathoMitra: biometric probe failed, continuing without it', error);
+      }
+
+      // The account read is the opposite: it decides whether an account exists.
+      // A *returned null* means a genuine fresh install (offer onboarding). A
+      // *thrown* error means secure storage could not be read — that is not
+      // evidence of "no account", and routing it to onboarding would offer to
+      // create/overwrite the very credential we failed to read. Fail closed.
+      let account;
+      try {
+        account = await getAccount();
+      } catch (error) {
+        console.error('PathoMitra: secure storage could not be read', error);
+        if (active) setStatus('error');
+        return;
+      }
+
+      if (!active) return;
+      setBiometricAvailable(bio.available);
+      setTermsPending(needsTermsAcceptance(account));
+      if (account) {
+        setUserName(account.name);
+        setBiometricEnabled(account.biometricEnabled && bio.available);
+        setStatus('locked');
+      } else {
+        setStatus('onboarding');
       }
     })();
     return () => {
@@ -245,9 +266,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setBiometricEnabled(enabled);
   }, []);
 
-  const changePassword = useCallback(async (nextPassword: string) => {
+  const changePassword = useCallback(async (nextPassword: string, currentPassword: string) => {
+    // The new secret is checked here; the current one is checked by the store,
+    // because validating a guess in the UI would let a wrong passcode through to
+    // the write and back.
     if (!isValidPasscode(nextPassword)) throw new Error(PIN_ERROR);
-    await changeLocalPassword(nextPassword);
+    await changeLocalPassword(nextPassword, currentPassword);
   }, []);
 
   const renameAccount = useCallback(async (name: string) => {
@@ -276,11 +300,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const eraseAllData = useCallback(async () => {
+    // Clear the clinical store FIRST. The account credential is the only way
+    // back into the app; if the wipe of records fails we must keep it, so the
+    // operator stays protected and can retry or recover, rather than being left
+    // with a half-erased database and no way to unlock or finish the erase.
     try {
       await getRepository().clearAll();
     } catch (error) {
       console.error('PathoMitra: failed to clear local data', error);
+      throw new Error(
+        "Clinical records could not be fully erased. Your account and this device's " +
+          'lock were left in place — nothing was lost. Please try again.',
+        { cause: error },
+      );
     }
+    // The records are verifiably gone; only now is it safe to drop the credential.
     await deleteAccount();
     setUserName('');
     setBiometricEnabled(false);
