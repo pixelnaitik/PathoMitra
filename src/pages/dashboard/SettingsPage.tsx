@@ -11,7 +11,6 @@ import {
   Check,
   FileSignature,
   Activity,
-  Plus,
   Trash2,
   Palette,
   Sun,
@@ -69,25 +68,9 @@ import {
 } from '../../lib/desktop-notifications';
 import { useEditHistory, useHistoryShortcuts } from '../../lib/use-edit-history';
 import { openSampleReportPdf } from '../../lib/report-sample-pdf';
-import type { PathologyTest, ReferenceRange } from '../../lib/pathology-tests';
-
-/**
- * One line per populated population band, for the custom-test list. Labs enter
- * ranges as text (`13.5 - 17.5`, `< 100`, `Neg`); `resolveReferenceRange` parses
- * the bounds back out for flagging, so the value is stored exactly as typed and
- * never silently re-formatted.
- */
-const describeRangeBands = (ranges?: ReferenceRange): string[] =>
-  (
-    [
-      ['Adult male', ranges?.male?.text],
-      ['Adult female', ranges?.female?.text],
-      ['Infant (0–24 mo)', ranges?.infant?.text],
-      ['All patients', ranges?.general?.text],
-    ] as const
-  )
-    .filter(([, text]) => Boolean(text))
-    .map(([label, text]) => `${label}: ${text}`);
+import { operatorStamp } from '../../lib/models';
+import ManageTestsPanel from '../../components/ManageTestsPanel';
+import type { PathologyTest } from '../../lib/pathology-tests';
 
 /** Keys that make up the report-layout slice of the settings — the part the
  * templates tab edits, previews, saves and undoes. */
@@ -244,7 +227,7 @@ const SETTINGS_TABS = [
   { id: 'theme', label: 'Theme Settings', icon: Palette },
   { id: 'organization', label: 'Lab Organization', icon: Building2 },
   { id: 'templates', label: 'Report Templates', icon: FileSignature },
-  { id: 'tests', label: 'Custom Tests', icon: Activity },
+  { id: 'tests', label: 'Manage Tests', icon: Activity },
   { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'security', label: 'Security', icon: Shield },
   { id: 'data', label: 'Data & Diagnostics', icon: DatabaseBackup },
@@ -421,19 +404,6 @@ export default function SettingsPage({
   );
 
   const [customTests, setCustomTests] = useState<PathologyTest[]>(() => readCustomTests());
-
-  const [newTestDraft, setNewTestDraft] = useState({
-    isGroup: false,
-    name: '',
-    category: '',
-    unit: '',
-    rangeLower: '',
-    rangeUpper: '',
-    rangeMale: '',
-    rangeFemale: '',
-    rangeInfant: '',
-    includedTestsStr: '',
-  });
 
   const {
     themeId,
@@ -1501,309 +1471,11 @@ export default function SettingsPage({
             )}
 
             {activeTab === 'tests' && (
-              <div className="space-y-6">
-                <div>
-                  <h3 className="text-xl font-bold text-primary mb-1">Custom Tests</h3>
-                  <p className="text-sm text-on-surface-variant">
-                    Add new individual tests or test groups (like CBC).
-                  </p>
-                </div>
-
-                <div className="space-y-4">
-                  {customTests.map((test, idx) => (
-                    <div
-                      key={idx}
-                      className="p-4 border border-outline-variant/30 rounded-2xl bg-surface-container-low flex justify-between items-start"
-                    >
-                      <div>
-                        <h4 className="font-bold text-primary flex items-center gap-2">
-                          {test.name}{' '}
-                          {test.isGroup && (
-                            <span className="text-[10px] bg-primary/10 text-primary px-2 py-0.5 rounded-full">
-                              Group
-                            </span>
-                          )}
-                        </h4>
-                        <p className="text-xs text-on-surface-variant mt-1">
-                          Category: {test.category}
-                        </p>
-                        {!test.isGroup && test.unit && (
-                          <p className="text-xs text-on-surface-variant">Unit: {test.unit}</p>
-                        )}
-                        {!test.isGroup && (
-                          <p className="text-xs text-on-surface-variant">
-                            {describeRangeBands(test.ranges).join('   ·   ') || 'No range set'}
-                          </p>
-                        )}
-                        {test.isGroup && (
-                          <p className="text-xs text-on-surface-variant mt-1">
-                            Includes: {test.includedTests?.join(', ')}
-                          </p>
-                        )}
-                      </div>
-                      <button
-                        onClick={() => setCustomTests(tests => tests.filter((_, i) => i !== idx))}
-                        className="text-error hover:bg-error-container p-2 rounded-lg transition-colors"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  ))}
-                  {customTests.length === 0 && (
-                    <div className="text-center py-8 text-on-surface-variant text-sm border-2 border-dashed border-outline-variant/30 rounded-2xl">
-                      No custom tests added yet.
-                    </div>
-                  )}
-
-                  <div className="mt-6 border-t border-outline-variant/20 pt-6">
-                    <h4 className="font-bold text-primary mb-4">Add New Test</h4>
-                    <div className="grid grid-cols-1 fold:grid-cols-2 gap-4">
-                      <div className="space-y-1">
-                        <label
-                          htmlFor="new-test-type"
-                          className="text-xs font-black text-primary uppercase ml-1"
-                        >
-                          Type
-                        </label>
-                        <select
-                          id="new-test-type"
-                          value={newTestDraft.isGroup ? 'group' : 'individual'}
-                          onChange={e =>
-                            setNewTestDraft({
-                              ...newTestDraft,
-                              isGroup: e.target.value === 'group',
-                            })
-                          }
-                          className="w-full px-4 py-3 bg-surface-container border border-outline-variant/30 rounded-xl"
-                        >
-                          <option value="individual">Individual Test</option>
-                          <option value="group">Test Group</option>
-                        </select>
-                      </div>
-                      <div className="space-y-1">
-                        <label
-                          htmlFor="new-test-name"
-                          className="text-xs font-black text-primary uppercase ml-1"
-                        >
-                          Test/Group Name
-                        </label>
-                        <input
-                          id="new-test-name"
-                          type="text"
-                          value={newTestDraft.name}
-                          onChange={e => setNewTestDraft({ ...newTestDraft, name: e.target.value })}
-                          className="w-full px-4 py-3 bg-surface-container border border-outline-variant/30 rounded-xl"
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <label
-                          htmlFor="new-test-category"
-                          className="text-xs font-black text-primary uppercase ml-1"
-                        >
-                          Category
-                        </label>
-                        <input
-                          id="new-test-category"
-                          type="text"
-                          value={newTestDraft.category}
-                          onChange={e =>
-                            setNewTestDraft({ ...newTestDraft, category: e.target.value })
-                          }
-                          className="w-full px-4 py-3 bg-surface-container border border-outline-variant/30 rounded-xl"
-                        />
-                      </div>
-                      {!newTestDraft.isGroup && (
-                        <>
-                          <div className="space-y-1">
-                            <label
-                              htmlFor="new-test-unit"
-                              className="text-xs font-black text-primary uppercase ml-1"
-                            >
-                              Unit
-                            </label>
-                            <select
-                              id="new-test-unit"
-                              value={newTestDraft.unit}
-                              onChange={e =>
-                                setNewTestDraft({ ...newTestDraft, unit: e.target.value })
-                              }
-                              className="w-full px-4 py-3 bg-surface-container border border-outline-variant/30 rounded-xl"
-                            >
-                              <option value="">— None —</option>
-                              <option value="%">%</option>
-                              <option value="mg/dL">mg/dL</option>
-                              <option value="g/dL">g/dL</option>
-                              <option value="gm/dl">gm/dl</option>
-                              <option value="gm%">gm%</option>
-                              <option value="x10³/Cu.mm">x10³/Cu.mm</option>
-                              <option value="mill/cumm">mill/cumm</option>
-                              <option value="lakh/cumm">lakh/cumm</option>
-                              <option value="fL">fL</option>
-                              <option value="pg">pg</option>
-                              <option value="titer">titer</option>
-                              <option value="/HPF">/HPF</option>
-                              <option value="/LPF">/LPF</option>
-                              <option value="U/L">U/L</option>
-                              <option value="unit/l">unit/l</option>
-                              <option value="mm">mm</option>
-                              <option value="min">min</option>
-                              <option value="sec">sec</option>
-                              <option value="IU/mL">IU/mL</option>
-                              <option value="mm induration">mm induration</option>
-                            </select>
-                          </div>
-                          <div
-                            className="space-y-1 md:col-span-2"
-                            role="group"
-                            aria-labelledby="new-test-range-label"
-                          >
-                            <span
-                              id="new-test-range-label"
-                              className="block text-xs font-black text-primary uppercase ml-1"
-                            >
-                              Reference Range — all patients
-                            </span>
-                            <div className="flex gap-2">
-                              <input
-                                type="text"
-                                placeholder="Lower"
-                                aria-label="Reference range lower bound"
-                                value={newTestDraft.rangeLower}
-                                onChange={e =>
-                                  setNewTestDraft({ ...newTestDraft, rangeLower: e.target.value })
-                                }
-                                className="w-full px-4 py-3 bg-surface-container border border-outline-variant/30 rounded-xl"
-                              />
-                              <span
-                                className="flex items-center text-on-surface-variant"
-                                aria-hidden="true"
-                              >
-                                -
-                              </span>
-                              <input
-                                type="text"
-                                placeholder="Higher"
-                                aria-label="Reference range upper bound"
-                                value={newTestDraft.rangeUpper}
-                                onChange={e =>
-                                  setNewTestDraft({ ...newTestDraft, rangeUpper: e.target.value })
-                                }
-                                className="w-full px-4 py-3 bg-surface-container border border-outline-variant/30 rounded-xl"
-                              />
-                            </div>
-                            {/* Three optional bands under the one above: the report
-                                picks Adult male / Adult female / Infant (0–24 months)
-                                per patient, and only falls back to the row above
-                                when a band is blank. Blank is not "same as adults" —
-                                a child on an adult range is printed with a caveat. */}
-                            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
-                              {(
-                                [
-                                  ['rangeMale', 'Adult male', 'e.g. 13.5 - 17.5'],
-                                  ['rangeFemale', 'Adult female', 'e.g. 12.0 - 15.0'],
-                                  ['rangeInfant', 'Infant (0–24 mo)', 'e.g. 9.5 - 13.5'],
-                                ] as const
-                              ).map(([key, label, placeholder]) => (
-                                <div key={key} className="space-y-1">
-                                  <label
-                                    htmlFor={`new-test-range-${key}`}
-                                    className="block text-[11px] font-bold text-on-surface-variant ml-1"
-                                  >
-                                    {label}
-                                  </label>
-                                  <input
-                                    id={`new-test-range-${key}`}
-                                    type="text"
-                                    placeholder={placeholder}
-                                    value={newTestDraft[key]}
-                                    onChange={e =>
-                                      setNewTestDraft({ ...newTestDraft, [key]: e.target.value })
-                                    }
-                                    className="w-full px-3 py-2.5 bg-surface-container border border-outline-variant/30 rounded-xl text-sm"
-                                  />
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                    {newTestDraft.isGroup && (
-                      <div className="mt-4 space-y-1">
-                        <label className="text-xs font-black text-primary uppercase ml-1">
-                          Tests to Include (comma separated exact names)
-                        </label>
-                        <textarea
-                          value={newTestDraft.includedTestsStr}
-                          onChange={e =>
-                            setNewTestDraft({ ...newTestDraft, includedTestsStr: e.target.value })
-                          }
-                          className="w-full px-4 py-3 bg-surface-container border border-outline-variant/30 rounded-xl resize-none min-h-[80px]"
-                          placeholder="e.g. Hemoglobin, WBC Count"
-                        />
-                      </div>
-                    )}
-                    <button
-                      onClick={() => {
-                        if (!newTestDraft.name) return;
-
-                        const test: any = {
-                          id: `custom_${Date.now()}`,
-                          name: newTestDraft.name,
-                          category: newTestDraft.category || 'CUSTOM',
-                          isGroup: newTestDraft.isGroup,
-                        };
-
-                        if (newTestDraft.isGroup) {
-                          test.includedTests = newTestDraft.includedTestsStr
-                            .split(',')
-                            .map((s: string) => s.trim())
-                            .filter(Boolean);
-                        } else {
-                          test.unit = newTestDraft.unit;
-                          const rangeStr =
-                            newTestDraft.rangeLower || newTestDraft.rangeUpper
-                              ? `${newTestDraft.rangeLower || ''} - ${newTestDraft.rangeUpper || ''}`.replace(
-                                  /^ - | - $/g,
-                                  '',
-                                )
-                              : '';
-                          // Only populated bands are stored. An empty
-                          // `{ general: { text: '' } }` used to render as the
-                          // bogus "0 - 0" because the label falls back to the
-                          // (absent) numeric bounds.
-                          const ranges: ReferenceRange = {};
-                          if (rangeStr) ranges.general = { text: rangeStr };
-                          if (newTestDraft.rangeMale.trim())
-                            ranges.male = { text: newTestDraft.rangeMale.trim() };
-                          if (newTestDraft.rangeFemale.trim())
-                            ranges.female = { text: newTestDraft.rangeFemale.trim() };
-                          if (newTestDraft.rangeInfant.trim())
-                            ranges.infant = { text: newTestDraft.rangeInfant.trim() };
-                          test.ranges = ranges;
-                        }
-
-                        setCustomTests([...customTests, test]);
-                        setNewTestDraft({
-                          isGroup: false,
-                          name: '',
-                          category: '',
-                          unit: '',
-                          rangeLower: '',
-                          rangeUpper: '',
-                          rangeMale: '',
-                          rangeFemale: '',
-                          rangeInfant: '',
-                          includedTestsStr: '',
-                        });
-                      }}
-                      className="mt-4 flex items-center gap-2 px-4 py-3 bg-surface-container-low hover:bg-surface-container border border-outline-variant/30 rounded-xl font-bold text-primary transition text-sm"
-                    >
-                      <Plus className="w-4 h-4" /> Add to List
-                    </button>
-                  </div>
-                </div>
-              </div>
+              <ManageTestsPanel
+                customTests={customTests}
+                onCustomTestsChange={setCustomTests}
+                actor={operatorStamp(user)}
+              />
             )}
 
             {activeTab === 'security' && (

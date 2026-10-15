@@ -25,6 +25,7 @@ import {
   Stethoscope,
   TrendingDown,
   TrendingUp,
+  ReceiptText,
 } from 'lucide-react';
 import { Button, Card, EmptyState, Sheet, StatusPill, type PillTone } from './ui';
 
@@ -67,10 +68,13 @@ export function PatientDetailSheet({
   patient,
   onClose,
   onEdit,
+  onPrintBill,
 }: {
   patient: PatientRecord | null;
   onClose: () => void;
   onEdit?: (patient: PatientRecord) => void;
+  /** Raise (or reprint) the bill for this patient's current order. */
+  onPrintBill?: (patient: PatientRecord) => void;
 }) {
   // The parent keys this sheet by patient id, so switching patients remounts
   // it with a clean slate — no stale timeline flashes and no need to reset
@@ -144,23 +148,31 @@ export function PatientDetailSheet({
           : undefined
       }
       footer={
-        patient && onEdit ? (
+        patient && (onEdit || onPrintBill) ? (
           <div className="flex gap-3">
             <Button variant="primary" size="lg" fullWidth onClick={onClose}>
               Close
             </Button>
-            <Button
-              variant="brand"
-              size="lg"
-              fullWidth
-              onClick={() => {
-                onEdit(patient);
-                onClose();
-              }}
-            >
-              <PencilLine className="w-4 h-4" />
-              Edit record
-            </Button>
+            {onPrintBill && (
+              <Button variant="outline" size="lg" fullWidth onClick={() => onPrintBill(patient)}>
+                <ReceiptText className="w-4 h-4" />
+                Print bill
+              </Button>
+            )}
+            {onEdit && (
+              <Button
+                variant="brand"
+                size="lg"
+                fullWidth
+                onClick={() => {
+                  onEdit(patient);
+                  onClose();
+                }}
+              >
+                <PencilLine className="w-4 h-4" />
+                Edit record
+              </Button>
+            )}
           </div>
         ) : undefined
       }

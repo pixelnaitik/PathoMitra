@@ -10,6 +10,7 @@ import { applyAppearance } from './lib/theme';
 import { readSettings } from './lib/settings';
 import { Capacitor } from '@capacitor/core';
 import { initDataStore } from './data';
+import { loadPriceList } from './lib/price-list';
 import { isDesktopShell } from './lib/desktop-bridge';
 
 // Capture un-caught errors outside the React tree (SW registration, lazy chunk
@@ -40,8 +41,14 @@ if (Capacitor.isNativePlatform() || isDesktopShell()) {
   if (window.location.pathname === '/' || window.location.pathname === '/index.html') {
     window.history.replaceState(null, '', '/auth');
   }
-  // Warm up (open + decrypt) the local database as early as possible.
-  void initDataStore();
+  // Warm up (open + decrypt) the local database as early as possible, then read
+  // the lab's tariff into the synchronous cache so the first screen that shows a
+  // price is showing the stored one rather than an empty list. A failure there is
+  // not fatal: `loadPriceList` falls back to the localStorage mirror and records
+  // the fault.
+  void initDataStore()
+    .then(() => loadPriceList())
+    .catch(err => console.error('PathoMitra: store bootstrap failed', err));
   // The status bar band is an Android concept — the desktop window has no
   // status bar to tint, and the plugin call would only noise the console.
   if (Capacitor.isNativePlatform()) {

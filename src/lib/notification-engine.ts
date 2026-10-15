@@ -22,7 +22,13 @@
  * own validated thresholds, so inventing them here would be worse than
  * omitting them.
  */
-import type { InvoiceRecord, PatientRecord, ReportRecord } from './models';
+import {
+  isInvoiceOutstanding,
+  roundMoney,
+  type InvoiceRecord,
+  type PatientRecord,
+  type ReportRecord,
+} from './models';
 
 export const NOTIFICATION_CATEGORIES = ['overdue', 'draft', 'amended', 'due'] as const;
 export type NotificationCategory = (typeof NOTIFICATION_CATEGORIES)[number];
@@ -64,7 +70,7 @@ export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
 
 export interface NotificationLink {
   /** Dashboard tab to switch to — matches App.tsx DASHBOARD_TABS. */
-  tab: 'reports' | 'patients';
+  tab: 'reports' | 'patients' | 'bills';
   /**
    * Deep-link query the DashboardShell already consumes: `report` opens the
    * report editor, `patient` starts a report for that patient.
@@ -314,7 +320,12 @@ export function buildNotifications(source: NotificationSource): NotificationItem
 
   if (prefs.categories.due) {
     for (const invoice of source.invoices) {
-      if (invoice.status !== 'pending') continue;
+      // `partial` bills still owe, so the test is "is it outstanding", not
+      // "is it exactly pending" — and the number reported is the *balance*, so a
+      // alert never tells the lab to chase money that has already been collected.
+      if (!isInvoiceOutstanding(invoice.status)) continue;
+      const balance = Math.max(0, roundMoney(invoice.amount - (invoice.paidAmount ?? 0)));
+      if (balance <= 0) continue;
       const age = hoursBetween(invoice.createdAt, now);
       if (age === null) continue;
       const severity = escalate(age, prefs.dueDays * 24);
@@ -324,18 +335,20 @@ export function buildNotifications(source: NotificationSource): NotificationItem
         category: 'due',
         // Never louder than warning — money is not a clinical emergency.
         severity: severity === 'critical' ? 'warning' : severity,
-        title: `${formatAmount(invoice.amount)} unpaid for ${invoice.patientName}`,
-        body: `Invoice raised ${formatAge(age)} ago and still marked pending.`,
+        title: `${formatAmount(balance)} unpaid for ${invoice.patientName}`,
+        body:
+          invoice.paidAmount > 0
+            ? `${invoice.invoiceNo ? `${invoice.invoiceNo}: ` : ''}${formatAmount(balance)} of the ${formatAmount(invoice.amount)} bill raised ${formatAge(age)} ago is still outstanding.`
+            : `${invoice.invoiceNo ? `${invoice.invoiceNo}: ` : ''}Invoice raised ${formatAge(age)} ago and still marked pending.`,
         entityName: invoice.patientName,
         entityId: invoice.id,
         ageHours: age,
         timestamp: invoice.createdAt,
-        amount: invoice.amount,
-        // An invoice predating reportId linkage still alerts; it just cannot
-        // deep-link, because `?report=` with an empty value would do nothing.
-        link: invoice.reportId
-          ? { tab: 'reports', param: { key: 'report', value: invoice.reportId } }
-          : { tab: 'reports' },
+        amount: balance,
+        // A payment alert belongs on the money desk, not the clinical report —
+        // that is where the payment is actually taken. The bill number is in the
+        // body so the operator can find it in the register without guessing.
+        link: { tab: 'bills' },
       });
     }
   }

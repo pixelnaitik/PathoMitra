@@ -9,15 +9,30 @@ import {
   deleteDoc,
   doc,
   updateDoc,
+  getDocs,
   db,
 } from '../../data/fs';
 import { handleFirestoreError, OperationType } from '../../lib/firestore-errors';
 import { cn } from '../../lib/utils';
-import { Plus, Stethoscope, Users, Trash2, Edit2 } from 'lucide-react';
+import { Plus, Stethoscope, Users, Trash2, Edit2, FileText, Loader2 } from 'lucide-react';
 import { DEFAULT_DOCTORS } from '../../lib/doctors';
-import { readDoctors, readPatients, type DoctorRecord, type PatientRecord } from '../../lib/models';
+import {
+  readDoctors,
+  readPatients,
+  readInvoices,
+  type DoctorRecord,
+  type PatientRecord,
+  type InvoiceRecord,
+} from '../../lib/models';
 import { DoctorDetailSheet, type DoctorDetailTarget } from '../../components/DoctorDetailSheet';
+import { PrintDialog, type PrintJob } from '../../components/PrintDialog';
 import { useAuth } from '../../contexts/AuthContext';
+import { buildDoctorStatements, currentMonthKey, statementsSummary } from '../../lib/referrals';
+import type { DoctorStatement } from '../../lib/referrals';
+import { doctorNameKey } from '../../lib/doctor-registry';
+import { formatMoney } from '../../lib/price-list';
+import { buildStatementPdf, outputInvoicePdf } from '../../lib/invoice-pdf';
+import { readSettings } from '../../lib/settings';
 import {
   Button,
   Card,
@@ -31,6 +46,8 @@ import {
   ListRow,
   EmptyState,
   CalendarRangePicker,
+  StatusPill,
+  useToast,
   toIsoDay,
 } from '../../components/ui';
 
@@ -52,7 +69,24 @@ export default function DoctorsPage() {
   const [formData, setFormData] = useState({
     name: '',
     phone: '',
+    clinic: '',
+    referralPercent: '',
   });
+  /** `YYYY-MM` for the statement sheet, defaulted to the running month. */
+  const [statementMonth, setStatementMonth] = useState(() => currentMonthKey());
+  const [statementDoctor, setStatementDoctor] = useState<DoctorRecord | null>(null);
+  const [statement, setStatement] = useState<DoctorStatement | null>(null);
+  /**
+   * Which `doctor:month` request the displayed statement answers. Loading is
+   * derived from it rather than from a boolean flipped inside the effect, so the
+   * screen cannot paint the previous month's numbers as the new month's answer.
+   */
+  const [settledKey, setSettledKey] = useState('');
+  /** Every bill read for the open statement — reused for the all-doctor line below. */
+  const [allInvoices, setAllInvoices] = useState<InvoiceRecord[]>([]);
+  const [printing, setPrinting] = useState(false);
+  const [printJob, setPrintJob] = useState<PrintJob | null>(null);
+  const toast = useToast();
 
   const activeDoctorDates = useMemo(() => {
     // Local day, matching the calendar grid the dots are painted into.
@@ -90,14 +124,24 @@ export default function DoctorsPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const path = 'doctors';
+    // A blank box means "no rate agreed", not "0%" — and a stray `500` from a
+    // mistyped field must never reach a payout, so the value is clamped here at
+    // the only write door rather than trusted from the input.
+    const rawPercent = formData.referralPercent.trim();
+    const referralPercent =
+      rawPercent === '' ? 0 : Math.min(100, Math.max(0, Number(rawPercent) || 0));
+    const payload = {
+      name: formData.name.trim(),
+      phone: formData.phone.trim(),
+      clinic: formData.clinic.trim(),
+      referralPercent,
+    };
     try {
       if (editingDoctor) {
-        await updateDoc(doc(db, path, editingDoctor.id), {
-          ...formData,
-        });
+        await updateDoc(doc(db, path, editingDoctor.id), payload);
       } else {
         await addDoc(collection(db, path), {
-          ...formData,
+          ...payload,
           createdAt: new Date().toISOString(),
         });
       }
@@ -109,13 +153,20 @@ export default function DoctorsPage() {
   };
 
   const resetForm = () => {
-    setFormData({ name: '', phone: '' });
+    setFormData({ name: '', phone: '', clinic: '', referralPercent: '' });
     setEditingDoctor(null);
   };
 
   const openEditForm = (doctor: DoctorRecord) => {
     setEditingDoctor(doctor);
-    setFormData({ name: doctor.name || '', phone: doctor.phone || '' });
+    setFormData({
+      name: doctor.name || '',
+      phone: doctor.phone || '',
+      clinic: doctor.clinic || '',
+      // `0` renders as an empty box rather than a planted zero: a rate the lab
+      // never set should read as "not set", not as an agreed 0%.
+      referralPercent: doctor.referralPercent ? String(doctor.referralPercent) : '',
+    });
     setIsModalOpen(true);
   };
 
@@ -129,6 +180,9 @@ export default function DoctorsPage() {
         name,
         phone: '',
         createdAt: new Date().toISOString(),
+        // Seeded suggestions are not the lab's register: no rate, still active.
+        referralPercent: 0,
+        active: true,
         isDefault: true,
       })),
       ...uniqueDynamic,
@@ -169,6 +223,82 @@ export default function DoctorsPage() {
       0,
     );
     return { patientsCount, testsCount };
+  };
+
+  /**
+   * Open the month-end statement sheet for one practitioner.
+   * The statement is read live rather than cached: rates and payments change,
+   * and a stale preview that prints differently from what it showed is worse
+   * than no preview.
+   */
+  const openStatement = (doctor: DoctorListItem) => {
+    if (doctor.isDefault) return;
+    setStatementMonth(currentMonthKey());
+    setStatementDoctor(doctor);
+  };
+
+  const statementKey = statementDoctor ? `${statementDoctor.id}:${statementMonth}` : '';
+  const statementLoading = !!statementDoctor && settledKey !== statementKey;
+
+  useEffect(() => {
+    if (!statementDoctor) {
+      // Clearing happens in the render path via `statementKey`, not here.
+      return undefined;
+    }
+    let cancelled = false;
+    const request = statementKey;
+    (async () => {
+      try {
+        const snap = await getDocs(query(collection(db, 'invoices'), orderBy('createdAt', 'desc')));
+        const bills = readInvoices(snap.docs);
+        const statements = buildDoctorStatements(bills, patients, {
+          month: statementMonth,
+          doctors,
+        });
+        const key = doctorNameKey(statementDoctor.name);
+        if (cancelled) return;
+        setAllInvoices(bills);
+        setStatement(statements.find(s => s.doctorKey === key) ?? null);
+        setSettledKey(request);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.GET, 'invoices');
+        if (cancelled) return;
+        setStatement(null);
+        // Settled even on failure, or the sheet spins forever over an error it
+        // has already been told about.
+        setSettledKey(request);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // `patients` and `doctors` are the registers the statement groups against.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statementKey]);
+
+  const printStatement = async (mode: 'print' | 'preview' | 'download') => {
+    if (!statementDoctor || !statement) {
+      toast.info('Nothing to print — no referred bills in this month.');
+      return;
+    }
+    setPrinting(true);
+    try {
+      const doc = await buildStatementPdf(statement, readSettings(), statementMonth);
+      const { printJob, message } = await outputInvoicePdf(
+        doc,
+        `Referral statement ${statementDoctor.name} ${statementMonth}.pdf`,
+        mode,
+        `Referral statement ${statementDoctor.name}`,
+      );
+      if (printJob) setPrintJob(printJob);
+      else if (message) toast.info(message);
+      else toast.success('Statement ready.');
+    } catch (err) {
+      console.error('Statement export failed:', err);
+      toast.error('Could not build the statement.');
+    } finally {
+      setPrinting(false);
+    }
   };
 
   return (
@@ -270,6 +400,9 @@ export default function DoctorsPage() {
                     <th className="px-6 py-3.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-on-surface-variant">
                       Patients Referred
                     </th>
+                    <th className="px-6 py-3.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-on-surface-variant">
+                      Referral Rate
+                    </th>
                     {role !== 'guest' && (
                       <th className="px-6 py-3.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-on-surface-variant text-right">
                         Actions
@@ -315,11 +448,29 @@ export default function DoctorsPage() {
                         <td className="px-6 py-4 text-sm font-semibold text-on-surface">
                           {stats.patientsCount}
                         </td>
+                        <td className="px-6 py-4">
+                          {docItem.referralPercent > 0 ? (
+                            <StatusPill tone="info">{docItem.referralPercent}% of bill</StatusPill>
+                          ) : (
+                            <span className="text-xs text-on-surface-variant">none agreed</span>
+                          )}
+                        </td>
                         {role !== 'guest' && (
                           <td className="px-6 py-4 text-right">
                             <div className="flex justify-end gap-1">
                               {!docItem.isDefault && (
                                 <>
+                                  <button
+                                    onClick={e => {
+                                      e.stopPropagation();
+                                      openStatement(docItem);
+                                    }}
+                                    aria-label={`Monthly statement for ${docItem.name}`}
+                                    title="Monthly referral statement"
+                                    className="rounded-full p-2 text-on-surface-variant transition-colors hover:bg-accent/12 hover:text-accent"
+                                  >
+                                    <FileText className="w-4 h-4" />
+                                  </button>
                                   <button
                                     onClick={e => {
                                       e.stopPropagation();
@@ -382,7 +533,7 @@ export default function DoctorsPage() {
                         </span>
                       }
                       title={docItem.name}
-                      subtitle={`${stats.patientsCount} patient${stats.patientsCount === 1 ? '' : 's'} referred${docItem.phone ? ` · ${docItem.phone}` : ''}`}
+                      subtitle={`${stats.patientsCount} patient${stats.patientsCount === 1 ? '' : 's'} referred${docItem.referralPercent > 0 ? ` · ${docItem.referralPercent}%` : ''}${docItem.phone ? ` · ${docItem.phone}` : ''}`}
                       primaryLabel={`View ${docItem.name}'s referrals`}
                       onClick={() =>
                         setSelectedDoctor({
@@ -394,6 +545,17 @@ export default function DoctorsPage() {
                       trailing={
                         role !== 'guest' && !docItem.isDefault ? (
                           <>
+                            <IconButton
+                              label={`Monthly statement for ${docItem.name}`}
+                              size="sm"
+                              className="text-on-surface-variant hover:bg-accent/12 hover:text-accent"
+                              onClick={e => {
+                                e.stopPropagation();
+                                openStatement(docItem);
+                              }}
+                            >
+                              <FileText className="w-4 h-4" />
+                            </IconButton>
                             <IconButton
                               label={`Edit ${docItem.name}`}
                               size="sm"
@@ -474,6 +636,29 @@ export default function DoctorsPage() {
               placeholder="+91 98765 43210"
             />
           </Field>
+          <Field label="Clinic / Chamber" hint="Optional — printed on the statement">
+            <TextInput
+              type="text"
+              value={formData.clinic}
+              onChange={e => setFormData({ ...formData, clinic: e.target.value })}
+              placeholder="Kumar Diagnostics, Sector 12"
+            />
+          </Field>
+          <Field
+            label="Referral rate (%)"
+            hint="Share of each referred patient's discounted bill credited to this doctor. Leave blank for none."
+          >
+            <TextInput
+              type="number"
+              min={0}
+              max={100}
+              step={0.5}
+              value={formData.referralPercent}
+              onChange={e => setFormData({ ...formData, referralPercent: e.target.value })}
+              placeholder="0"
+              inputMode="decimal"
+            />
+          </Field>
         </form>
       </Sheet>
 
@@ -494,6 +679,156 @@ export default function DoctorsPage() {
         }}
       />
 
+      {/* Month-end referral statement for one practitioner. */}
+      <Sheet
+        open={!!statementDoctor}
+        onClose={() => {
+          setStatementDoctor(null);
+          setStatement(null);
+          setSettledKey('');
+        }}
+        title={statementDoctor ? `Statement — ${statementDoctor.name}` : 'Statement'}
+        width="lg"
+        footer={
+          <div className="flex flex-wrap gap-3">
+            <Button
+              variant="outline"
+              size="lg"
+              disabled={printing || !statement}
+              onClick={() => printStatement('preview')}
+            >
+              Preview PDF
+            </Button>
+            <Button
+              variant="outline"
+              size="lg"
+              disabled={printing || !statement}
+              onClick={() => printStatement('download')}
+            >
+              Save PDF
+            </Button>
+            <Button
+              variant="brand"
+              size="lg"
+              loading={printing}
+              disabled={!statement}
+              onClick={() => printStatement('print')}
+            >
+              <FileText className="w-4 h-4" aria-hidden="true" />
+              Print statement
+            </Button>
+          </div>
+        }
+      >
+        <div className="space-y-4">
+          <Field label="Period" hint="Bills are counted in the month they were raised.">
+            <input
+              type="month"
+              value={statementMonth}
+              onChange={e => setStatementMonth(e.target.value)}
+              className="h-11 w-full rounded-xl border border-outline-variant/30 bg-surface-container px-3 text-sm text-on-surface focus:border-accent focus:outline-none"
+            />
+          </Field>
+
+          {statementLoading ? (
+            <div className="flex items-center gap-2 py-8 text-sm text-on-surface-variant">
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              Reading this month's bills…
+            </div>
+          ) : !statement || statement.lines.length === 0 ? (
+            <EmptyState
+              icon={<FileText className="h-7 w-7" aria-hidden="true" />}
+              title="No referred bills this month"
+              description="Nothing was billed to patients carrying this doctor's name in the selected period."
+            />
+          ) : (
+            <>
+              <Card pad="sm">
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <SummaryCell label="Bills" value={String(statement.totals.bills)} />
+                  <SummaryCell label="Patients" value={String(statement.totals.patients)} />
+                  <SummaryCell
+                    label="Billed value"
+                    value={formatMoney(statement.totals.billAmount)}
+                  />
+                  <SummaryCell label="Collected" value={formatMoney(statement.totals.collected)} />
+                  <SummaryCell label="Rate applied" value={`${statement.percent}%`} />
+                  <SummaryCell
+                    label="Commission"
+                    value={formatMoney(statement.totals.commission)}
+                    emphasis
+                  />
+                </div>
+              </Card>
+
+              {statement.totals.commissionPending > 0 && (
+                <p className="rounded-xl bg-warning-container/40 px-3 py-2 text-xs text-on-surface-variant">
+                  {formatMoney(statement.totals.commissionPending)} of that is on bills still
+                  uncollected. Pay it when the money comes in, not now.
+                </p>
+              )}
+              {statement.unmatched && (
+                <p className="rounded-xl bg-error-container/50 px-3 py-2 text-xs text-error">
+                  This practitioner is not in the doctor register — the rate shown is the lab
+                  default. Add them to the register to fix the rate per doctor.
+                </p>
+              )}
+
+              <div className="overflow-x-auto rounded-2xl border border-outline-variant/30">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-surface-container-low/60">
+                    <tr>
+                      <th className="px-3 py-2 font-semibold">Bill</th>
+                      <th className="px-3 py-2 font-semibold">Date</th>
+                      <th className="px-3 py-2 font-semibold">Patient</th>
+                      <th className="px-3 py-2 font-semibold">Tests</th>
+                      <th className="px-3 py-2 text-right font-semibold">Bill value</th>
+                      <th className="px-3 py-2 text-right font-semibold">Commission</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-outline-variant/40">
+                    {statement.lines.map(line => (
+                      <tr key={line.invoiceId}>
+                        <td className="px-3 py-2 font-mono">{line.invoiceNo || '—'}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          {line.billedAt
+                            ? new Date(line.billedAt).toLocaleDateString('en-IN')
+                            : '—'}
+                        </td>
+                        <td className="px-3 py-2">{line.patientName}</td>
+                        <td className="px-3 py-2">{line.tests.join(', ') || '—'}</td>
+                        <td className="px-3 py-2 text-right">{formatMoney(line.billAmount)}</td>
+                        <td className="px-3 py-2 text-right font-semibold">
+                          {formatMoney(line.commission)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-[11px] text-on-surface-variant">
+                Across the whole register,{' '}
+                {(() => {
+                  const all = statementsSummary(
+                    buildDoctorStatements(allInvoices, patients, { doctors }),
+                  );
+                  return `${formatMoney(all.commission)} owed to ${all.doctors} practitioner${all.doctors === 1 ? '' : 's'} on ${all.bills} bills`;
+                })()}
+                .
+              </p>
+            </>
+          )}
+        </div>
+      </Sheet>
+
+      {/* Windows print sheet — desktop only, renders nothing elsewhere. */}
+      <PrintDialog
+        open={!!printJob}
+        job={printJob}
+        onClose={() => setPrintJob(null)}
+        onPrinted={() => toast.success('Statement sent to the printer.')}
+      />
+
       {/* Date-filtered referral profile for the selected doctor */}
       <DoctorDetailSheet
         key={selectedDoctor?.id ?? 'none'}
@@ -503,6 +838,32 @@ export default function DoctorsPage() {
         initialTo={toDate}
         onClose={() => setSelectedDoctor(null)}
       />
+    </div>
+  );
+}
+
+function SummaryCell({
+  label,
+  value,
+  emphasis = false,
+}: {
+  label: string;
+  value: string;
+  emphasis?: boolean;
+}) {
+  return (
+    <div>
+      <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-on-surface-variant">
+        {label}
+      </p>
+      <p
+        className={cn(
+          'mt-0.5 tabular-nums',
+          emphasis ? 'text-lg font-bold text-accent' : 'text-sm font-semibold text-on-surface',
+        )}
+      >
+        {value}
+      </p>
     </div>
   );
 }

@@ -101,6 +101,14 @@ export interface PathologyTest {
   includedTests?: string[];
   options?: string[];
   synonyms?: string[];
+  /**
+   * Catalogue default, in rupees. Almost always unset: the lab's own tariff
+   * lives in `meta/price-list` (see lib/price-list.ts) so a price change is a
+   * data edit, not a rebuild of the APK and the installer. A value here is only
+   * the fallback when the lab has not set one, which is how a future catalogue
+   * release could ship suggested tariffs without overriding anyone's list.
+   */
+  price?: number;
 }
 
 /**
@@ -1862,6 +1870,11 @@ export const getStandaloneTests = (selected: readonly string[] = []): PathologyT
 /**
  * Names owned by a panel that hides its members from the browse list. Opt-out
  * per panel via `hideMembersFromBrowse: false` — see that field.
+ *
+ * Exported as `panelOwnedMemberNames` below: the same set decides what the
+ * billing screen asks the lab to price. A component that can only ever be
+ * ordered inside CBC is not a billable thing, so pricing it separately is a
+ * question the lab should never be asked.
  */
 const hiddenGroupMembers = (all: PathologyTest[]): Set<string> => {
   const grouped = new Set<string>();
@@ -1871,6 +1884,17 @@ const hiddenGroupMembers = (all: PathologyTest[]): Set<string> => {
   }
   return grouped;
 };
+
+/**
+ * The tests that exist only as a member of a package.
+ *
+ * Keyed by name, matching how `includedTests` and every other catalogue join in
+ * this app works. A name that is a member of *any* package that keeps its
+ * members browsable is deliberately NOT returned — that test can still be
+ * ordered on its own, so it still needs its own price.
+ */
+export const panelOwnedMemberNames = (all: PathologyTest[] = getPathologyTests()): Set<string> =>
+  hiddenGroupMembers(all);
 
 /**
  * The candidate list a test picker searches. With no query it is the browse

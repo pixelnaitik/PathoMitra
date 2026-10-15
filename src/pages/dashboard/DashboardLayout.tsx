@@ -18,6 +18,7 @@ import {
   Moon,
   Sun,
   Search,
+  ReceiptText,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { cn } from '../../lib/utils';
@@ -48,6 +49,7 @@ const navItems: NavItem[] = [
   { id: 'patients', label: 'Patients', icon: Users },
   { id: 'doctors', label: 'Doctors', icon: Stethoscope },
   { id: 'reports', label: 'Reports', icon: FileText },
+  { id: 'bills', label: 'Bills', icon: ReceiptText },
   { id: 'analytics', label: 'Analytics', icon: PieChart },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
@@ -57,6 +59,7 @@ const navItems: NavItem[] = [
 const bottomNavItems: NavItem[] = [
   { id: 'dashboard', label: 'Overview', icon: BarChart3 },
   { id: 'patients', label: 'Patients', icon: Users },
+  { id: 'bills', label: 'Bills', icon: ReceiptText },
   { id: 'reports', label: 'Reports', icon: FileText },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];

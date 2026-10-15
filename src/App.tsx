@@ -34,6 +34,7 @@ const OverviewPage = lazy(() => import('./pages/dashboard/OverviewPage'));
 const PatientsPage = lazy(() => import('./pages/dashboard/PatientsPage'));
 const DoctorsPage = lazy(() => import('./pages/dashboard/DoctorsPage'));
 const ReportsPage = lazy(() => import('./pages/dashboard/ReportsPage'));
+const BillsPage = lazy(() => import('./pages/dashboard/BillsPage'));
 const AnalyticsPage = lazy(() => import('./pages/dashboard/AnalyticsPage'));
 const SettingsPage = lazy(() => import('./pages/dashboard/SettingsPage'));
 
@@ -91,7 +92,15 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-const DASHBOARD_TABS = ['dashboard', 'patients', 'doctors', 'reports', 'analytics', 'settings'];
+const DASHBOARD_TABS = [
+  'dashboard',
+  'patients',
+  'doctors',
+  'reports',
+  'bills',
+  'analytics',
+  'settings',
+];
 
 function DashboardShell() {
   // Tab lives in the URL (/dashboard/:tab) so the browser Back button and deep
@@ -190,6 +199,7 @@ function DashboardShell() {
                   clearCreateAction={() => setCreateReportPatientId(null)}
                 />
               )}
+              {activeTab === 'bills' && <BillsPage />}
               {activeTab === 'analytics' && <AnalyticsPage />}
               {activeTab === 'settings' && <SettingsPage initialSection={settingsSection} />}
             </ErrorBoundary>

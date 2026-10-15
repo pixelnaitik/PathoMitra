@@ -45,6 +45,13 @@ export default defineConfig({
         'src/lib/report-calculations.ts',
         'src/lib/report-layout-spec.ts',
         'src/lib/report-visibility.ts',
+        // Billing is money that leaves the device on paper, so it is held to the
+        // same gate as the clinical data layer: the price walk, the bill totals,
+        // the bill number, and the referral arithmetic.
+        'src/lib/price-list.ts',
+        'src/lib/referrals.ts',
+        'src/lib/invoice-registry.ts',
+        'src/lib/invoices.ts',
         'src/hooks/useCollectionList.ts',
         'src/components/ErrorBoundary.tsx',
       ],

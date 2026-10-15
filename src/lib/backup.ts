@@ -42,6 +42,7 @@ import {
   writeAppTextFile,
 } from './native-files';
 import { initDataStore } from '../data';
+import { loadPriceList } from './price-list';
 import { captureError } from './telemetry';
 import {
   isSealedPayload,
@@ -357,6 +358,11 @@ export async function restoreBackup(backup: BackupFile): Promise<RestoreResult> 
       counts[entity] = docs.length;
     }
   });
+
+  // Anything cached from the store has to be re-read: `meta/price-list` is in
+  // the snapshot, so a restored lab would otherwise keep billing from the prices
+  // it had before the restore — silently the wrong tariff, with no error.
+  await loadPriceList({ force: true });
 
   return { createdAt: backup.createdAt, counts, totalRecords: restored, skipped };
 }

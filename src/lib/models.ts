@@ -36,8 +36,31 @@ export type Gender = z.infer<typeof GenderSchema>;
 export const ReportStatusSchema = z.enum(['draft', 'final']);
 export type ReportStatus = z.infer<typeof ReportStatusSchema>;
 
-export const InvoiceStatusSchema = z.enum(['pending', 'paid']);
+/**
+ * `pending` = nothing collected yet. `partial` = money came in but the bill is
+ * not discharged. `paid` = settled. `void` = cancelled, kept for the audit trail
+ * rather than deleted (a printed bill that is thrown away silently is a gap in
+ * the day book nobody can explain later).
+ *
+ * Anything that is not `paid` or `void` still counts as outstanding to the alert
+ * engine — use {@link isInvoiceOutstanding} rather than comparing to `'pending'`,
+ * which is how `partial` bills would otherwise stop alerting while still owing.
+ */
+export const InvoiceStatusSchema = z.enum(['pending', 'partial', 'paid', 'void']);
 export type InvoiceStatus = z.infer<typeof InvoiceStatusSchema>;
+
+/** Still owed money? `void` bills are closed, not owed. */
+export function isInvoiceOutstanding(status: InvoiceStatus): boolean {
+  return status === 'pending' || status === 'partial';
+}
+
+/** Settled enough to stop alerting and to count as collection. */
+export function isInvoiceSettled(status: InvoiceStatus): boolean {
+  return status === 'paid';
+}
+
+export const PaymentModeSchema = z.enum(['cash', 'upi', 'card', 'bank', 'credit', 'advance']);
+export type PaymentMode = z.infer<typeof PaymentModeSchema>;
 
 // ---------------------------------------------------------------------------
 // Users
@@ -168,9 +191,35 @@ export function toPatientUpdateDoc(input: PatientPatchInput): Record<string, unk
 // Doctors (referral register)
 // ---------------------------------------------------------------------------
 
+/**
+ * The referral register.
+ *
+ * `referralPercent` is what the lab has agreed to credit this practitioner with
+ * against the tests *they* send in, and it is per-doctor rather than global
+ * because a register is never one rate: a referring physician, a clinic that
+ * supplies its own collection facility, and an institutional contract all price
+ * the same relationship differently. `0` is the default — commission is opt-in
+ * per doctor, never inherited.
+ *
+ * ⚠ Paying a commission for a referral is regulated in India (ICMR / NMC
+ * professional-conduct rules treat inducement for referrals as professional
+ * misconduct, and a lab's NABH accreditation is exposed to it). The field exists
+ * because the lab keeps this money book; the compliance judgement is the owner's.
+ * The app never sends anything anywhere — a statement is printed or exported by
+ * a member of staff, from the encrypted local store, on this device.
+ */
 export const DoctorSchema = z.looseObject({
   name: z.string().max(100).default(''),
   phone: z.string().max(20).optional(),
+  /** Practitioner id / registration number, if the lab records one. */
+  registration: z.string().max(64).optional(),
+  clinic: z.string().max(120).optional(),
+  address: z.string().max(500).optional(),
+  /** Share of a referred patient's bill credited back, 0–100. */
+  referralPercent: z.coerce.number().min(0).max(100).default(0),
+  /** False = relationship ended; history and past statements stay intact. */
+  active: z.boolean().default(true),
+  notes: z.string().max(500).optional(),
   createdAt: timestampString.default(''),
 });
 export type DoctorRecord = z.infer<typeof DoctorSchema> & { id: string };
@@ -279,6 +328,61 @@ export function toReportUpdateDoc(
 // Invoices
 // ---------------------------------------------------------------------------
 
+/**
+ * One printed line on a bill.
+ *
+ * The line lives **on the invoice**, not in the price list. A bill is a
+ * commercial record the patient keeps: if it were re-derived from live prices,
+ * editing a price in June would rewrite what April's paper says. So the price is
+ * copied in at the moment the bill is raised, and only the bill's own `items[]`
+ * are ever rendered or reprinted.
+ */
+export const InvoiceItemSchema = z.object({
+  /** What the patient reads on the bill — panel name or test name. */
+  name: z.string().max(128).default(''),
+  /**
+   * `panel` = one charge covering a profile and its members. `test` = a single
+   * test. `adjustment` = a discount / waive / correction line.
+   */
+  kind: z.enum(['panel', 'test', 'adjustment']).default('test'),
+  /** Specimen or short reference shown beside the name (Serum, Urine, …). */
+  detail: z.string().max(80).default(''),
+  qty: z.coerce.number().int().min(1).max(200).default(1),
+  unitPrice: z.coerce.number().min(0).max(1_000_000).default(0),
+  /** `qty × unitPrice`, rounded to paise. Negative only on an adjustment line. */
+  lineTotal: z.coerce.number().min(-1_000_000).max(10_000_000).default(0),
+  /**
+   * True when no price existed for this entry when the bill was raised.
+   * Rendered as "not priced" — never as `₹0`, which reads as a free test.
+   */
+  unpriced: z.boolean().default(false),
+  /** Members folded into this charge; excluded from any later standalone line. */
+  covers: z.array(z.string().max(128)).max(200).default([]),
+});
+export type InvoiceItem = z.infer<typeof InvoiceItemSchema>;
+
+/**
+ * A referral snapshot taken when the bill is raised.
+ *
+ * Stamped rather than joined because a doctor's `referralPercent` changes: next
+ * month's rate must not silently restate what this month's commission was. What
+ * was agreed at bill time lives on the bill.
+ */
+export const InvoiceReferralSchema = z.object({
+  /** The stored spelling, as the counter typed it. */
+  doctorName: z.string().max(100).default(''),
+  /** `doctorNameKey()` of the matched register entry — the grouping key. */
+  doctorKey: z.string().max(120).default(''),
+  doctorId: z.string().max(128).default(''),
+  /** Percent at bill time. */
+  percent: z.coerce.number().min(0).max(100).default(0),
+  /** Rupees credited on this bill, derived from `taxableBase × percent`. */
+  commission: z.coerce.number().min(0).max(10_000_000).default(0),
+  /** True when the bill's referrer was typed but is not in the register yet. */
+  unmatched: z.boolean().default(false),
+});
+export type InvoiceReferral = z.infer<typeof InvoiceReferralSchema>;
+
 export const InvoiceSchema = z.looseObject({
   reportId: z.string().max(128).default(''),
   patientId: z.string().max(128).default(''),
@@ -286,8 +390,179 @@ export const InvoiceSchema = z.looseObject({
   amount: z.coerce.number().min(0).max(10_000_000).default(0),
   status: InvoiceStatusSchema.default('pending'),
   createdAt: timestampString.default(''),
+
+  /** Human-readable bill number, e.g. `IN2610-0042`. */
+  invoiceNo: z.string().max(32).default(''),
+  /** Line items as they were printed. The authority for any reprint. */
+  items: z.array(InvoiceItemSchema).max(200).default([]),
+  /** Sum of `items[]` before discount and tax. */
+  subtotal: z.coerce.number().min(0).max(10_000_000).default(0),
+  discount: z.coerce.number().min(0).max(10_000_000).default(0),
+  tax: z.coerce.number().min(0).max(10_000_000).default(0),
+  /**
+   * Percent used, kept so a statement can be reconstructed without guessing.
+   * `taxableBase` is what referral commission is computed on: money the lab
+   * actually kept, so a waived portion is never paid out to a referring doctor.
+   */
+  taxPercent: z.coerce.number().min(0).max(100).default(0),
+  taxableBase: z.coerce.number().min(0).max(10_000_000).default(0),
+  /** Rupees collected so far. `paidAmount >= amount` ⇒ `status === 'paid'`. */
+  paidAmount: z.coerce.number().min(0).max(10_000_000).default(0),
+  paidAt: timestampString.optional(),
+  paymentMode: PaymentModeSchema.optional(),
+  /** Referral attribution at bill time (see {@link InvoiceReferralSchema}). */
+  referral: InvoiceReferralSchema.optional(),
+  /** Patient's referrer as typed — the source the referral was matched from. */
+  doctorName: z.string().max(100).default(''),
+  /** `operatorStamp()` — who raised the bill, never the raw `local-admin` uid. */
+  issuedBy: z.string().max(128).default(''),
+  notes: z.string().max(500).default(''),
+  /** Set when a bill is voided; the record is kept, not deleted. */
+  voidReason: z.string().max(500).optional(),
 });
 export type InvoiceRecord = z.infer<typeof InvoiceSchema> & { id: string };
+
+/**
+ * Round to whole paise without the `0.1 + 0.2` drift, and without letting a
+ * 0.5-paise edge decide whether a printed total adds up.
+ */
+export function roundMoney(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+/**
+ * Recompute the money on a draft bill from its own lines.
+ *
+ * `amount` is what the alert engine prints in "₹X unpaid for <name>" and what the
+ * day book sums. If a screen ever set `amount` by hand and forgot to fold in the
+ * discount, the on-screen alert and the paper bill would disagree — so callers
+ * pass the *components* and this derives the total. Discount can never exceed the
+ * subtotal (a negative bill is not a bill), and `taxableBase` is deliberately
+ * post-discount: commission is paid on money the lab kept.
+ */
+export interface InvoiceTotalsInput {
+  items: readonly InvoiceItem[];
+  discount?: number;
+  taxPercent?: number;
+}
+
+export interface InvoiceTotals {
+  subtotal: number;
+  discount: number;
+  tax: number;
+  taxPercent: number;
+  taxableBase: number;
+  amount: number;
+}
+
+export function computeInvoiceTotals(input: InvoiceTotalsInput): InvoiceTotals {
+  const rawSubtotal = input.items.reduce((sum, item) => sum + item.lineTotal, 0);
+  // Adjustment lines (discounts) are folded into the discount total, not the
+  // subtotal, so a bill never shows a negative item price.
+  const charges = input.items.filter(item => item.lineTotal > 0);
+  const adjustments = input.items
+    .filter(item => item.lineTotal < 0)
+    .reduce((sum, item) => sum + item.lineTotal, 0);
+
+  const subtotal = roundMoney(charges.reduce((sum, item) => sum + item.lineTotal, 0));
+  const explicitDiscount = Math.max(0, roundMoney(input.discount ?? 0));
+  const discount = roundMoney(Math.min(subtotal, explicitDiscount + Math.abs(adjustments)));
+  const taxableBase = roundMoney(subtotal - discount);
+  const taxPercent = Math.max(0, Math.min(100, input.taxPercent ?? 0));
+  const tax = roundMoney((taxableBase * taxPercent) / 100);
+  const amount = roundMoney(taxableBase + tax);
+
+  // `rawSubtotal` is only a guard against a caller mixing signed and unsigned
+  // lines; it never reaches the document.
+  void rawSubtotal;
+  return { subtotal, discount, tax, taxPercent, taxableBase, amount };
+}
+
+/** Payload accepted by the invoice write path. */
+export interface InvoiceDraftInput {
+  id?: string;
+  invoiceNo?: string;
+  reportId?: string;
+  patientId: string;
+  patientName: string;
+  items: readonly InvoiceItem[];
+  discount?: number;
+  taxPercent?: number;
+  status?: InvoiceStatus;
+  paidAmount?: number;
+  paidAt?: string;
+  paymentMode?: PaymentMode;
+  referral?: InvoiceReferral;
+  doctorName?: string;
+  issuedBy?: string;
+  notes?: string;
+  createdAt?: string;
+}
+
+/**
+ * Build the exact document stored in `invoices/{id}`.
+ *
+ * Totals are always recomputed here from `items[]`, so no call site can put a
+ * number on a bill that its own line items do not add up to.
+ */
+export function toInvoiceDoc(input: InvoiceDraftInput): Record<string, unknown> {
+  const items = input.items.map(item => InvoiceItemSchema.parse(item));
+  const totals = computeInvoiceTotals({
+    items,
+    discount: input.discount,
+    taxPercent: input.taxPercent,
+  });
+  const paidAmount = roundMoney(Math.max(0, Math.min(input.paidAmount ?? 0, totals.amount)));
+  const status: InvoiceStatus =
+    input.status === 'void'
+      ? 'void'
+      : paidAmount <= 0
+        ? 'pending'
+        : paidAmount >= totals.amount
+          ? 'paid'
+          : 'partial';
+
+  return {
+    reportId: input.reportId ?? '',
+    patientId: input.patientId,
+    patientName: input.patientName.trim(),
+    invoiceNo: input.invoiceNo ?? '',
+    items,
+    ...totals,
+    amount: totals.amount,
+    status,
+    paidAmount,
+    ...(input.paidAt ? { paidAt: input.paidAt } : {}),
+    ...(input.paymentMode ? { paymentMode: input.paymentMode } : {}),
+    ...(input.referral ? { referral: input.referral } : {}),
+    doctorName: (input.doctorName ?? '').trim(),
+    issuedBy: input.issuedBy ?? '',
+    notes: (input.notes ?? '').trim(),
+    createdAt: input.createdAt || new Date().toISOString(),
+  };
+}
+
+/**
+ * The patch that records money coming in.
+ *
+ * A payment is applied to an existing bill's stored `amount`, never recomputed
+ * from live prices — reprinting a paid bill must show what was charged then.
+ */
+export function toInvoicePaymentDoc(
+  invoice: Pick<InvoiceRecord, 'amount'>,
+  paidAmount: number,
+  paidAt: string,
+  paymentMode: PaymentMode,
+): Record<string, unknown> {
+  const applied = roundMoney(Math.max(0, Math.min(paidAmount, invoice.amount)));
+  return {
+    paidAmount: applied,
+    paidAt,
+    paymentMode,
+    status: applied <= 0 ? 'pending' : applied >= invoice.amount ? 'paid' : 'partial',
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Boundary readers
@@ -340,6 +615,8 @@ export function readPatient(id: string, data: unknown): PatientRecord {
 export function readDoctor(id: string, data: unknown): DoctorRecord {
   return readAtBoundary(DoctorSchema, 'doctor', id, data, {
     name: `Unknown doctor (${id.slice(0, 6)})`,
+    referralPercent: 0,
+    active: true,
     createdAt: '',
   });
 }
@@ -372,6 +649,17 @@ export function readInvoice(id: string, data: unknown): InvoiceRecord {
     amount: 0,
     status: 'pending',
     createdAt: '',
+    invoiceNo: '',
+    items: [],
+    subtotal: 0,
+    discount: 0,
+    tax: 0,
+    taxPercent: 0,
+    taxableBase: 0,
+    paidAmount: 0,
+    doctorName: '',
+    issuedBy: '',
+    notes: '',
   });
 }
 

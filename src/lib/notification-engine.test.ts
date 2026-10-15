@@ -55,6 +55,17 @@ function invoice(overrides: Partial<InvoiceRecord> = {}): InvoiceRecord {
     amount: 1200,
     status: 'pending',
     createdAt: ago(24 * 10),
+    invoiceNo: 'IN2610-0001',
+    items: [],
+    subtotal: 1200,
+    discount: 0,
+    tax: 0,
+    taxPercent: 0,
+    taxableBase: 1200,
+    paidAmount: 0,
+    doctorName: '',
+    issuedBy: '',
+    notes: '',
     ...overrides,
   };
 }
@@ -308,24 +319,73 @@ describe('buildNotifications — payments', () => {
     ).toHaveLength(0);
   });
 
-  it('deep-links to the report the invoice belongs to', () => {
+  it('links a payment alert to the bills desk', () => {
     const items = buildNotifications({
       patients: [],
       reports: [],
       invoices: [invoice({ reportId: 'r9' })],
       now: NOW,
     });
-    expect(items[0]?.link).toEqual({ tab: 'reports', param: { key: 'report', value: 'r9' } });
+    // Taking the payment happens on Bills, not inside the clinical report — the
+    // alert should land the operator where the action is.
+    expect(items[0]?.link).toEqual({ tab: 'bills' });
   });
 
-  it('still alerts, without a deep link, for an invoice with no report id', () => {
+  it('names the bill number in the alert body', () => {
     const items = buildNotifications({
       patients: [],
       reports: [],
-      invoices: [invoice({ reportId: '' })],
+      invoices: [invoice({ invoiceNo: 'IN2610-0042' })],
       now: NOW,
     });
-    expect(items[0]?.link).toEqual({ tab: 'reports' });
+    expect(items[0]?.body).toContain('IN2610-0042');
+  });
+
+  it('alerts on a part payment for only the balance still owed', () => {
+    const items = buildNotifications({
+      patients: [],
+      reports: [],
+      invoices: [invoice({ status: 'partial', paidAmount: 400 })],
+      now: NOW,
+    });
+    expect(items[0]?.category).toBe('due');
+    expect(items[0]?.amount).toBe(800);
+    expect(items[0]?.title).toContain('₹800');
+    expect(items[0]?.title).not.toContain('₹1,200');
+  });
+
+  it('says nothing once a bill is fully collected, whatever the status string', () => {
+    expect(
+      buildNotifications({
+        patients: [],
+        reports: [],
+        invoices: [invoice({ status: 'paid', paidAmount: 1200 })],
+        now: NOW,
+      }),
+    ).toHaveLength(0);
+  });
+
+  it('says nothing about a cancelled bill', () => {
+    expect(
+      buildNotifications({
+        patients: [],
+        reports: [],
+        invoices: [invoice({ status: 'void' })],
+        now: NOW,
+      }),
+    ).toHaveLength(0);
+  });
+
+  it('treats a fully-paid-in-advance bill as settled even if still marked partial', () => {
+    // The balance guard is what stops the lab chasing money it already has.
+    expect(
+      buildNotifications({
+        patients: [],
+        reports: [],
+        invoices: [invoice({ status: 'partial', paidAmount: 1200 })],
+        now: NOW,
+      }),
+    ).toHaveLength(0);
   });
 });
 

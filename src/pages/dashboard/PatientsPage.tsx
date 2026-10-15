@@ -30,7 +30,9 @@ import {
   toPatientUpdateDoc,
   operatorStamp,
   type PatientRecord,
+  type DoctorRecord,
 } from '../../lib/models';
+import { invoicesForPatient, raiseInvoice } from '../../lib/invoices';
 import { downloadCsv, toCsv, type CsvColumn } from '../../lib/export-csv';
 import { handleFirestoreError, OperationType } from '../../lib/firestore-errors';
 import {
@@ -44,7 +46,21 @@ import {
   X,
   ChevronDown,
   ChevronUp,
+  ReceiptText,
 } from 'lucide-react';
+import {
+  billLinesFrom,
+  formatMoney,
+  getPriceList,
+  isOrderable,
+  loadPriceList,
+  PRICE_LIST_UPDATED_EVENT,
+  resolvePrice,
+  type PriceList,
+} from '../../lib/price-list';
+import { buildInvoicePdf, outputInvoicePdf } from '../../lib/invoice-pdf';
+import { readSettings } from '../../lib/settings';
+import { PrintDialog, type PrintJob } from '../../components/PrintDialog';
 import { cn } from '../../lib/utils';
 import { listStaggerProps } from '../../lib/motion';
 import { useAuth } from '../../contexts/AuthContext';
@@ -78,6 +94,17 @@ import { DEFAULT_DOCTORS } from '../../lib/doctors';
 import { doctorMatchesQuery, doctorNameKey } from '../../lib/doctor-registry';
 import { PatientDetailSheet } from '../../components/PatientDetailSheet';
 
+/**
+ * A stable fingerprint of an order's *billable shape*.
+ *
+ * Two orders match when they charge the same names, whatever order the counter
+ * tapped them in — the same set that makes the same bill. Used to spot an
+ * existing bill before raising another, so reprinting cannot double-bill.
+ */
+function orderSignature(names: readonly string[]): string {
+  return [...new Set(names.map(name => name.trim()).filter(Boolean))].sort().join('\u0000');
+}
+
 export default function PatientsPage({
   initialAction,
   clearAction,
@@ -110,6 +137,82 @@ export default function PatientsPage({
   const [isAddingDoctor, setIsAddingDoctor] = useState(false);
   const [patientToDelete, setPatientToDelete] = useState<any>(null);
 
+  /**
+   * The live tariff, so the registration sheet can price an order while it is
+   * being built. Re-read on the update event: a price changed in Settings must
+   * show here without a reload, or the counter quotes one total and the bill
+   * prints another.
+   */
+  const [priceList, setPriceList] = useState<PriceList>(() => getPriceList());
+  const [billJob, setBillJob] = useState<PrintJob | null>(null);
+  const [billingId, setBillingId] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const apply = () => {
+      if (!cancelled) setPriceList(getPriceList());
+    };
+    void loadPriceList().then(apply, apply);
+    window.addEventListener(PRICE_LIST_UPDATED_EVENT, apply);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(PRICE_LIST_UPDATED_EVENT, apply);
+    };
+  }, []);
+
+  /**
+   * Raise (or reuse) the bill for a patient and print it.
+   *
+   * Reuse first: an order that already has an unpaid bill with the same lines gets
+   * that bill reprinted rather than a second one. Tapping "print bill" twice must
+   * not double-bill a patient, and the second document is the one that causes the
+   * dispute.
+   */
+  const printBill = async (patient: PatientRecord) => {
+    setBillingId(patient.id);
+    try {
+      const names = patient.testSelection ?? [];
+      if (names.length === 0) {
+        toast.error(`${patient.name} has no tests on the order — nothing to bill.`);
+        return;
+      }
+      const existing = await invoicesForPatient(patient.id);
+      const signature = orderSignature(names);
+      const match = existing.find(
+        inv =>
+          inv.status === 'pending' &&
+          orderSignature(inv.items.map(item => item.name)) === signature,
+      );
+      const invoice =
+        match ??
+        (await raiseInvoice({
+          patient,
+          testSelection: names,
+          doctors: doctors as DoctorRecord[],
+          issuedBy: operatorStamp(user),
+        }));
+
+      const built = await buildInvoicePdf({
+        invoice,
+        patient,
+        settings: readSettings(),
+      });
+      const { printJob, message } = await outputInvoicePdf(
+        built,
+        `Bill ${invoice.invoiceNo || invoice.id}.pdf`,
+        'print',
+        `Bill ${invoice.invoiceNo || invoice.id} — ${patient.name}`,
+      );
+      if (printJob) setBillJob(printJob);
+      else if (message) toast.info(message);
+      else if (match) toast.info(`Reprinted the existing bill ${invoice.invoiceNo}.`);
+    } catch (err) {
+      console.error('Bill failed:', err);
+      toast.error(err instanceof Error ? err.message : 'Could not raise the bill.');
+    } finally {
+      setBillingId(null);
+    }
+  };
+
   const [formData, setFormData] = useState({
     name: '',
     age: '',
@@ -128,6 +231,22 @@ export default function PatientsPage({
    * twenty chips and the sheet scrolled forever.
    */
   const [expandedGroups, setExpandedGroups] = useState<string[]>([]);
+
+  /**
+   * What the current order would cost, computed by the same function the bill
+   * itself uses. A preview that uses different arithmetic from the document is
+   * how a counter ends up apologising for a higher number on the paper.
+   */
+  const orderPreview = useMemo(() => {
+    const items = billLinesFrom(formData.testSelection, priceList);
+    const subtotal = items.reduce((sum, item) => sum + item.lineTotal, 0);
+    return {
+      items,
+      total: Math.round(subtotal * 100) / 100,
+      unpriced: items.filter(item => item.unpriced).map(item => item.name),
+    };
+  }, [formData.testSelection, priceList]);
+
   const testChips = useMemo(() => {
     const catalogue = getPathologyTests();
     const selected = formData.testSelection;
@@ -401,8 +520,8 @@ export default function PatientsPage({
       searchPathologyTests(
         testSearchQuery,
         getSearchableTests(formData.testSelection, testSearchQuery),
-      ),
-    [formData.testSelection, testSearchQuery],
+      ).filter(test => isOrderable(test.name, priceList)),
+    [formData.testSelection, priceList, testSearchQuery],
   );
   // Clamp where it is read so narrowing the list can never strand the highlight
   // past the end — avoids a reset-in-effect (which would cascade a render).
@@ -674,6 +793,21 @@ export default function PatientsPage({
                               <button
                                 onClick={e => {
                                   e.stopPropagation();
+                                  void printBill(patient);
+                                }}
+                                aria-label={`Print bill for ${patient.name}`}
+                                title="Raise and print this patient's bill"
+                                className="rounded-full p-2 text-on-surface-variant transition-colors hover:bg-accent/12 hover:text-accent"
+                              >
+                                {billingId === patient.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <ReceiptText className="h-4 w-4" />
+                                )}
+                              </button>
+                              <button
+                                onClick={e => {
+                                  e.stopPropagation();
                                   openEditForm(patient);
                                 }}
                                 aria-label={`Edit ${patient.name}`}
@@ -734,6 +868,21 @@ export default function PatientsPage({
                     trailing={
                       role !== 'guest' ? (
                         <>
+                          <IconButton
+                            label={`Print bill for ${patient.name}`}
+                            size="sm"
+                            className="text-on-surface-variant hover:bg-accent/12 hover:text-accent"
+                            onClick={e => {
+                              e.stopPropagation();
+                              void printBill(patient);
+                            }}
+                          >
+                            {billingId === patient.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <ReceiptText className="h-4 w-4" />
+                            )}
+                          </IconButton>
                           <IconButton
                             label={`Edit ${patient.name}`}
                             size="sm"
@@ -1048,13 +1197,28 @@ export default function PatientsPage({
                           }}
                           onMouseEnter={() => setTestActiveIdx(idx)}
                           className={cn(
-                            'w-full text-left px-4 py-3 text-sm font-medium transition-colors border-b border-outline-variant/40 last:border-0',
+                            'flex w-full items-baseline justify-between gap-3 text-left px-4 py-3 text-sm font-medium transition-colors border-b border-outline-variant/40 last:border-0',
                             idx === activeTestIdx
                               ? 'bg-surface-container-low text-on-surface'
                               : 'text-on-surface hover:bg-surface-container-low',
                           )}
                         >
-                          {test.name}
+                          <span className="min-w-0 truncate">{test.name}</span>
+                          {/* The counter quotes a price before the patient reaches
+                              the desk — and a test with no tariff entry says so
+                              here rather than arriving as ₹0 on the bill. */}
+                          <span
+                            className={cn(
+                              'shrink-0 text-xs tabular-nums',
+                              resolvePrice(test.name, priceList) === null
+                                ? 'text-error'
+                                : 'text-on-surface-variant',
+                            )}
+                          >
+                            {resolvePrice(test.name, priceList) === null
+                              ? 'not priced'
+                              : formatMoney(resolvePrice(test.name, priceList) as number)}
+                          </span>
                         </button>
                       ))
                     ) : (
@@ -1065,6 +1229,30 @@ export default function PatientsPage({
                   </div>
                 )}
               </div>
+
+              {/* Running total, on the same arithmetic the bill uses. */}
+              {formData.testSelection.length > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-surface-container-low px-3 py-2">
+                  <span className="text-xs font-semibold uppercase tracking-[0.06em] text-on-surface-variant">
+                    {orderPreview.items.length} charge{orderPreview.items.length === 1 ? '' : 's'}
+                    {orderPreview.items.some(item => item.kind === 'panel')
+                      ? ' · profiles billed as one line'
+                      : ''}
+                  </span>
+                  <span className="text-sm font-bold tabular-nums text-on-surface">
+                    {formatMoney(orderPreview.total)}
+                  </span>
+                </div>
+              )}
+              {orderPreview.unpriced.length > 0 && (
+                <p className="rounded-xl bg-error-container/50 px-3 py-2 text-[11px] text-error">
+                  No price yet for {orderPreview.unpriced.slice(0, 4).join(', ')}
+                  {orderPreview.unpriced.length > 4
+                    ? ` and ${orderPreview.unpriced.length - 4} more`
+                    : ''}
+                  . The bill will mark these lines "not priced" instead of charging ₹0.
+                </p>
+              )}
             </div>
           </Field>
         </form>
@@ -1131,6 +1319,16 @@ export default function PatientsPage({
         patient={selectedPatient}
         onClose={() => setSelectedPatient(null)}
         onEdit={role !== 'guest' ? openEditForm : undefined}
+        onPrintBill={role !== 'guest' ? patient => void printBill(patient) : undefined}
+      />
+
+      {/* The Windows print sheet — desktop only; renders nothing on other shells,
+          so the APK and browser print paths are untouched. */}
+      <PrintDialog
+        open={!!billJob}
+        job={billJob}
+        onClose={() => setBillJob(null)}
+        onPrinted={() => toast.success('Bill sent to the printer.')}
       />
     </div>
   );
