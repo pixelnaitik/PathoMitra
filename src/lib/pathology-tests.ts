@@ -2048,7 +2048,14 @@ export function expandTestSelection(names: readonly string[] = []): string[] {
     if (members.length > 0) {
       for (const member of members) {
         const trimmed = String(member ?? '').trim();
-        if (trimmed) leaves.add(trimmed);
+        // A panel may list a section heading as a member (CBC carries
+        // `DIFFERENTIAL COUNT WBC` and `DIFFERENTIAL LEUCOCYTE ABSOLUTE COUNT`
+        // over its own rows). Headings take no value, are not saved in
+        // `resultData` and print as a band, not an empty line — so by the rule
+        // stated above they contribute nothing. Skipping them only at the top
+        // level made "Total Tests" over-count every panel that nests a heading
+        // (a CBC read as 27 tests where the report itself says 25 parameters).
+        if (trimmed && !findTestInfo(trimmed)?.isHeader) leaves.add(trimmed);
       }
       continue;
     }

@@ -68,6 +68,25 @@ const BANNED_CLAIMS: ClaimRule[] = [
     evidence:
       'records live in one device-local store (SQLite via SQLCipher, or localStorage) with no export-to-server path, so a second machine cannot read them',
   },
+  {
+    pattern:
+      /share\s+(?:by|via)\s+[^.\n]{0,40}\b(?:sms|whatsapp|email)\b|\b(?:sms|whatsapp)\b[^.\n]{0,30}\b(?:alert|notif|remind)/i,
+    evidence:
+      'email / SMS / WhatsApp delivery was removed on 2026-10-11 at the lab\u2019s request (a mailto:/sms:/wa.me hand-off puts patient-naming text into a third-party app): notification-engine.ts NotificationPrefs.channels has only `desktop`, and the one share path is the Android share sheet in native-print.ts',
+  },
+  {
+    pattern: /\bno setup\b/i,
+    evidence:
+      'the lab does set up: it creates the local account and passcode (AuthPage), fills lab settings, and prices its tests. What is absent is a server, so the honest claim is "no server to set up"',
+  },
+  {
+    // Case-sensitive on purpose: prose that says a claim was `verified` by a
+    // person is fine; a capitalised status chip is a workflow state, and the
+    // console has exactly three of them (Draft / Issued / Amended).
+    pattern: /\b(?:Verified|Signed)\b/,
+    evidence:
+      'report-status.ts is the single source for the visible states and its own test bans the word "signed" from any visible string; there is no external verification or signature service in this build (report-compliance.ts returns an empty signer line)',
+  },
 ];
 
 /**

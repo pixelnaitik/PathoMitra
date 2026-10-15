@@ -96,7 +96,7 @@ export default function SolutionsPage() {
                 </p>
                 <ul className="space-y-3 mb-8">
                   {[
-                    'Share by SMS, email or WhatsApp from the app',
+                    'Print, save or share the PDF via the Android share sheet',
                     'Operator name and issue time printed on each report',
                     'Clean, modern PDF report designs',
                     'Referring-doctor details captured with every patient',

@@ -86,12 +86,18 @@ import {
   readReports,
   readPatients,
   ageAsNumber,
+  normalizeReportStatus,
   operatorStamp,
   type PatientRecord,
   type ReportRecord,
   type ReportStatus,
 } from '../../lib/models';
-import { findMissingResults, planReportWrite, type ReportWriteOp } from '../../lib/report-workflow';
+import {
+  findMissingResults,
+  planReportWrite,
+  type StoredReport,
+  type ReportWriteOp,
+} from '../../lib/report-workflow';
 import { downloadCsv, toCsv } from '../../lib/export-csv';
 import { normalisePhone } from '../../lib/patient-registry';
 
@@ -415,6 +421,37 @@ export default function ReportsPage({
   };
 
   /**
+   * The stored copy of the report a sheet is showing.
+   *
+   * Read from the database rather than taken from state, because the editor
+   * mutates its copy as the operator types: a "before" built from that copy is
+   * identical to the "after" by construction, and the amendment gate then
+   * reports a change it never made. Falling back to the on-screen values keeps
+   * the write working if the document has already gone (deleted in another
+   * window), which is the lesser risk than silently discarding a correction.
+   */
+  const readStoredReport = async (target: SelectedReport): Promise<StoredReport> => {
+    const onScreen: StoredReport = {
+      patientId: target.patientId,
+      patientName: target.patientName,
+      resultData: target.resultData ?? {},
+      signature: target.signature ?? '',
+      createdAt: target.createdAt ?? '',
+      createdBy: target.createdBy ?? '',
+      testType: target.testType,
+      testSelection: target.testSelection ?? [],
+      id: target.id,
+      status: target.status,
+      version: target.version,
+    };
+    const snap = await getDoc(doc(db, 'reports', target.id));
+    if (!snap.exists()) return onScreen;
+    const stored = normalizeReportStatus(snap.data()) as Partial<ReportRecord> | null;
+    if (!stored) return onScreen;
+    return { ...onScreen, ...stored, id: target.id };
+  };
+
+  /**
    * One report write at a time, from this screen.
    *
    * `loading` only reaches the buttons after React re-renders, so a second tap
@@ -526,7 +563,15 @@ export default function ReportsPage({
         testSelection: target.testSelection ?? [],
       };
       const plan = planReportWrite({
-        existing: { ...content, id: target.id, status: target.status, version: target.version },
+        // `existing` has to be what is STORED, not what is on screen. The editor
+        // writes every keystroke straight into `selectedReport`, so deriving the
+        // "before" from it makes any amendment look like a no-op:
+        // `isReportContentChanged(existing, next)` is false by construction,
+        // `planReportWrite` returns `{ ok: true, ops: [] }` ("nothing to
+        // persist"), this sheet closes and toasts success — and the corrected
+        // value never reaches the database, on the one path whose whole purpose
+        // is to retain what was handed out before it was changed.
+        existing: await readStoredReport(target),
         next: { ...content, status: targetStatus },
         reason: reasonOverride ?? amendReason,
         operator: operatorStamp(user),

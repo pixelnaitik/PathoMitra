@@ -10,6 +10,7 @@ import {
   isNumericTest,
   getSearchableTests,
   auditPathologyCatalogue,
+  expandTestSelection,
   DEFAULT_PATHOLOGY_TESTS,
   ADULT_MIN_AGE_YEARS,
   INFANT_MAX_AGE_YEARS,
@@ -366,5 +367,44 @@ describe('catalogue coverage after the 2026-10 expansion', () => {
       names.indexOf('THYROID PROFILE'),
     );
     expect(names.indexOf('PREGNANCY TEST')).toBeLessThan(names.indexOf('T.S.H.'));
+  });
+});
+
+describe('expandTestSelection — one honest test count (AN-4)', () => {
+  it('expands a panel to its result-bearing members only', () => {
+    const leaves = expandTestSelection(['CBC (COMPLETE BLOOD COUNT)']);
+    expect(leaves).toContain('HB (HAEMOGLOBIN)');
+    // The CBC lists two section headings over its own rows. They take no value,
+    // are never written to `resultData` and print as a band rather than an empty
+    // line, so counting them made Analytics say "27 tests" for a report whose
+    // own details sheet says "25 parameters".
+    expect(leaves).not.toContain('DIFFERENTIAL COUNT WBC');
+    expect(leaves).not.toContain('DIFFERENTIAL LEUCOCYTE ABSOLUTE COUNT');
+    expect(leaves).toHaveLength(25);
+  });
+
+  it('counts a panel once when the order also lists its members separately', () => {
+    const withPanel = expandTestSelection(['CBC (COMPLETE BLOOD COUNT)']);
+    const both = expandTestSelection(['CBC (COMPLETE BLOOD COUNT)', 'HB (HAEMOGLOBIN)', 'MCV']);
+    expect(both).toEqual(withPanel);
+  });
+
+  it('contributes nothing for a bare heading and passes an unknown name through', () => {
+    expect(expandTestSelection(['DIFFERENTIAL COUNT WBC'])).toEqual([]);
+    // A lab's own test is not in the catalogue; it still has to count as one.
+    expect(expandTestSelection(['LAB-ONLY STAIN'])).toEqual(['LAB-ONLY STAIN']);
+    expect(expandTestSelection(['', '   ', null as unknown as string])).toEqual([]);
+  });
+
+  it('no panel in the catalogue expands to a section heading', () => {
+    // The invariant the whole function exists to hold, checked against every
+    // profile so a future art drop cannot reintroduce the over-count silently.
+    const headers = new Set(DEFAULT_PATHOLOGY_TESTS.filter(t => t.isHeader).map(t => t.name));
+    for (const panel of DEFAULT_PATHOLOGY_TESTS.filter(t => t.isGroup)) {
+      const leaves = expandTestSelection([panel.name]);
+      for (const leaf of leaves) {
+        expect(headers.has(leaf)).toBe(false);
+      }
+    }
   });
 });

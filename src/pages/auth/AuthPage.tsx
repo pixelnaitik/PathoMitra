@@ -591,10 +591,10 @@ function UnlockForm() {
   const [now, setNow] = useState(() => Date.now());
   const prompted = useRef(false);
   /**
-   * The account's display name for the "Welcome back, Naitik" greeting
-   * (owner ask, 2026-10-12). Read straight from the local account — the auth
-   * context keeps `user` null while locked, and the name is not a secret:
-   * it is the lab's own operator, already printed on every report.
+   * The account's name for the "Welcome back, <lab>" greeting (owner ask,
+   * 2026-10-12). Read straight from the local account — the auth context keeps
+   * `user` null while locked, and the name is not a secret: it is the lab's own
+   * name, already printed on every report.
    */
   const [accountName, setAccountName] = useState('');
 
@@ -602,7 +602,13 @@ function UnlockForm() {
     let active = true;
     void getAccount()
       .then(account => {
-        if (active && account?.name) setAccountName(account.name.split(/\s+/)[0]);
+        if (!active || !account?.name) return;
+        // This field became the LAB name in 2.6.9 (it used to hold a person).
+        // The original first-word trim greeted "Sun Pathology & Diagnostics" as
+        // "Sun", which reads as a bug; keep the whole name, bounded so a long
+        // one cannot stretch the card.
+        const full = account.name.replace(/\s+/g, ' ').trim();
+        setAccountName(full.length > 32 ? `${full.slice(0, 31).trimEnd()}\u2026` : full);
       })
       .catch(() => {
         /* greeting stays generic if the secure store is unreadable */

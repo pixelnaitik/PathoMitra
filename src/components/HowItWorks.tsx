@@ -30,7 +30,7 @@ export default function HowItWorks() {
             How it works
           </span>
           <h2 className="mt-3 text-3xl md:text-4xl font-bold tracking-[-0.03em] text-on-surface mb-4">
-            3 Steps From Reception to Signed Report
+            3 Steps From Reception to Issued Report
           </h2>
           <p className="text-on-surface-variant">
             Built for the day-to-day bench workflow, and it keeps running when the lab loses its
