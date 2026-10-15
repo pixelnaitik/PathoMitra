@@ -57,27 +57,25 @@ describe('findMissingResults (P0.5)', () => {
   });
 });
 
-describe('planReportWrite — issuance gate (P0.5)', () => {
-  it('rejects issuing a draft whose panel members are blank, listing them', () => {
+describe('planReportWrite — blank results never block a write (owner, 2026-10-15)', () => {
+  it('issues a draft whose panel members are blank instead of refusing', () => {
     const plan = planReportWrite({
       existing: stored({ status: 'draft', resultData: { Hb: '', WBC: '' } }),
       next: { ...content({ Hb: '', WBC: '' }, ['CBC']), status: 'final' },
       operator: 'Dr Who',
       now: '2026-10-14T10:00:00.000Z',
-      expandNames,
     });
-    expect(plan.ok).toBe(false);
-    expect(plan.missing?.sort()).toEqual(['Hb', 'WBC']);
-    expect(plan.ops).toHaveLength(0);
+    expect(plan.ok).toBe(true);
+    expect(plan.issuing).toBe(true);
+    expect(plan.ops).toHaveLength(1);
   });
 
-  it('lets an incomplete DRAFT be saved (only issuing is gated)', () => {
+  it('lets an incomplete DRAFT be saved', () => {
     const plan = planReportWrite({
       existing: stored({ status: 'draft', resultData: { Hb: '', WBC: '' } }),
       next: { ...content({ Hb: '', WBC: '' }, ['CBC']), status: 'draft' },
       operator: 'Dr Who',
       now: '2026-10-14T10:00:00.000Z',
-      expandNames,
     });
     expect(plan.ok).toBe(true);
     expect(plan.ops[0].entity).toBe('reports');
@@ -89,7 +87,6 @@ describe('planReportWrite — issuance gate (P0.5)', () => {
       next: { ...content({ Hb: '12', WBC: '7' }, ['CBC']), status: 'final' },
       operator: 'Dr Who',
       now: '2026-10-14T10:00:00.000Z',
-      expandNames,
     });
     expect(plan.ok).toBe(true);
     expect(plan.issuing).toBe(true);
@@ -104,7 +101,6 @@ describe('planReportWrite — immutable issued report (P0.4)', () => {
       reason: '   ',
       operator: 'Dr Who',
       now: '2026-10-14T10:00:00.000Z',
-      expandNames,
     });
     expect(plan.ok).toBe(false);
     expect(plan.error).toMatch(/must state a reason/);
@@ -117,7 +113,6 @@ describe('planReportWrite — immutable issued report (P0.4)', () => {
       reason: 'Result transcription error',
       operator: 'Dr Who',
       now: '2026-10-14T10:00:00.000Z',
-      expandNames,
     });
     expect(plan.ok).toBe(true);
     expect(plan.amended).toBe(true);
@@ -144,7 +139,6 @@ describe('planReportWrite — immutable issued report (P0.4)', () => {
       reason: 'undo it',
       operator: 'Dr Who',
       now: '2026-10-14T10:00:00.000Z',
-      expandNames,
     });
     expect(plan.ok).toBe(false);
     expect(plan.error).toMatch(/cannot be turned back/);
@@ -157,7 +151,6 @@ describe('planReportWrite — immutable issued report (P0.4)', () => {
       reason: '',
       operator: 'Dr Who',
       now: '2026-10-14T10:00:00.000Z',
-      expandNames,
     });
     expect(plan.ok).toBe(true);
     expect(plan.ops).toHaveLength(0);
@@ -173,23 +166,23 @@ describe('planReportWrite — new reports', () => {
       next: { ...content({ Hb: '12', WBC: '7' }, ['CBC']), status: 'final' },
       operator: 'Dr Who',
       now: '2026-10-14T10:00:00.000Z',
-      expandNames,
     });
     expect(plan.ok).toBe(true);
     expect(plan.ops).toEqual([expect.objectContaining({ entity: 'reports', id: 'r-new' })]);
   });
 
-  it('refuses to create an incomplete report as already issued', () => {
+  it('creates a new final report with blank members — the count is advisory', () => {
     const plan = planReportWrite({
       existing: null,
       newId: 'r-new',
       next: { ...content({ Hb: '' }, ['CBC']), status: 'final' },
       operator: 'Dr Who',
       now: '2026-10-14T10:00:00.000Z',
-      expandNames,
     });
-    expect(plan.ok).toBe(false);
-    expect(plan.missing).toContain('WBC');
+    expect(plan.ok).toBe(true);
+    expect(plan.issuing).toBe(true);
+    // The blanks themselves are still reportable, via the pure helper.
+    expect(findMissingResults(content({ Hb: '' }, ['CBC']), expandNames)).toContain('WBC');
   });
 
   it('needs an id when there is no existing report', () => {
@@ -198,7 +191,6 @@ describe('planReportWrite — new reports', () => {
       next: { ...content({ Hb: '12', WBC: '7' }, ['CBC']), status: 'draft' },
       operator: 'Dr Who',
       now: '2026-10-14T10:00:00.000Z',
-      expandNames,
     });
     expect(plan.ok).toBe(false);
   });

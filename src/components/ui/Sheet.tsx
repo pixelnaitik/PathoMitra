@@ -22,6 +22,7 @@ import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import { X } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import { DURATION, EASE, SPRING } from '../../lib/motion';
 import { BACK_PRIORITY, useBackHandler } from '../../lib/back-button';
 import { IconButton } from './Button';
 
@@ -50,6 +51,15 @@ const WIDTHS = {
 /** Focusable, non-disabled descendants that are actually rendered. */
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+// Entrance rides the soft sheet spring; dismissal is a timed fade, not that
+// spring played backwards, so the panel and the scrim leave together.
+const PANEL_EXIT = {
+  y: 40,
+  opacity: 0,
+  scale: 0.985,
+  transition: { duration: DURATION.fast, ease: EASE.out },
+};
 
 function tabbableWithin(root: HTMLElement): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
@@ -162,7 +172,7 @@ export function Sheet({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          transition={{ duration: 0.2 }}
+          transition={{ duration: DURATION.fast, ease: EASE.out }}
         >
           {/* Scrim — frosted, Apple-style */}
           <motion.div
@@ -178,10 +188,10 @@ export function Sheet({
             aria-describedby={description ? `${titleId}-desc` : undefined}
             tabIndex={-1}
             onKeyDown={onKeyDown}
-            initial={{ y: 48, opacity: 0, scale: 0.98 }}
+            initial={{ y: 40, opacity: 0, scale: 0.985 }}
             animate={{ y: 0, opacity: 1, scale: 1 }}
-            exit={{ y: 48, opacity: 0, scale: 0.98 }}
-            transition={{ type: 'spring', stiffness: 420, damping: 38 }}
+            exit={PANEL_EXIT}
+            transition={SPRING.sheet}
             className={cn(
               'relative flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-4xl',
               'border border-[var(--elevated-border)] bg-surface sm:rounded-4xl sm:shadow-float',

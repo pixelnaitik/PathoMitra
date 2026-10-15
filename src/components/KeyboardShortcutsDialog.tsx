@@ -7,6 +7,7 @@ import { useCallback } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Command } from 'lucide-react';
 import { BACK_PRIORITY, useBackHandler } from '../lib/back-button';
+import { SPRING } from '../lib/motion';
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
 const MOD = isMac ? '⌘' : 'Ctrl';
@@ -56,7 +57,7 @@ export function KeyboardShortcutsDialog({ open, onClose }: { open: boolean; onCl
             initial={{ opacity: 0, scale: 0.96, y: 12 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.96, y: 8 }}
-            transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+            transition={SPRING.sheet}
             className="relative max-h-[88dvh] w-full max-w-sm overflow-y-auto rounded-3xl border border-[var(--elevated-border)] bg-surface p-6 shadow-float"
           >
             <div className="mb-4 flex items-center gap-2.5">

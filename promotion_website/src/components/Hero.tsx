@@ -29,12 +29,16 @@ const KPIS = [
 ];
 
 const QUEUE = [
-  { id: 'PL-20418', test: 'CBC + Differential', tone: 'success', label: 'Verified', time: '09:41' },
+  // Status vocabulary mirrors what the app really does (draft -> issue, with
+  // amendments raising the version). Deliberately avoids "verified" / "signed":
+  // there is no signing service and no verification endpoint behind a report, and
+  // the store listings must not imply one from this mock.
+  { id: 'PL-20418', test: 'CBC + Differential', tone: 'success', label: 'Issued', time: '09:41' },
   {
     id: 'PL-20417',
     test: 'Histopathology · Breast',
     tone: 'accent',
-    label: 'Signed',
+    label: 'Draft',
     time: '09:26',
   },
   { id: 'PL-20416', test: 'Lipid profile', tone: 'warning', label: 'Pending', time: '09:12' },
@@ -304,7 +308,7 @@ export default function Hero() {
           transition={{ duration: 0.6, delay: 0.4 }}
           className="mt-6 text-[12px] font-medium text-on-surface-variant"
         >
-          Runs offline · No setup · Encrypted on-device records
+          Runs offline (Android) · No server to set up · Encrypted on-device records
         </motion.p>
       </div>
 

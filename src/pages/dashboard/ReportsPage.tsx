@@ -32,6 +32,7 @@ import {
   GitCompare,
   FileClock,
   AlertCircle,
+  Info,
   Loader2,
   Trash2,
   MoreVertical,
@@ -212,15 +213,10 @@ export default function ReportsPage({
     results: {} as Record<string, string>,
   });
 
-  // UI-P0-02 — the "review" the audit asks for is not a separate screen; it
-  // is the composer telling the operator, live, which ordered tests still
-  // have no value so the Issue action cannot fire while the clinical payload
-  // is incomplete. The old behaviour was: leave the button enabled, let the
-  // submit path throw "Cannot issue: N ordered tests still has no value", and
-  // hope the operator read the error panel. Same rules as `handleCreateReport`
-  // uses at submit time, computed from the same source (`findMissingResults`)
-  // so the preconditions on the button and the preconditions inside the
-  // handler can never disagree.
+  // How many ordered tests (panels expanded to members) are still blank. Purely
+  // advisory since 2026-10-15: the composer shows the count so the operator knows
+  // which lines will print empty, but issuing is never blocked by it. Computed
+  // from `findMissingResults` — the same source the note describes.
   const composerMissing = useMemo(() => {
     if (!isModalOpen || newReport.testSelection.length === 0) return [];
     return findMissingResults(
@@ -236,6 +232,11 @@ export default function ReportsPage({
       expandTestSelection,
     );
   }, [isModalOpen, newReport.patientId, newReport.testSelection, newReport.results]);
+
+  const composerTotal = useMemo(
+    () => (isModalOpen ? expandTestSelection(newReport.testSelection).length : 0),
+    [isModalOpen, newReport.testSelection],
+  );
 
   const filteredAvailableTests = useMemo(
     () =>
@@ -450,26 +451,16 @@ export default function ReportsPage({
         createdBy: operatorStamp(user),
         testSelection: newReport.testSelection,
       };
-      // P0.5: the issuance gate is a domain rule, not a button. A blank value is
-      // not a result — so an ordered panel member with nothing recorded blocks
-      // issuing. A draft saves incomplete; only a complete report can be final.
-      if (status === 'final') {
-        const missing = findMissingResults(content, expandTestSelection);
-        if (missing.length > 0) {
-          throw new Error(
-            `Cannot issue: ${missing.length} ordered test${missing.length === 1 ? '' : 's'} ` +
-              `still has no value (${missing.slice(0, 6).join(', ')}${missing.length > 6 ? ', …' : ''}). ` +
-              'Fill every result, or save as a draft.',
-          );
-        }
-      }
+      // Blank results do not block issuing (owner, 2026-10-15): a panel whose
+      // members were not all done is a normal report here, and gating it pushed
+      // operators to invent values. The composer still counts the blanks so the
+      // screen can say what will print empty.
       const plan = planReportWrite({
         existing: null,
         newId: reportRef.id,
         next: { ...content, status },
         operator: operatorStamp(user),
         now: timestamp,
-        expandNames: expandTestSelection,
       });
       if (!plan.ok) throw new Error(plan.error ?? 'Report could not be saved.');
       await commitReportOps(plan.ops);
@@ -524,7 +515,6 @@ export default function ReportsPage({
         reason: reasonOverride ?? amendReason,
         operator: operatorStamp(user),
         now,
-        expandNames: expandTestSelection,
       });
       if (!plan.ok) {
         // A domain rule refused the write. Keep the sheet open and every value
@@ -2075,19 +2065,11 @@ export default function ReportsPage({
               variant="brand"
               className="w-full sm:flex-1"
               loading={loading}
-              disabled={!newReport.patientId || composerMissing.length > 0}
-              title={
-                composerMissing.length > 0
-                  ? `Enter a value for ${composerMissing.length} pending test${composerMissing.length === 1 ? '' : 's'} before issuing, or Save as draft`
-                  : undefined
-              }
+              disabled={!newReport.patientId}
+              title={!newReport.patientId ? 'Search and select a patient first' : undefined}
             >
               {!loading && <Send className="h-5 w-5 shrink-0" aria-hidden="true" />}
-              <span className="truncate">
-                {composerMissing.length > 0
-                  ? `Issue report (${composerMissing.length} incomplete)`
-                  : ISSUE_REPORT_LABEL}
-              </span>
+              <span className="truncate">{ISSUE_REPORT_LABEL}</span>
             </Button>
           </div>
         }
@@ -2254,31 +2236,25 @@ export default function ReportsPage({
                 <h4 className="text-sm font-bold text-primary">Test Results Data</h4>
               </div>
 
-              {/* UI-P0-02 review strip. Sits ABOVE the results grid so the
-                  operator sees "what is still missing" before scanning the
-                  inputs, and disappears the moment every value is filled. A
-                  failed submit used to be the only signal; this makes the
-                  precondition visible without needing to press the button
-                  first. The list is capped because a 30-parameter profile
-                  can produce a long block; the count is always visible. */}
+              {/* Blank results are a note, not a block (owner, 2026-10-15). The
+                  warning panel used to read "issue is blocked" and list every
+                  unfilled member; a report with tests not done is ordinary
+                  practice here, so this is now one quiet line saying what will
+                  print empty. It disappears as soon as nothing is blank. */}
               {composerMissing.length > 0 && (
-                <div
+                <p
                   role="status"
                   aria-live="polite"
-                  className="rounded-2xl border border-warning/40 bg-warning-container px-4 py-3 text-[13px] leading-relaxed text-on-warning-container"
+                  className="flex items-start gap-1.5 text-[12px] leading-relaxed text-on-surface-variant"
                 >
-                  <p className="font-bold">
-                    {composerMissing.length} result{composerMissing.length === 1 ? '' : 's'} still
-                    empty — issue is blocked
-                  </p>
-                  <p className="mt-1 opacity-90">
-                    {composerMissing.slice(0, 8).join(', ')}
-                    {composerMissing.length > 8 ? ` +${composerMissing.length - 8} more` : ''}
-                  </p>
-                  <p className="mt-1 text-[12px] opacity-80">
-                    Fill every value to issue the report, or Save as draft to continue later.
-                  </p>
-                </div>
+                  <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span>
+                    {composerMissing.length} of {composerTotal} ordered result
+                    {composerTotal === 1 ? '' : 's'} left blank
+                    {composerTotal > 1 ? ' will print as empty lines' : ' prints as an empty line'}.
+                    Fill them now, or issue as it stands.
+                  </span>
+                </p>
               )}
 
               <div className="space-y-3">

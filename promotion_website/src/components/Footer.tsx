@@ -95,7 +95,7 @@ export default function Footer() {
 
         <div className="border-t border-outline-variant/30 pt-8 flex flex-col md:flex-row justify-between items-center gap-4">
           <span className="text-xs text-on-surface-variant opacity-70">
-            © 2026 PathoMitra Diagnostic Systems. Clinical Grade Precision.
+            © 2026 PathoMitra · Lab Management Simplified.
           </span>
           <div className="flex items-center gap-4">
             <Link

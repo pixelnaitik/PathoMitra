@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { motion } from 'motion/react';
+import { motion, useReducedMotion } from 'motion/react';
 import {
   AreaChart,
   Area,
@@ -16,7 +16,7 @@ import {
   Bar,
   LabelList,
 } from 'recharts';
-import { Users, Activity, TestTube, FileText } from 'lucide-react';
+import { Users, Activity, TestTube, FileText, Stethoscope } from 'lucide-react';
 import {
   collection,
   getDocs,
@@ -31,7 +31,8 @@ import { handleFirestoreError, OperationType } from '../../lib/firestore-errors'
 import { cn } from '../../lib/utils';
 import { expandTestSelection, findTestInfo } from '../../lib/pathology-tests';
 import { groupByDoctorName } from '../../lib/doctor-registry';
-import { CalendarRangePicker, Card, SectionTitle, toIsoDay } from '../../components/ui';
+import { CalendarRangePicker, Card, EmptyState, SectionTitle, toIsoDay } from '../../components/ui';
+import { DURATION, listStaggerProps } from '../../lib/motion';
 import { localDayStartIso, localDayEndIso } from '../../lib/date-range';
 import { useRefreshHandler } from '../../hooks/useRefreshHandler';
 
@@ -55,6 +56,22 @@ const CHART_FALLBACK = {
 };
 
 const DAY_MS = 86_400_000;
+
+/**
+ * One entrance for every chart series on this page.
+ *
+ * Recharts animates for 1500ms on an `ease` (in-out) curve by default, and
+ * re-runs it whenever the window changes or the container resizes — so the
+ * dashboard kept redrawing itself long after the numbers had settled. A shorter
+ * decelerating curve reads as one smooth arrival instead of a loop of motion,
+ * and the OS "reduce motion" preference switches the series draws off entirely.
+ */
+const chartAnimation = (reduceMotion: boolean) => ({
+  isAnimationActive: !reduceMotion,
+  animationBegin: 120,
+  animationDuration: 520,
+  animationEasing: 'ease-out' as const,
+});
 
 type TrendGrain = 'day' | 'week' | 'month';
 
@@ -147,6 +164,7 @@ export default function AnalyticsPage() {
   // getComputedStyle would break SSR/tests) and re-read whenever the palette or
   // color mode changes.
   const [chartColors, setChartColors] = useState<Record<string, string>>({});
+  const reduceMotion = useReducedMotion();
 
   useEffect(() => {
     const readChartColors = () => {
@@ -171,6 +189,9 @@ export default function AnalyticsPage() {
 
   const cc = (key: keyof typeof CHART_FALLBACK) => chartColors[key] || CHART_FALLBACK[key];
   const pieColors = [cc('c1'), cc('c2'), cc('c3'), cc('c4'), cc('c5'), cc('c6')];
+  /** The "nothing in this window" slice is neutral — brand teal read as a real 100 %. */
+  const insightColor = (name: string) =>
+    name === 'Multiple reports' ? cc('c1') : name === 'One report' ? cc('c2') : cc('grid');
   const tooltipContentStyle = {
     backgroundColor: cc('surface'),
     borderColor: cc('border'),
@@ -377,12 +398,15 @@ export default function AnalyticsPage() {
       else single++;
     });
 
-    if (single === 0 && multiple === 0) return [{ name: 'No reports in range', value: 1 }];
+    // The placeholder slice is deliberately neutral: a full brand-teal ring for
+    // "nothing happened in this window" read as a real 100 % distribution.
+    if (single === 0 && multiple === 0)
+      return [{ name: 'No reports in range', value: 1, placeholder: true }];
 
     return [
-      { name: 'One report', value: single },
-      { name: 'Multiple reports', value: multiple },
-    ];
+      { name: 'One report', value: single, placeholder: false },
+      { name: 'Multiple reports', value: multiple, placeholder: false },
+    ].filter(slice => slice.value > 0);
   }, [filteredReports]);
 
   const topDoctors = useMemo(() => {
@@ -484,13 +508,7 @@ export default function AnalyticsPage() {
             tint: 'bg-chart-4/12 text-chart-4',
           },
         ].map((kpi, i) => (
-          <motion.div
-            key={kpi.label}
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: i * 0.08, type: 'spring', stiffness: 260, damping: 24 }}
-            className="flex"
-          >
+          <motion.div key={kpi.label} {...listStaggerProps(i, 12, DURATION.soft)} className="flex">
             <Card className="flex w-full flex-col justify-between gap-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -519,11 +537,7 @@ export default function AnalyticsPage() {
       {/* Row 2: Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Report Volume Trend */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="h-[360px]"
-        >
+        <motion.div {...listStaggerProps(4, 12, DURATION.soft)} className="h-[360px]">
           <Card pad="lg" className="flex h-full flex-col">
             <SectionTitle
               title="Report Volume Trend"
@@ -577,6 +591,7 @@ export default function AnalyticsPage() {
                     strokeWidth={2.5}
                     fillOpacity={1}
                     fill="url(#colorReports)"
+                    {...chartAnimation(!!reduceMotion)}
                   />
                 </AreaChart>
               </ResponsiveContainer>
@@ -585,12 +600,7 @@ export default function AnalyticsPage() {
         </motion.div>
 
         {/* Test Volume Trend */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="h-[360px]"
-        >
+        <motion.div {...listStaggerProps(5, 12, DURATION.soft)} className="h-[360px]">
           <Card pad="lg" className="flex h-full flex-col">
             <SectionTitle
               title="Test Volume Trend"
@@ -639,6 +649,7 @@ export default function AnalyticsPage() {
                     strokeWidth={2.5}
                     fillOpacity={1}
                     fill="url(#colorTests)"
+                    {...chartAnimation(!!reduceMotion)}
                   />
                 </AreaChart>
               </ResponsiveContainer>
@@ -649,12 +660,7 @@ export default function AnalyticsPage() {
 
       {/* Row 3: Splits & Tops */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-          className="lg:col-span-1 h-[320px]"
-        >
+        <motion.div {...listStaggerProps(6, 12, DURATION.soft)} className="lg:col-span-1 h-[320px]">
           <Card pad="lg" className="flex h-full flex-col">
             <SectionTitle title="Test Category Distribution" />
             <div
@@ -663,16 +669,25 @@ export default function AnalyticsPage() {
               aria-label={`Test category distribution across ${categoryData.length} categories in the selected range${categoryData[0] ? `, largest is ${categoryData[0].name} with ${categoryData[0].value}` : ''}`}
             >
               {categoryData.length === 0 ? (
-                <p className="text-sm text-on-surface-variant">No data available</p>
+                <EmptyState
+                  className="-my-6"
+                  icon={<TestTube className="h-7 w-7" aria-hidden="true" />}
+                  title="Nothing ordered yet"
+                  description="Categories appear once a report in this window has tests on it."
+                />
               ) : (
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
+                    {/* Radii are percentages of the card, not fixed pixels: a
+                        74px ring floated in the middle of a wide desktop card and
+                        left the centre label no wider than the hole. */}
                     <Pie
                       data={categoryData}
-                      innerRadius={54}
-                      outerRadius={74}
+                      innerRadius="60%"
+                      outerRadius="84%"
                       paddingAngle={2}
                       dataKey="value"
+                      {...chartAnimation(!!reduceMotion)}
                     >
                       {categoryData.map((_entry, index) => (
                         <Cell key={`cell-${index}`} fill={pieColors[index % pieColors.length]} />
@@ -696,27 +711,23 @@ export default function AnalyticsPage() {
               {categoryData.length > 0 && (
                 // Offset by the legend row so the text sits in the ring's true
                 // centre, not the container's — the old `pr-[100px]` hack left
-                // "HAEMATOLO…" clipped across the donut edge.
-                <div className="pointer-events-none absolute inset-x-0 top-0 bottom-9 flex flex-col items-center justify-center">
+                // "HAEMATOLO…" clipped across the donut edge. The width cap is
+                // the ring's hole: past it, the label walks over the arc.
+                <div className="pointer-events-none absolute inset-x-0 top-0 bottom-9 flex flex-col items-center justify-center px-8 text-center">
                   <span
-                    className="max-w-[130px] truncate px-2 text-center text-[13px] font-semibold text-on-surface"
+                    className="max-w-[120px] truncate text-[12px] font-semibold leading-tight text-on-surface"
                     title={categoryData[0].name}
                   >
                     {categoryData[0].name}
                   </span>
-                  <span className="text-xs text-on-surface-variant">Top Category</span>
+                  <span className="text-[11px] text-on-surface-variant">Top Category</span>
                 </div>
               )}
             </div>
           </Card>
         </motion.div>
 
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
-          className="lg:col-span-2 h-[320px]"
-        >
+        <motion.div {...listStaggerProps(7, 12, DURATION.soft)} className="lg:col-span-2 h-[320px]">
           <Card pad="lg" className="flex h-full flex-col">
             <SectionTitle title="Top Tests by Volume" />
             <div
@@ -725,9 +736,12 @@ export default function AnalyticsPage() {
               aria-label={`Top ${topTestsData.length} tests by volume in the selected range${topTestsData[0] ? `, most-ordered is ${topTestsData[0].name} with ${topTestsData[0].value}` : ''}`}
             >
               {topTestsData.length === 0 ? (
-                <div className="h-full flex items-center justify-center">
-                  <p className="text-sm text-on-surface-variant">No data available</p>
-                </div>
+                <EmptyState
+                  className="h-full"
+                  icon={<Activity className="h-7 w-7" aria-hidden="true" />}
+                  title="No test volume in this window"
+                  description="Widen the date range, or issue a report with tests on it."
+                />
               ) : (
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart
@@ -769,7 +783,12 @@ export default function AnalyticsPage() {
                       cursor={{ fill: 'transparent' }}
                       contentStyle={tooltipContentStyle}
                     />
-                    <Bar dataKey="value" fill={cc('c3')} radius={[0, 6, 6, 0]}>
+                    <Bar
+                      dataKey="value"
+                      fill={cc('c3')}
+                      radius={[0, 6, 6, 0]}
+                      {...chartAnimation(!!reduceMotion)}
+                    >
                       <LabelList
                         dataKey="value"
                         position="right"
@@ -786,16 +805,16 @@ export default function AnalyticsPage() {
 
       {/* Row 4: Patient Insights & Doctors */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.4 }}
-          className="lg:col-span-1 h-[300px]"
-        >
+        <motion.div {...listStaggerProps(8, 12, DURATION.soft)} className="lg:col-span-1 h-[300px]">
           <Card pad="lg" className="flex h-full flex-col">
             <SectionTitle title="Patient Insights" subtitle="Reports per patient in range" />
+            {/* The ring and its centre caption share exactly one box now. The
+                recharts <Legend> used to take a row off the bottom of this
+                container, so the caption had to guess that height (`bottom-9`)
+                and "REGISTERED PATIENTS" was wider than the hole anyway — it
+                walked straight over the arc on both sides (owner screenshot). */}
             <div
-              className="flex-1 w-full relative flex items-center justify-center min-h-0"
+              className="relative min-h-0 flex-1"
               role="img"
               aria-label={`Patient insights: ${roster.length} registered patients split by reports per patient in the selected range`}
             >
@@ -803,70 +822,87 @@ export default function AnalyticsPage() {
                 <PieChart>
                   <Pie
                     data={patientInsightsData}
-                    innerRadius={48}
-                    outerRadius={66}
-                    paddingAngle={2}
+                    innerRadius="64%"
+                    outerRadius="88%"
+                    paddingAngle={patientInsightsData.length > 1 ? 2 : 0}
                     dataKey="value"
+                    stroke="none"
+                    {...chartAnimation(!!reduceMotion)}
                   >
-                    <Cell fill={cc('c2')} />
-                    <Cell fill={cc('c1')} />
-                    <Cell fill={cc('grid')} />
+                    {patientInsightsData.map(slice => (
+                      <Cell key={slice.name} fill={insightColor(slice.name)} />
+                    ))}
                   </Pie>
                   <RechartsTooltip contentStyle={tooltipContentStyle} />
-                  <Legend
-                    layout="horizontal"
-                    verticalAlign="bottom"
-                    align="center"
-                    iconType="circle"
-                    wrapperStyle={{ fontSize: '12px', color: cc('tick'), paddingTop: 6 }}
-                  />
                 </PieChart>
               </ResponsiveContainer>
-              <div className="pointer-events-none absolute inset-x-0 top-0 bottom-9 flex flex-col items-center justify-center">
-                <span className="text-lg font-bold text-on-surface tabular-nums">
+              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-0.5 text-center">
+                <span className="text-xl font-bold leading-none text-on-surface tabular-nums">
                   {roster.length.toLocaleString()}
                 </span>
-                <span className="text-[9px] uppercase tracking-[0.08em] text-on-surface-variant">
+                {/* Capped to the ring's hole and allowed to wrap: one long line
+                    is what used to cut across the donut. */}
+                <span className="max-w-[92px] text-[9px] uppercase leading-tight tracking-[0.08em] text-on-surface-variant">
                   Registered patients
                 </span>
               </div>
             </div>
+            <ul className="mt-2 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-[11px] text-on-surface-variant">
+              {patientInsightsData.map(slice => (
+                <li key={slice.name} className="flex items-center gap-1.5">
+                  <span
+                    className="h-2 w-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: insightColor(slice.name) }}
+                    aria-hidden="true"
+                  />
+                  <span>
+                    {slice.name}
+                    {slice.placeholder ? '' : ` · ${slice.value}`}
+                  </span>
+                </li>
+              ))}
+            </ul>
           </Card>
         </motion.div>
 
+        {/* No fixed height below `lg`: the card used to reserve 300px for a table
+            that was often one empty row, leaving most of the card blank on a
+            phone. It now takes the height of what it actually holds. */}
         <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.5 }}
-          className="lg:col-span-2 h-[300px]"
+          {...listStaggerProps(9, 12, DURATION.soft)}
+          className="lg:col-span-2 lg:h-[300px]"
         >
           <Card pad="lg" className="flex h-full flex-col overflow-hidden">
             <SectionTitle title="Top Referring Doctors" subtitle="Ranked by reports generated" />
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="border-b border-outline-variant">
-                    <th className="pb-3 text-[11px] font-semibold uppercase tracking-[0.06em] text-on-surface-variant w-1/2 text-left">
-                      Doctor
-                    </th>
-                    <th className="pb-3 text-[11px] font-semibold uppercase tracking-[0.06em] text-on-surface-variant text-right">
-                      Patients
-                    </th>
-                    <th className="pb-3 text-[11px] font-semibold uppercase tracking-[0.06em] text-on-surface-variant text-right">
-                      Reports Generated
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-outline-variant/40">
-                  {topDoctors.length === 0 ? (
-                    <tr>
-                      <td colSpan={3} className="py-8 text-center text-sm text-on-surface-variant">
-                        No data available
-                      </td>
+            {topDoctors.length === 0 ? (
+              <EmptyState
+                icon={<Stethoscope className="h-7 w-7" aria-hidden="true" />}
+                title="No referrals in this window"
+                description="A doctor is ranked here once a report issued in the range belongs to one of their patients."
+                className="flex-1 py-8"
+              />
+            ) : (
+              <div className="min-h-0 flex-1 overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-outline-variant">
+                      <th className="pb-3 text-[11px] font-semibold uppercase tracking-[0.06em] text-on-surface-variant w-1/2 text-left">
+                        Doctor
+                      </th>
+                      <th className="pb-3 text-[11px] font-semibold uppercase tracking-[0.06em] text-on-surface-variant text-right">
+                        Patients
+                      </th>
+                      <th className="pb-3 text-[11px] font-semibold uppercase tracking-[0.06em] text-on-surface-variant text-right">
+                        Reports Generated
+                      </th>
                     </tr>
-                  ) : (
-                    topDoctors.map((doc, idx) => (
-                      <tr key={idx} className="transition-colors hover:bg-surface-container-low/50">
+                  </thead>
+                  <tbody className="divide-y divide-outline-variant/40">
+                    {topDoctors.map((doc, idx) => (
+                      <tr
+                        key={idx}
+                        className="transition-colors duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] hover:bg-surface-container-low/50"
+                      >
                         <td className="py-3 text-sm font-semibold text-on-surface text-left">
                           {doc.name}
                         </td>
@@ -877,11 +913,11 @@ export default function AnalyticsPage() {
                           {doc.reports}
                         </td>
                       </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </Card>
         </motion.div>
       </div>

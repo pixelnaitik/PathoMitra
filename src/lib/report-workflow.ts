@@ -1,14 +1,13 @@
 /**
  * The report issuance / amendment workflow, expressed as pure domain rules.
  *
- * Why this lives here rather than in the React screen: the two most dangerous
- * clinical guarantees in the app — that an *incomplete* report can never become
- * a issued final, and that an *issued* report can never be silently overwritten
- * — used to be decided by whichever button a screen happened to render. A second
- * entry point (or a future screen) could walk straight past them. The invariants
- * belong in one place every write path must go through, so they hold regardless
- * of UI. `lib/models.ts` still owns the document shape; this owns the *rules*
- * about changing it.
+ * Why this lives here rather than in the React screen: the remaining dangerous
+ * clinical guarantee in the app — that an *issued* report can never be silently
+ * overwritten — used to be decided by whichever button a screen happened to
+ * render. A second entry point (or a future screen) could walk straight past it.
+ * The invariants belong in one place every write path must go through, so they
+ * hold regardless of UI. `lib/models.ts` still owns the document shape; this owns
+ * the *rules* about changing it.
  */
 import { toReportDoc, toReportUpdateDoc, type ReportStatus } from './models';
 
@@ -44,8 +43,6 @@ export interface ReportWritePlan {
   /** Ordered operations to run as one unit when `ok`. Empty when rejected/no-op. */
   ops: ReportWriteOp[];
   error?: string;
-  /** Required results that were blank, when a finalization was rejected. */
-  missing?: string[];
   /** This write amends an already-issued report (a prior version is retained). */
   amended?: boolean;
   /** This write promotes/creates a final report. */
@@ -65,8 +62,10 @@ function hasValue(value: unknown): boolean {
  * The ordered tests (panels expanded to members) that still have no value.
  *
  * A blank string is *not* a result — the editor inserts them only to satisfy the
- * document shape, so treating them as complete was the gap that let an empty
- * report issue as a clinical final.
+ * document shape. This is an *advisory* read, not a gate: since 2026-10-15 the
+ * lab may issue a report with tests left blank (a panel where only some members
+ * were done is normal practice), so the composer uses this to tell the operator
+ * how many lines will print empty. It never blocks a save.
  */
 export function findMissingResults(content: ReportContent, expandNames: ExpandNames): string[] {
   const leaves = expandNames(content.testSelection ?? []);
@@ -123,12 +122,15 @@ function buildPriorSnapshot(
  * Decide — and gate — a single report write.
  *
  * Rules, in order of severity:
- *  - Nothing may end up `final` while a required result is blank.
  *  - An issued (`final`) report cannot be converted back to a `draft`.
  *  - Editing an issued report requires a reason and *retains the prior version*
  *    (a `reportVersions` snapshot written before the live row changes), so no
  *    operator can overwrite the only stored copy of what was handed out.
- *  - A new (draft) report may be created incomplete; only issuing is gated.
+ *  - Blank results never block a write, draft or final. The old "fill every
+ *    ordered test before issuing" rule was removed on owner instruction
+ *    (2026-10-15): a lab routinely issues a panel with members not done, and
+ *    blocking it forced fake values into clinical records. The composer still
+ *    *reports* the blanks via `findMissingResults` — information, not a gate.
  *
  * The `history → report` operation order is intentional: on a store without a
  * cross-collection transaction (the desktop adapter), the prior copy is durably
@@ -143,25 +145,11 @@ export function planReportWrite(args: {
   reason?: string;
   operator: string;
   now: string;
-  expandNames: ExpandNames;
 }): ReportWritePlan {
-  const { existing, next, operator, now, expandNames } = args;
+  const { existing, next, operator, now } = args;
   const id = existing?.id ?? args.newId;
   if (!id) {
     return { ok: false, ops: [], error: 'A new report needs an id before it can be written.' };
-  }
-
-  const missing = next.status === 'final' ? findMissingResults(next, expandNames) : [];
-  if (next.status === 'final' && missing.length > 0) {
-    return {
-      ok: false,
-      ops: [],
-      missing,
-      error:
-        `Cannot issue: ${missing.length} result${missing.length === 1 ? '' : 's'} ` +
-        `still blank (${missing.slice(0, 6).join(', ')}${missing.length > 6 ? ', …' : ''}). ` +
-        'Fill every ordered test, or keep it as a draft.',
-    };
   }
 
   // Brand-new report.
@@ -217,7 +205,7 @@ export function planReportWrite(args: {
     };
   }
 
-  // Editing a draft (optionally promoting it to final — already gated above).
+  // Editing a draft (optionally promoting it to final).
   const nextVersion = existingVersion + 1;
   const value: Record<string, unknown> = {
     ...toReportUpdateDoc({ ...next, version: existingVersion }, existingVersion),

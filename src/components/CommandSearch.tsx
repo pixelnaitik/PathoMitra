@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { collection, getDocs, query, orderBy, db } from '../data/fs';
 import { cn } from '../lib/utils';
+import { SPRING } from '../lib/motion';
 import { BACK_PRIORITY, useBackHandler } from '../lib/back-button';
 import { normalisePhone } from '../lib/patient-registry';
 
@@ -324,7 +325,7 @@ export function CommandSearch({
             initial={{ opacity: 0, y: -16, scale: 0.97 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -10, scale: 0.97 }}
-            transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+            transition={SPRING.sheet}
             className="relative flex max-h-[80dvh] w-full max-w-lg flex-col overflow-hidden rounded-3xl border border-[var(--elevated-border)] bg-surface shadow-float"
           >
             {/* Search input. The app-wide `input:focus` glow + `:focus-visible`

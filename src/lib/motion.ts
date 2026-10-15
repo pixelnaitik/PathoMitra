@@ -21,8 +21,14 @@ export const DURATION = {
 };
 
 export const SPRING = {
-  /** Toasts / sheets — lively but settled. */
+  /** Toasts — lively but settled. */
   press: { type: 'spring', stiffness: 420, damping: 32 } as Transition,
+  /**
+   * Modals & bottom sheets. Softer than `press` on purpose: a panel that covers
+   * the whole screen travels further, so a 420-stiffness snap reads as a jolt.
+   * This is the "glide in, settle once" curve the <Sheet> entrance uses.
+   */
+  sheet: { type: 'spring', stiffness: 300, damping: 30 } as Transition,
   /** Segmented pills & bottom-nav indicator — shared-layout slides. */
   snappy: { type: 'spring', stiffness: 480, damping: 38 } as Transition,
   /** Sidebar / structural springs. */
@@ -38,8 +44,11 @@ export const MAX_STAGGER_DELAY = 0.45;
  * Staggered entrance for list items (rows, cards, chips).
  * The delay is CAPPED — uncapped `idx * step` leaves row #40 fading in two
  * seconds after the rest of the list has already settled.
+ *
+ * `duration` is open because a page-sized reveal (the analytics dashboard) wants
+ * the longer, decelerating `DURATION.soft` while a row of chips wants `base`.
  */
-export function listStagger(index: number, y = 8): Variants {
+export function listStagger(index: number, y = 8, duration = DURATION.base): Variants {
   return {
     hidden: { opacity: 0, y },
     visible: {
@@ -47,7 +56,7 @@ export function listStagger(index: number, y = 8): Variants {
       y: 0,
       transition: {
         delay: Math.min(index * 0.045, MAX_STAGGER_DELAY),
-        duration: DURATION.base,
+        duration,
         ease: EASE.out,
       },
     },
@@ -55,13 +64,13 @@ export function listStagger(index: number, y = 8): Variants {
 }
 
 /** Inline-prop flavour of listStagger for components that set initial/animate directly. */
-export function listStaggerProps(index: number, y = 8) {
+export function listStaggerProps(index: number, y = 8, duration = DURATION.base) {
   return {
     initial: { opacity: 0, y },
     animate: { opacity: 1, y: 0 },
     transition: {
       delay: Math.min(index * 0.045, MAX_STAGGER_DELAY),
-      duration: DURATION.base,
+      duration,
       ease: EASE.out,
     },
   };
