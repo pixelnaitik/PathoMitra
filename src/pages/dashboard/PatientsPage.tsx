@@ -55,7 +55,6 @@ import {
   isOrderable,
   loadPriceList,
   PRICE_LIST_UPDATED_EVENT,
-  resolvePrice,
   type PriceList,
 } from '../../lib/price-list';
 import { buildInvoicePdf, outputInvoicePdf } from '../../lib/invoice-pdf';
@@ -1204,21 +1203,6 @@ export default function PatientsPage({
                           )}
                         >
                           <span className="min-w-0 truncate">{test.name}</span>
-                          {/* The counter quotes a price before the patient reaches
-                              the desk — and a test with no tariff entry says so
-                              here rather than arriving as ₹0 on the bill. */}
-                          <span
-                            className={cn(
-                              'shrink-0 text-xs tabular-nums',
-                              resolvePrice(test.name, priceList) === null
-                                ? 'text-error'
-                                : 'text-on-surface-variant',
-                            )}
-                          >
-                            {resolvePrice(test.name, priceList) === null
-                              ? 'not priced'
-                              : formatMoney(resolvePrice(test.name, priceList) as number)}
-                          </span>
                         </button>
                       ))
                     ) : (

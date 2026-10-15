@@ -197,7 +197,12 @@ export class SqliteRepository implements DataRepository {
    *
    * Inside a transaction the chain is already held by the transaction body, so
    * its own statements run straight away — re-queueing them would wait on the
-   * very task executing them. Failures do not poison the chain.
+   * very task executing them. Nothing can tell a call made by that body from a
+   * call that arrived from elsewhere while the transaction was open, so a
+   * concurrent writer is folded into the open transaction too: it lands or is
+   * rolled back with it. That is the honest contract of one connection; what it
+   * must never do is try to BEGIN a second transaction (see `transaction`).
+   * Failures do not poison the chain.
    */
   private enqueue<T>(task: () => Promise<T>): Promise<T> {
     if (this.inTransaction) return task();
@@ -342,22 +347,62 @@ export class SqliteRepository implements DataRepository {
   }
 
   /**
+   * BEGIN on a connection that is not already inside a transaction.
+   *
+   * The native connection outlives the JavaScript context: when Android
+   * recreates the activity while a batch is open, the plugin keeps its database
+   * object — transaction and all — while the rebuilt app believes nothing is
+   * running. Every BEGIN after that failed with "Already in transaction" and the
+   * lab could not save a single document until the process was killed. Clear the
+   * abandoned transaction and retry once rather than staying dead.
+   */
+  private async startNativeTransaction(conn: SQLiteDBConnection): Promise<void> {
+    try {
+      await conn.beginTransaction();
+      return;
+    } catch (error) {
+      let active: boolean;
+      try {
+        active = (await conn.isTransactionActive()).result ?? false;
+      } catch {
+        active = false;
+      }
+      if (!active) throw error;
+      console.warn('PathoMitra: discarding a transaction left open by an earlier run', error);
+      await conn.rollbackTransaction();
+      await conn.beginTransaction();
+    }
+  }
+
+  /**
    * One SQLCipher transaction, holding the mutation chain for its whole body.
    *
    * This is what the delete cascades were always claiming to be: a patient and
    * their reports either all go, or none of them do. Before this, a crash or a
    * kill halfway through a cascade left the lab with a patient whose reports were
    * partly gone — and the copy on screen promised otherwise.
+   *
+   * A call that arrives while a transaction is already open JOINS it instead of
+   * starting a second one: Android's `beginTransaction()` throws
+   * "Already in transaction" rather than nesting, and the failed call then ran
+   * its own rollback, which ended the *other* caller's transaction and threw away
+   * the writes that were in flight. Issuing a report twice in quick succession
+   * therefore issued nothing at all. Joining is the same rule the desktop
+   * adapter applies, and the outcome still belongs to whoever began the unit.
    */
   async transaction(fn: (tx: DataRepository) => Promise<void>): Promise<void> {
     await this.init();
+    if (this.inTransaction) {
+      await fn(this);
+      return;
+    }
     await this.enqueue(async () => {
       const conn = this.conn();
       this.inTransaction = true;
       this.touched = new Set();
       let committed = false;
       try {
-        await conn.beginTransaction();
+        await this.startNativeTransaction(conn);
         await fn(this);
         await conn.commitTransaction();
         committed = true;

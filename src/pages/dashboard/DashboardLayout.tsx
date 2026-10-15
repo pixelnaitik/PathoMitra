@@ -55,13 +55,15 @@ const navItems: NavItem[] = [
 ];
 
 // Primary destinations surfaced in the mobile bottom tab bar; the rest live in
-// the slide-in drawer reached from the header menu button.
+// the slide-in drawer reached from the header menu button. The bar is a
+// four-column grid, so this list must stay at four entries — a fifth wrapped
+// onto a second row under the pill and showed up as a stray half-hidden gear.
+// Settings is reachable from the drawer and from the header avatar.
 const bottomNavItems: NavItem[] = [
   { id: 'dashboard', label: 'Overview', icon: BarChart3 },
   { id: 'patients', label: 'Patients', icon: Users },
   { id: 'bills', label: 'Bills', icon: ReceiptText },
   { id: 'reports', label: 'Reports', icon: FileText },
-  { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
 /**

@@ -414,8 +414,21 @@ export default function ReportsPage({
     await batch.commit();
   };
 
+  /**
+   * One report write at a time, from this screen.
+   *
+   * `loading` only reaches the buttons after React re-renders, so a second tap
+   * in the same frame started a second batch while the first was still open. The
+   * store refuses a second BEGIN ("Already in transaction") and the rollback the
+   * failed batch issued undid the batch that was actually working — the operator
+   * saw "Could not issue the report" and, on the retry, no report at all.
+   */
+  const reportWriteInFlight = useRef(false);
+
   const handleCreateReport = async (e: React.FormEvent, status: ReportStatus = 'final') => {
     e.preventDefault();
+    if (reportWriteInFlight.current) return;
+    reportWriteInFlight.current = true;
     setLoading(true);
     setModalError(null);
     try {
@@ -479,6 +492,7 @@ export default function ReportsPage({
       console.error(err);
       setModalError(err instanceof Error ? err.message : String(err));
     } finally {
+      reportWriteInFlight.current = false;
       setLoading(false);
     }
   };
@@ -492,6 +506,8 @@ export default function ReportsPage({
    */
   const handleSaveResults = async (reasonOverride?: string, issue = false) => {
     if (!selectedReport) return;
+    if (reportWriteInFlight.current) return;
+    reportWriteInFlight.current = true;
     setSavingResults(true);
     setDetailError(null);
     const target = selectedReport;
@@ -537,6 +553,7 @@ export default function ReportsPage({
       handleFirestoreError(err, OperationType.UPDATE, 'reports');
       toast.error('Saving failed — the report was left unchanged.');
     } finally {
+      reportWriteInFlight.current = false;
       setSavingResults(false);
     }
   };
