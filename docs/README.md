@@ -8,12 +8,6 @@ Welcome to the internal and external documentation for **PathoMitra**. The docum
 docs/
 ├── design/
 │   └── design.md                            # UI design system tokens, typography, and palettes
-├── audits/
-│   ├── catalogue-audit-2026-10.md           # Pathology test catalogue & reference range audits
-│   ├── feature-audit-2026-10.md             # Functional capability and quality audit
-│   ├── store-compliance-audit-2026-10.md    # Multi-store compliance review
-│   ├── play-audit-2026-10-16.md             # Google Play Store compliance audit (round 1)
-│   └── play-audit-2026-10-17.md             # Google Play Store compliance audit (round 2)
 └── store/
     ├── play/
     │   ├── play-listing.md                  # Google Play listing descriptions and copy
