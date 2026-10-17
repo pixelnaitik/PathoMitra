@@ -54,7 +54,16 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     if (fallback) return fallback(error, this.reset);
 
     return (
-      <div className="flex min-h-[60vh] items-center justify-center p-6">
+      // role="alert" + aria-live: this panel replaces the screen *after* the user
+      // did something, so a screen reader that has already read the page will not
+      // re-read it. Without the live region, a TalkBack user sees nothing happen at
+      // all when a route throws — the worst possible failure for a console that
+      // also needs to be told when data it trusts has not been lost.
+      <div
+        role="alert"
+        aria-live="assertive"
+        className="flex min-h-[60vh] items-center justify-center p-6"
+      >
         <div className="w-full max-w-md rounded-4xl border border-[var(--elevated-border)] bg-surface-container-lowest p-8 text-center shadow-float">
           <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-3xl bg-accent/10 text-accent">
             <AlertTriangle className="h-8 w-8" aria-hidden="true" />

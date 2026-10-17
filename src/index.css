@@ -96,7 +96,13 @@
   --chart-1: #0a6cbe;
   --chart-2: #0e8c7f;
   --chart-3: #7c4dff;
-  --chart-4: #e8930c;
+  /* Amber. The previous #e8930c measured 2.44:1 on white and 2.24:1 on
+     --surface-container — under WCAG 1.4.11's 3:1 floor for graphical objects,
+     so an amber bar or donut segment in Analytics was illegible on the light
+     theme (and the KPI tint in the hero mock is text). #b8730a keeps the hue and
+     clears 3:1 on every light AND dark surface (worst case 3.43:1); dark mode
+     overrides it with #ffb340 below, which needed no change. */
+  --chart-4: #b8730a;
   --chart-5: #d64550;
   --chart-6: #3fa45b;
 
@@ -936,7 +942,19 @@
 /* In-app appearance prefs (Settings → Theme Settings). The attributes are set
    on <html> by lib/theme.ts applyAppearance() and by the index.html bootstrap. */
 
-/* Text scale — rem-based type utilities follow the root font size. */
+/* Text scale — rem-based type utilities follow the root font size.
+
+   ⚠ Anything written as an arbitrary pixel value (`text-[11px]`) is immune to
+   this control: it stays 11px whether the lab picked Small or Large, so the
+   Settings switch silently does nothing on the screens that use it. A lab that
+   turns the text size up because someone cannot read the results grid has to be
+   able to trust it.
+
+   Rule for new code: use a Tailwind step (`text-xs` and up). Where a step really
+   is too big for a dense chip, write the rem equivalent of the size you want —
+   the floor is `text-[0.6875rem]` (11px at this root size, and it scales) — never
+   a px literal below 12px. The 9px and 10px literals that used to sit in
+   CommandSearch and DoctorDetailSheet are what set the floor. */
 [data-text-size='sm'] {
   font-size: 15px;
 }

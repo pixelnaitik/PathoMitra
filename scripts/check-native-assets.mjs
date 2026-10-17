@@ -114,7 +114,17 @@ if (checkSynced && fs.existsSync(androidAssets)) {
  */
 const RESERVED_VALUE =
   /(?:https?:\/\/[^"'\s]*|[A-Za-z0-9._%+-]+@)[A-Za-z0-9.-]*\.(?:test|invalid|example|localhost|local)\b/g;
-const KNOWN_FALLBACK = /set-VITE_[A-Z_]+@example\.invalid/;
+/*
+ * `g` is not decoration. The two in-code fallbacks in src/lib/privacy-policy.ts
+ * (`set-VITE_SUPPORT_EMAIL@example.invalid` and `set-VITE_PRIVACY_URL@example.invalid`)
+ * are compiled into the *same* minified chunk, and without `g` only the first was
+ * replaced — so the second was then reported as a placeholder URL baked into the
+ * bundle, and `npm run build:android` failed on the release path forever. That
+ * never surfaced because every build up to 2.7.3 went through the test path, which
+ * sets PATHOMITRA_ALLOW_PLACEHOLDER_ASSETS=1 and only warns. A guard that cannot
+ * pass is indistinguishable from a guard that was never run.
+ */
+const KNOWN_FALLBACK = /set-VITE_[A-Z_]+@example\.invalid/g;
 
 function findReservedValues(dir) {
   if (!fs.existsSync(dir)) return [];
@@ -143,6 +153,58 @@ for (const dir of bundleDirs) {
     // dist/ and dist/assets are both scanned; dedupe so a file is not reported twice.
     if (!placeholderFindings.includes(finding)) placeholderFindings.push(finding);
   }
+}
+
+/**
+ * Marketing copy that was removed from the source but can survive in a shipped
+ * binary.
+ *
+ * This exists because `verify:android` used to run `build:android` + Gradle
+ * **without `cap sync` in between**: the AAB was assembled from whatever
+ * `android/app/src/main/assets/public/` happened to hold from the previous sync,
+ * so a build could pass every check and still ship a retired claim — during this
+ * very audit round the APK contained `Clinical Grade Precision` after the source
+ * had stopped containing it. The phrase list is the observable symptom; the
+ * pipeline fix is that `verify:android` now runs `sync:android`.
+ *
+ * Kept deliberately small and paired with `docs/play-listing.md`'s banned table:
+ * add a phrase here when a claim is retracted from the product, not before.
+ */
+const BANNED_PHRASES = [
+  'Clinical Grade Precision',
+  'PathoMitra Diagnostic Systems',
+  'Clinical Digital Pathology Laboratory Portal',
+  'will sync automatically',
+];
+
+function findBannedPhrases(dir) {
+  if (!fs.existsSync(dir)) return [];
+  const findings = [];
+  for (const name of fs.readdirSync(dir)) {
+    if (/\.(js|html|css|json)$/.test(name) === false) continue;
+    const file = path.join(dir, name);
+    if (!fs.statSync(file).isFile()) continue;
+    const text = fs.readFileSync(file, 'utf8');
+    for (const phrase of BANNED_PHRASES) {
+      if (text.includes(phrase)) findings.push(`${name}: "${phrase}"`);
+    }
+  }
+  return findings;
+}
+
+const phraseFindings = [];
+for (const dir of bundleDirs) {
+  for (const finding of findBannedPhrases(dir)) {
+    if (!phraseFindings.includes(finding)) phraseFindings.push(finding);
+  }
+}
+if (phraseFindings.length > 0) {
+  fail([
+    'the bundle carries a retracted marketing claim — the copy is gone from src/ but not from the artifact:',
+    ...phraseFindings.map(finding => `    - ${finding}`),
+    '    Almost certainly a stale `assets/public/`: re-run  npm run sync:android  (which is why',
+    '    verify:android now chains sync:android instead of build:android).',
+  ]);
 }
 if (placeholderFindings.length > 0) {
   // Same hatch as `check-release-config.mjs --allow-placeholder`, and the reason

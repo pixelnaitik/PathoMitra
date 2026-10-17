@@ -13,6 +13,7 @@ import {
   FileText,
   Image as ImageIcon,
   LayoutTemplate,
+  Printer,
   Table2,
   Trash2,
   Type,
@@ -47,10 +48,26 @@ const TEMPLATES: { value: string; label: string; description: string }[] = [
 ];
 
 const MARGIN_PRESETS = [
+  // Plain A4 is what most labs actually print on, and the old 50 mm top band was
+  // spending 22 % of the sheet height on artwork that is not there. The pad
+  // geometry is still one tap away and is never applied without the lab asking.
+  { label: 'Plain paper', top: 14, bottom: 12, left: 12, right: 12 },
   { label: 'Standard pad', top: 50, bottom: 20, left: 8, right: 15 },
   { label: 'Minimal', top: 15, bottom: 15, left: 12, right: 12 },
   { label: 'Generous', top: 60, bottom: 30, left: 20, right: 20 },
 ];
+
+const SEPARATOR_OPTIONS = [
+  { value: 'hairline', label: 'Lines' },
+  { value: 'zebra', label: 'Bands' },
+  { value: 'grid', label: 'Grid' },
+  { value: 'none', label: 'None' },
+] as const;
+
+const SECTION_ORDER_OPTIONS = [
+  { value: 'ordered', label: 'As ordered' },
+  { value: 'byCategory', label: 'By section' },
+] as const;
 
 /** Compact toggle row (label + purpose + switch) — never hover-dependent. */
 function ToggleRow({
@@ -395,6 +412,87 @@ export function ReportSettingsPanel({
           />
         )}
       </Disclosure>
+
+      {/* ---------- Printing (what goes on the paper, not where) ---------- */}
+      {!share && (
+        <Disclosure
+          title="Printing"
+          icon={<Printer className="h-4 w-4" />}
+          summary={
+            settings.reportFitToOnePage
+              ? `Fit to one page · ${settings.reportRowSeparators} separators`
+              : `Multi-page · ${settings.reportRowSeparators} separators`
+          }
+        >
+          <div className="space-y-5">
+            <ToggleRow
+              label="Fit the report onto one page"
+              description="Tightens row spacing, then the result text (never below 8 pt), then the margins. A big panel like a CBC or a full urine analysis keeps a sheet to itself, so the fit works within that. If it still cannot fit, your own settings are kept."
+              checked={settings.reportFitToOnePage}
+              onChange={v => {
+                onChange({ reportFitToOnePage: v });
+                onCommit({ reportFitToOnePage: v });
+              }}
+            />
+
+            <div className="space-y-2">
+              <p className="text-[13px] font-semibold text-on-surface">Row separators</p>
+              <p className="text-xs text-on-surface-variant">
+                Bands survive a photocopy or a cheap inkjet better than thin lines. None is what a
+                pre-printed pad wants.
+              </p>
+              <SegmentedControl
+                id="row-separators"
+                aria-label="Row separators"
+                size="sm"
+                value={settings.reportRowSeparators}
+                onChange={value => {
+                  const next = value as LabSettings['reportRowSeparators'];
+                  onChange({ reportRowSeparators: next });
+                  onCommit({ reportRowSeparators: next });
+                }}
+                items={SEPARATOR_OPTIONS.map(o => ({ value: o.value, label: o.label }))}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-[13px] font-semibold text-on-surface">Section order</p>
+              <SegmentedControl
+                id="section-order"
+                aria-label="Section order"
+                size="sm"
+                value={settings.reportSectionOrder}
+                onChange={value => {
+                  const next = value as LabSettings['reportSectionOrder'];
+                  onChange({ reportSectionOrder: next });
+                  onCommit({ reportSectionOrder: next });
+                }}
+                items={SECTION_ORDER_OPTIONS.map(o => ({ value: o.value, label: o.label }))}
+              />
+            </div>
+
+            <ToggleRow
+              label="Print the lab address block"
+              description="Name, address and contact under the masthead. Ignored on the Plain pad template, whose artwork already carries them."
+              checked={settings.reportShowLabIdentity}
+              onChange={v => {
+                onChange({ reportShowLabIdentity: v });
+                onCommit({ reportShowLabIdentity: v });
+              }}
+            />
+
+            <ToggleRow
+              label="Print the signature area"
+              description="A rule and the name of the operator who issued the report."
+              checked={settings.reportShowSignatureArea}
+              onChange={v => {
+                onChange({ reportShowSignatureArea: v });
+                onCommit({ reportShowSignatureArea: v });
+              }}
+            />
+          </div>
+        </Disclosure>
+      )}
 
       {/* ---------- Typography (print only — shared PDFs ride on artwork) ---------- */}
       {!share && (

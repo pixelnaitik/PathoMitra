@@ -218,17 +218,23 @@ export function ManageTestsPanel({ customTests, onCustomTestsChange, actor }: Pr
 
   const stats = useMemo(() => {
     let priced = 0;
+    let own = 0;
     let hidden = 0;
     let value = 0;
     for (const test of priceableUnits) {
       const price = resolvePrice(test.name, priceList);
+      const entry = priceList.entries[priceKey(test.name)];
       if (price !== null) {
         priced += 1;
         value += price;
+        // "Own" = the lab wrote this number. Everything else priced is the
+        // catalogue's suggested market rate, and the two must not read the same
+        // on a screen the lab uses to decide what to charge a patient.
+        if (entry) own += 1;
       }
-      if (priceList.entries[priceKey(test.name)]?.active === false) hidden += 1;
+      if (entry?.active === false) hidden += 1;
     }
-    return { total: priceableUnits.length, priced, hidden, value };
+    return { total: priceableUnits.length, priced, own, suggested: priced - own, hidden, value };
   }, [priceList, priceableUnits]);
 
   /* ------------------------------ price edits ------------------------------ */
@@ -347,7 +353,11 @@ export function ManageTestsPanel({ customTests, onCustomTestsChange, actor }: Pr
         <h3 className="mb-1 text-xl font-bold text-primary">Manage Tests</h3>
         <p className="text-sm text-on-surface-variant">
           Every test and package the lab can bill for, with its price and whether it may still be
-          ordered. {stats.priced} of {stats.total} priced, {stats.hidden} hidden from new orders.
+          ordered. {stats.priced} of {stats.total} priced — {stats.own} at your own rate,
+          {stats.suggested > 0
+            ? ` ${stats.suggested} still on the app's suggested market rate.`
+            : ' none left on the suggested rate.'}
+          {stats.hidden > 0 ? ` ${stats.hidden} hidden from new orders.` : ''}
         </p>
         {absorbedCount > 0 && (
           <p className="mt-1 text-xs text-on-surface-variant">
@@ -488,6 +498,7 @@ export function ManageTestsPanel({ customTests, onCustomTestsChange, actor }: Pr
               key={`${test.id}-${test.name}`}
               test={test}
               price={resolvePrice(test.name, priceList)}
+              suggested={!priceList.entries[priceKey(test.name)]}
               active={priceList.entries[priceKey(test.name)]?.active !== false}
               isCustom={customTests.some(c => c.name === test.name)}
               historyCount={priceList.entries[priceKey(test.name)]?.history?.length ?? 0}
@@ -588,6 +599,7 @@ export function ManageTestsPanel({ customTests, onCustomTestsChange, actor }: Pr
 function TestRow({
   test,
   price,
+  suggested,
   active,
   isCustom,
   historyCount,
@@ -600,6 +612,8 @@ function TestRow({
 }: {
   test: PathologyTest;
   price: number | null;
+  /** True when no price-list entry backs `price` — it is the catalogue's suggestion. */
+  suggested: boolean;
   active: boolean;
   isCustom: boolean;
   historyCount: number;
@@ -635,6 +649,7 @@ function TestRow({
           {isCustom && <StatusPill tone="neutral">lab</StatusPill>}
           {!active && <StatusPill tone="warning">hidden</StatusPill>}
           {price === null && <StatusPill tone="error">not priced</StatusPill>}
+          {price !== null && suggested && <StatusPill tone="neutral">suggested rate</StatusPill>}
           {historyCount > 0 && (
             <span className="text-[11px] text-on-surface-variant">
               {historyCount} change{historyCount === 1 ? '' : 's'}

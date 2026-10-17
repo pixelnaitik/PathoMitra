@@ -42,7 +42,7 @@ export function Card({
       className={cn(
         'rounded-3xl border border-[var(--elevated-border)] bg-surface-container-lowest shadow-card',
         PADS[pad],
-        interactive && 'card-hover spotlight cursor-pointer',
+        interactive && 'group card-hover spotlight cursor-pointer',
         className,
       )}
       {...rest}

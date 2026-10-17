@@ -1,5 +1,12 @@
 # Feature audit — PathoMitra (Oct 2026 round)
 
+> **Context (2026-10-16).** Rounds 1–3 are cumulative; nothing below has been superseded. §13 is
+> the newest (2.7.2, `dd0bf88`, first round to cover billing). The tree has since advanced: HEAD is
+> still `dd0bf88` (2.7.2), `package.json` is 2.7.3 uncommitted, and two more gated-but-uncommitted
+> rounds are on the tree (doctor-incentive visibility + custom-range statement; Desktop UI round).
+> Two dated store audits from 2026-10-16 live in `docs/store-compliance-audit-2026-10.md` and
+> `docs/play-audit-2026-10-16.md`; `PROJECT_MEMORY.md` §Store & Play audits summarises them.
+
 Three rounds of a per-feature, code-grounded audit (read-only findings, then fixes).
 Severity: **P0** data-integrity / compliance · **P1** user-visible correctness ·
 **P2** polish / maintainability. Every finding cites the file it was read from.

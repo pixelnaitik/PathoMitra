@@ -16,8 +16,15 @@
  * msiwrapped — the last attempt died with "Unknown target: msix", see
  * .tmp/electron-builder.log), and MSIX is the wrong container for this app
  * because it redirects %APPDATA%\PathoMitra into the package LocalCache, which
- * Windows deletes on uninstall/repair. MSIX comes back only as a Microsoft
- * Store artifact, on electron-builder 27.x — see PROJECT_MEMORY.
+ * Windows deletes on uninstall/repair.
+ *
+ * Corrected 2026-10-16 by the Store review (docs/ms-store-review-2026-10-16.md):
+ * "the Store needs MSIX" was never quite true either. The Store ingests
+ * .appx/.appxbundle/.appxupload as well as .msix*, and 26.15.3 does implement
+ * the `appx` target below — `makeappx.exe` is installed on this machine. So the
+ * Store route is a choice (submit the .msi under Policy 10.2.9, or build .appx),
+ * not a toolchain blockage. The LocalCache argument against the *container* still
+ * stands, and it is why the MSI route is the recommended one.
  *
  * `buildResources` is NOT the default `build/` because the root .gitignore
  * pattern `build/` matches at any depth — default would make the tile
@@ -32,7 +39,110 @@ export default {
     buildResources: 'desktop-resources',
   },
   // Only the built artifacts go into the app payload; src/ stays out.
-  files: ['dist/**', 'dist-electron/**'],
+  //
+  // The ignore list is not cosmetic. The 2.7.2 package measured 277 MB of asar
+  // payload against a 7.75 MB application, because electron-builder also packs the
+  // whole production dependency tree — and this package.json is shared by three
+  // platforms, so the Windows build was shipping the Android stack: the Capacitor
+  // plugins, @capacitor-community/sqlite → jeep-sqlite → @stencil/core (a compiler
+  // toolchain) + sql.js (including asm.js debug builds) + a rollup native binary,
+  // and pdfjs-dist's optional Node canvas (26 MB skia + 10 MB ICU data). None of
+  // it is reachable from the desktop shell, which uses better-sqlite3-multiple-
+  // ciphers and loads the renderer bundle over pathomitra://. Source maps, docs,
+  // and the C/C++ build inputs of other packages were riding along too.
+  //
+  // That costs download time (Store Policies 10.4.4), widens the antivirus
+  // heuristic surface (10.2.3), and — the part that actually blocked certification
+  // — puts unsigned foreign binaries in front of a reviewer. `node
+  // scripts/check-desktop-package.mjs` is what proves this list worked; the globs
+  // themselves are not evidence.
+  // What the desktop shell can actually load at runtime is three things: the
+  // Electron API, `better-sqlite3-multiple-ciphers` and `@napi-rs/keyring`. That
+  // is not a judgement — it is what `dist-electron/main.js` resolves, measured by
+  // walking every `from`/`require()`/`import()` specifier in the built bundle
+  // (2026-10-17, 2.7.7): the only bare specifiers are `electron` and `node:*`,
+  // with those two names reached through `createRequire`. Every other production
+  // dependency is RENDERER code that Vite already bundled into `/dist` — react,
+  // recharts, framer-motion, jspdf, pdfjs-dist, zod — so packing them a second
+  // time in `node_modules/` is a copy no process can ever open.
+  //
+  // The 2.7.7 build with only the Android-stack ignores above still measured a
+  // 74.7 MB asar / 11 809 files / 100 packages for a 7.75 MB application, and
+  // 12.42 MB of that was `better-sqlite3-multiple-ciphers/deps/sqlite3.c` — the
+  // C amalgamation, an input to a compile that already happened. The list below
+  // is the renderer-only half of the dependency tree, by name. It is written as
+  // named exclusions rather than `!node_modules/**` on purpose: a blanket exclude
+  // plus a re-include depends on pattern-order semantics that have not been
+  // proven here, and if it silently dropped `bindings`, the app would fail to
+  // open its database on the lab's machine instead of failing this build.
+  //
+  // Adding a dependency therefore needs no change here (it is bundled into /dist
+  // by Vite); adding a NATIVE module does — it has to appear in `asarUnpack` too.
+  // `scripts/check-desktop-package.mjs` is what proves any of it; the asar header
+  // walk plus booting `win-unpacked/PathoMitra.exe` is the accepted evidence.
+  files: [
+    'dist/**',
+    'dist-electron/**',
+    '!node_modules/@capacitor/**',
+    '!node_modules/@capacitor-community/**',
+    '!node_modules/@capgo/**',
+    '!node_modules/@aparajita/**',
+    '!node_modules/jeep-sqlite/**',
+    '!node_modules/sql.js/**',
+    '!node_modules/@stencil/**',
+    '!node_modules/rollup/**',
+    '!node_modules/@rollup/**',
+    '!node_modules/@napi-rs/canvas/**',
+    '!node_modules/@napi-rs/canvas-*/*',
+    '!node_modules/react/**',
+    '!node_modules/react-dom/**',
+    '!node_modules/react-router/**',
+    '!node_modules/react-router-dom/**',
+    '!node_modules/scheduler/**',
+    '!node_modules/recharts/**',
+    '!node_modules/victory-vendor/**',
+    '!node_modules/d3-*/**',
+    '!node_modules/decimal.js-light/**',
+    '!node_modules/framer-motion/**',
+    '!node_modules/motion/**',
+    '!node_modules/motion-dom/**',
+    '!node_modules/motion-utils/**',
+    '!node_modules/lucide-react/**',
+    '!node_modules/zod/**',
+    '!node_modules/@reduxjs/**',
+    '!node_modules/redux/**',
+    '!node_modules/react-redux/**',
+    '!node_modules/reselect/**',
+    '!node_modules/immer/**',
+    '!node_modules/pdfjs-dist/**',
+    '!node_modules/jspdf/**',
+    '!node_modules/jspdf-autotable/**',
+    '!node_modules/html2canvas/**',
+    '!node_modules/canvg/**',
+    '!node_modules/svg-pathdata/**',
+    '!node_modules/stackblur-canvas/**',
+    '!node_modules/dompurify/**',
+    '!node_modules/fast-png/**',
+    '!node_modules/pako/**',
+    '!node_modules/jszip/**',
+    '!node_modules/fflate/**',
+    '!node_modules/core-js/**',
+    '!node_modules/@babel/**',
+    '!node_modules/localforage/**',
+    '!node_modules/tailwind-merge/**',
+    '!node_modules/es-toolkit/**',
+    '!node_modules/utrie/**',
+    '!node_modules/css-line-break/**',
+    '!node_modules/text-segmentation/**',
+    '!node_modules/readable-stream/**',
+    '!node_modules/better-sqlite3-multiple-ciphers/deps/**',
+    '!**/*.map',
+    '!**/*.md',
+    '!**/prebuilds/darwin-*.node',
+    '!**/prebuilds/linux-*.node',
+    '!**/prebuilds/linuxmusl-*.node',
+    '!**/prebuilds/win32-arm64.node',
+  ],
   // Native modules load from unpacked node_modules — asar cannot host .node files.
   asarUnpack: [
     'node_modules/better-sqlite3-multiple-ciphers/**',
@@ -43,6 +153,27 @@ export default {
       .split(',')
       .filter(Boolean)
       .map(name => ({ target: name.trim(), arch: ['x64'] })),
+    // Microsoft Store Policies 10.2.9 requires the installer binary *and every
+    // Portable Executable file it installs* to be signed by a certificate
+    // chaining to a Microsoft Trusted Root CA participant. The 2.7.2 build
+    // measured 16 of 18 PEs unsigned, because electron-builder signs only the
+    // app executable unless told otherwise — and 26.15.3 has no `signDlls`
+    // option (verified against node_modules/app-builder-lib/out/options/
+    // winOptions.d.ts:64-70); `signExts` is its replacement. Unknown keys are
+    // silently ignored at this version, so this must be the real one.
+    signExts: ['.dll', '.node'],
+    // The certificate itself comes from the environment, never from this file:
+    //   WIN_CSC_LINK / PM_WIN_CSC_LINK          → path to the .pfx, or the
+    //                                             string "<your-windows-store-cert>"
+    //   WIN_CSC_KEY_PASSWORD / CSC_KEY_PASSWORD → its password
+    // Azure Trusted Signing is an alternative: set `azureSignOptions` here instead
+    // (the two cannot coexist). With no certificate configured the build still
+    // succeeds and ships unsigned, which is exactly why the artifact gate — not
+    // this config — is what says whether a build may be submitted.
+    signtoolOptions: {
+      signingHashAlgorithms: ['sha256'],
+      rfc3161TimeStampServer: 'http://timestamp.acs.microsoft.com',
+    },
   },
   msi: {
     // Double-click → progress → installed. The wizard only appears if this is

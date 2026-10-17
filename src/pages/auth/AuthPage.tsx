@@ -59,13 +59,25 @@ type KeypadMode = 'digits' | 'letters';
  */
 const BACKDROP_URL = '/auth-lab-bg.jpg';
 
-/** The three reassurance rows shown beside the form on wide (desktop / web) screens. */
+/**
+ * The three reassurance rows shown beside the form on wide (desktop / web) screens.
+ *
+ * Store Policies 10.1.1 / 10.5.1: these rows are the first thing a reviewer and a
+ * new operator reads, so each one has to be a claim the code supports. The first
+ * body used to end with an unqualified certification claim ("... and compliant")
+ * that privacy-policy.ts §5 explicitly disclaims — the app is not certified
+ * HIPAA-compliant, NABL-accredited, ISO-certified, CE-marked or SOC 2 audited.
+ * The encryption and the locality are the true guarantees, so those are the words
+ * used. This is a block comment on purpose: marketing-claims.test.ts strips
+ * `/* … *\/` blocks but not line comments, so a `//` note quoting a banned phrase
+ * would fail the build it is trying to explain.
+ */
 const FEATURES = [
   {
     icon: ShieldCheck,
     tint: 'bg-secondary/12 text-secondary',
     title: 'Patient data protection',
-    body: 'Keep sensitive information safe and compliant.',
+    body: 'Encrypted at rest, on the device that runs your lab.',
   },
   {
     icon: Lock,
@@ -151,7 +163,13 @@ function FeaturePanel() {
       <h1 className="text-[34px] font-extrabold leading-[1.05] tracking-[-0.03em] text-on-surface sm:text-[40px] lg:text-[44px] xl:text-[52px]">
         Your lab.
         <br />
-        <span className="text-secondary">Securely connected.</span>
+        {/* "Connected" was the old second line. The product has no connection to
+            make: the Android build ships without the INTERNET permission and
+            electron/main.ts cancels every remote-scheme request at runtime, while
+            privacy-policy.ts §4 promises there is no pathway for data to leave the
+            device. A headline that implies sync is the exact contradiction a Store
+            reviewer reads first, so the honest pair is stated instead. */}
+        <span className="text-secondary">Offline and encrypted.</span>
       </h1>
       <p className="mt-5 max-w-md text-[15px] font-medium leading-relaxed text-on-surface-variant">
         Protect patient records, ensure data security and keep your lab workflows running smoothly
@@ -229,7 +247,7 @@ function Shell({ children }: { children: React.ReactNode }) {
             "why so much space in between"). The max-w container gives both
             sides equal breathing room and keeps the pair symmetric. */}
         <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col items-stretch gap-2 py-6 md:flex-row md:items-center md:gap-10 md:py-0 lg:gap-14">
-          {/* The marketing panel — "PATHOMITRA / Your lab. Securely connected."
+          {/* The marketing panel — "PATHOMITRA / Your lab. Offline and encrypted."
               plus the three feature rows — is a website/PC-app affordance only
               (owner decision 2026-10-13): on the phone it just pushed the
               unlock card down, so it is dropped on the native shell. The

@@ -73,8 +73,21 @@ class FakeConnection {
     this.pending = new Map();
   }
 
-  run(sql: string, params: unknown[] = []): Promise<void> {
+  run(sql: string, params: unknown[] = [], transaction = true): Promise<void> {
     this.calls.push('run');
+    // Model the native plugin (SQLite/Database.java `runSQL`): a `run()` whose
+    // `transaction` argument is `true` (the default) wraps the statement in its
+    // own BEGIN/COMMIT. BEGIN on a connection already inside a transaction is a
+    // hard failure, and the failed run's catch then rolls back — ending the
+    // OUTER transaction and discarding the batch in flight. This is exactly the
+    // "Run: Failed in beginTransaction / Already in transaction" that stopped a
+    // report issuing; the repository must call `run(..., false)` inside a
+    // transaction so this branch never fires on the happy path.
+    if (transaction && this.active) {
+      this.calls.push('begin');
+      this.rollbackTransaction();
+      return Promise.reject(new Error('Failed in beginTransactionAlready in transaction'));
+    }
     const insert = /^INSERT INTO (\w+)/.exec(sql);
     const deleteById = /^DELETE FROM (\w+) WHERE id = \?/.test(sql);
     const deleteAll = /^DELETE FROM (\w+);$/.test(sql);
@@ -209,6 +222,21 @@ describe('SqliteRepository.transaction', () => {
     // A later write is not blocked by the failed transaction.
     await repo.set('reports', 'r2', { status: 'draft' });
     expect(await repo.get('reports', 'r2')).not.toBeNull();
+  });
+
+  it('does not open a nested transaction for the writes inside a batch', async () => {
+    const { repo, conn } = await withRepo();
+    await repo.transaction(async tx => {
+      await tx.set('reports', 'r1', { status: 'final' });
+      await tx.set('reportVersions', 'r1__v1', { snapshot: 'old' });
+      await tx.delete('reports', 'r1');
+    });
+    // Exactly one BEGIN for the whole batch. The plugin's per-run BEGIN must not
+    // fire inside an open transaction — that is the "Already in transaction"
+    // failure that used to abort a report issue and roll back the writes.
+    expect(conn.calls.filter(c => c === 'begin')).toHaveLength(1);
+    expect(conn.calls).not.toContain('rollback');
+    expect((await conn.isTransactionActive()).result).toBe(false);
   });
 
   it('heals a transaction left open by an earlier run instead of failing forever', async () => {

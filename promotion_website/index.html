@@ -36,8 +36,29 @@
     <meta name="twitter:title" content="PathoMitra — Lab Management Simplified" />
     <meta
       name="twitter:description"
-      content="Offline digital pathology laboratory management console. Runs offline on Android · No server to set up · Records stay on the lab's own device."
+      content="Offline digital pathology laboratory management console. Runs offline on Android and Windows · No server to set up · Records stay on the lab's own device · Free & open source (MIT)."
     />
+
+    <!-- Structured data: product identity for search engines and store reviewers.
+         Mirrors the declarations the store forms make: free, no ads, no IAP,
+         Android 9+ (minSdk 28), Windows 10/11 x64, MIT-licensed source. -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "PathoMitra",
+        "url": "https://pathomitra.pages.dev/",
+        "applicationCategory": "BusinessApplication",
+        "applicationSubCategory": "Laboratory information system (pathology)",
+        "operatingSystem": "Android 9+, Windows 10/11 (64-bit), Web browser",
+        "description": "Offline, on-device laboratory console for pathology labs: patient records, reports, referring-doctor details, billing and analytics kept on the lab's own machine. No server, no sync, no data collected.",
+        "license": "https://opensource.org/licenses/MIT",
+        "codeRepository": "https://github.com/pixelnaitik/PathoMitra",
+        "sameAs": ["https://github.com/pixelnaitik/PathoMitra"],
+        "author": { "@type": "Person", "name": "Naitik Raj" },
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "INR" }
+      }
+    </script>
 
     <script>
       // Colour mode follows the visitor's OS preference. This is a browser-local

@@ -46,10 +46,13 @@ anything enforced only in React is **not** a control.
 The real controls, and what a valid vulnerability against them looks like:
 
 1. **Encrypted on-device database.** Clinical data lives in a SQLCipher
-   (AES-256) SQLite database (`@capacitor-community/sqlite`); the key is held
-   by the Android Keystore (hardware KeyMint on the supported API 28+ floor).
-   Any path to plaintext — encryption silently disabled, the key derived from
-   a constant, the database copied out unencrypted — is critical.
+   (AES-256) SQLite database — `@capacitor-community/sqlite` on Android,
+   `better-sqlite3-multiple-ciphers` on Windows. The key is randomly generated on
+   first run and is never derived from the operator passcode. Where the key is
+   *held* differs by platform and the difference is load-bearing — see
+   "Desktop (Windows)" below. Any path to plaintext — encryption silently
+   disabled, the key derived from a constant, the database copied out
+   unencrypted — is critical.
    `capacitor.config.ts` sets `androidIsEncryption: true` explicitly so a
    config change can never silently produce a plaintext database; removing it
    is a security regression.
@@ -79,6 +82,77 @@ The real controls, and what a valid vulnerability against them looks like:
    any permission the documented feature list does not name. A dependency or
    PR that adds a network permission, a remote font, or a phone-home call is a
    security regression by definition — review it as one.
+
+## Desktop (Windows) threat model
+
+The Electron shell (`electron/`) is a different platform, not the APK in a
+window, and its guarantees are not identical. This section is what
+`electron/keyring.ts` refers to; the privacy policy (§3) states the same
+asymmetry to the operator in plain language, because a lab can only manage a
+difference it has been told about.
+
+**Where the database key lives, and what that costs.** `electron/db.ts` mints a
+32-byte key with `crypto.randomBytes` and `electron/keyring.ts` writes it to the
+**Windows Credential Locker**, which DPAPI seals to the current Windows user
+account. Consequences, stated plainly:
+
+- Another user on the same machine cannot read it, and Windows does not roam it.
+- **Any process running as that user can ask Windows to unseal it.** This is the
+  gap that a hardware-backed keystore does not have, and it is the reason the
+  Windows deployment control is the *Windows account*, not the database: a shared
+  or administrator-readable login, or malware running under the operator's
+  profile, reaches the key. Screen lock plus a dedicated operator account is the
+  mitigation; a lab that needs the stronger bound runs the Android build on a
+  device with a hardware-keystore implementation.
+- The key is deliberately unreachable from the renderer: `electron/ipc.ts`
+  enforces `assertRendererAccount` in all three keyring handlers against the
+  allow-list in `src/lib/renderer-credentials.ts`, and `db-key` is on a main-only
+  deny list. A report of "a compromised page can read the SQLCipher key" is a
+  valid critical finding; "a compromised page can read `pathlab_*` records" is
+  already the designed behaviour and is not.
+
+**What else the shell enforces.**
+
+- **Renderer isolation.** `sandbox: true`, `contextIsolation: true`,
+  `nodeIntegration: false` (`electron/main.ts`); the preload exposes only typed
+  `ipcRenderer.invoke` wrappers, never raw `ipcRenderer`.
+- **No network, enforced at runtime.** `session.defaultSession.webRequest.onBeforeRequest`
+  cancels every remote-scheme request, so the offline posture is a runtime
+  property rather than "we simply never call anything". A path that reaches the
+  network from a packaged build is critical.
+- **Deny-by-default permissions.** `setPermissionRequestHandler` /
+  `setPermissionCheckHandler` allow `notifications` only.
+- **Content-Security-Policy on the shell's own responses.** The bundle is served
+  by a custom `pathomitra://` scheme handler, which is why the policy is attached
+  there (and again in `onHeadersReceived`) instead of relying on `public/_headers`
+  — that file only ever reaches the Cloudflare deployment. `'unsafe-inline'` for
+  script/style exists solely for the documented pre-paint splash and theme
+  bootstrap in `index.html`; a report that shows a way to remove it while keeping
+  the app running is welcome.
+- **Path containment in the trusted process.** Every filesystem-facing IPC channel
+  resolves inside an app-owned root, re-checking the **real** path so a symlink or
+  junction cannot escape (`within()` in `electron/ipc.ts`); deletes are narrowed to
+  the two backup folders and refuse directories. A report that reads or deletes
+  anything outside those roots is critical.
+- **Print staging holds PHI.** The spooled HTML is written under
+  `userData\Print\<uuid>.html` at `0o600` and swept per job — never `%TEMP%`. A
+  change that puts it back, or that leaves it behind, is a privacy regression.
+- **No self-update, no remote code.** `publish: null`; nothing fetches and
+  executes. (This is also what makes the app cleanly compliant with Store
+  Policies 10.2.2.)
+
+**Known Windows-specific gaps, so they are not mistaken for discoveries:**
+
+- The MSI **deliberately leaves `%APPDATA%\PathoMitra` in place** on uninstall
+  (a reinstall must not destroy a laboratory's records). The operator has to
+  "Erase all data & delete account" first; see privacy policy §6.
+- `powerMonitor` re-lock on suspend/minimise is not implemented (audit `A-2`);
+  the idle countdown is the control that runs today.
+- Windows Hello / WebAuthn unlock is not implemented — the desktop console opens
+  with the passcode only.
+- The unsigned direct-download build triggers a SmartScreen prompt. Configure
+  `WIN_CSC_LINK` (or `azureSignOptions`) and let `npm run desktop:check-package`
+  prove every shipped PE is signed before distributing.
 
 ## Scope
 

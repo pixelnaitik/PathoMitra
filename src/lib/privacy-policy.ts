@@ -27,8 +27,25 @@
  * imports this module under Node to generate the hosted page, and there
  * `import.meta.env` is undefined — an unguarded access would throw at build time
  * instead of falling back to the placeholder the guard below detects.
+ *
+ * The `process.env` fallback is what makes that Node path actually work. Under
+ * `tsx`, `import.meta.env` is undefined *and* stays undefined even when
+ * VITE_SUPPORT_EMAIL is exported, so until this existed `npm run build:privacy`
+ * refused to generate the hosted policy on every machine — it could only ever
+ * see its own placeholder. Safe in the browser because Vite replaces
+ * `import.meta.env` at build time and `process` does not exist there, hence the
+ * `typeof` guard rather than a bare read. These two names are public by
+ * construction (they are baked into the shipped bundle either way), so reading
+ * them from the environment leaks nothing.
  */
-const buildEnv = ((import.meta as unknown as { env?: ImportMetaEnv }).env ?? {}) as ImportMetaEnv;
+const metaEnv = ((import.meta as unknown as { env?: ImportMetaEnv }).env ?? {}) as ImportMetaEnv;
+const nodeEnv: Record<string, string | undefined> =
+  typeof process !== 'undefined' && process.env ? (process.env as Record<string, string | undefined>) : {};
+
+const buildEnv = {
+  VITE_SUPPORT_EMAIL: metaEnv.VITE_SUPPORT_EMAIL ?? nodeEnv.VITE_SUPPORT_EMAIL,
+  VITE_PRIVACY_URL: metaEnv.VITE_PRIVACY_URL ?? nodeEnv.VITE_PRIVACY_URL,
+} as ImportMetaEnv;
 
 export const PRIVACY_CONTACT_EMAIL =
   (buildEnv.VITE_SUPPORT_EMAIL ?? '').trim() || 'set-VITE_SUPPORT_EMAIL@example.invalid';
@@ -38,7 +55,7 @@ export const PRIVACY_POLICY_URL =
   (buildEnv.VITE_PRIVACY_URL ?? '').trim() || 'set-VITE_PRIVACY_URL@example.invalid';
 
 /** Bump this whenever a section changes, and re-date it at submission. */
-export const PRIVACY_LAST_UPDATED = '11 October 2026';
+export const PRIVACY_LAST_UPDATED = '16 October 2026';
 
 /**
  * Reserved, never-resolvable top-level domains (RFC 2606 / RFC 6761).
@@ -106,12 +123,15 @@ export const PRIVACY_SECTIONS: PrivacySection[] = [
   {
     heading: '3. Where data is stored, and how it is protected',
     body: [
-      'Every clinical record — patients, referring doctors, reports, notes and invoices — is kept on your own device in a local SQLite database encrypted with SQLCipher (AES-256). The encryption key is randomly generated on first run and stored in the Android keystore, which is backed by hardware. Because the key is held by the device rather than derived from your passcode, the database stays encrypted even when the app is locked.',
+      'Every clinical record — patients, referring doctors, reports, notes and invoices — is kept on your own device in a local SQLite database encrypted with SQLCipher (AES-256). The encryption key is randomly generated on first run, never derived from your passcode, and never leaves the device; because it is held by the platform rather than by you, the database stays encrypted while the app is locked. Where the key physically lives depends on which build you are running, and the difference is real enough that it is stated rather than smoothed over.',
+      'On Android, the key is stored in app-private storage protected by the Android Keystore. On devices whose keystore implementation is hardware-backed that means the master key never leaves a secure element; on devices whose implementation is software-only it does not, and no app can tell which it got. The claim this policy used to make — that the key is always hardware-backed — was stronger than the truth, and is corrected here.',
+      'On Windows, the key is written to the Windows Credential Locker and sealed by DPAPI to your Windows user account. No other user on the same machine can read it, and Windows does not roam it. DPAPI is weaker than a hardware keystore in one specific way a lab should know: any process running as your user can ask Windows to unseal it. On a shared or compromised PC the control that protects the records is the Windows account itself — screen lock plus a dedicated operator account, not the database.',
+      'In a web browser, records are kept in the browser\u2019s own localStorage, which this app does not encrypt at all. The browser build is a convenience for trying the console, not a place to keep patient data, and the app shows a standing warning whenever it detects it is running that way.',
       'Your lab settings, any custom tests you add, and which alerts you have already read are held in the app\u2019s own private storage area rather than in that encrypted database. They are still unreachable by any other app on an un-rooted device, and they hold no patient results — but they are not AES-256 encrypted, and this policy says so rather than implying that every byte in the app sits inside SQLCipher.',
-      'Your unlock credential is stored as a PBKDF2-SHA256 hash with a random per-account salt — never as plaintext. Biometric or screen-lock unlock is performed by the Android operating system; no biometric sample is read by, or transmitted to, this app.',
+      'Your unlock credential is stored as a PBKDF2-SHA256 hash with a random per-account salt — never as plaintext. On Android, biometric or device-credential unlock is performed by the operating system itself; no biometric sample is read by, or transmitted to, this app. On Windows and in a browser, biometric unlock is not available in this build (Windows Hello support is still owed) — the console unlocks with the passcode you set, and nothing else.',
       'The passcode and biometric unlock gate access to the app\u2019s interface. After five consecutive failed attempts the app enforces a rising lockout delay, and it re-locks automatically after a period of inactivity you can set yourself — the same countdown also runs while the app is in the background, so a console left open on the bench is still covered.',
       'The following deliberately leave the encrypted database, and only when you ask for them: exported report PDFs, CSVs and diagnostics logs, which the app writes to its own private storage by default; and any file you hand to another app through the Android share sheet, which is then governed by that app\u2019s policy. If you turn on Settings \u2192 Data \u2192 "Save exports to Documents", those exported files become readable by other apps and file managers on the device.',
-      'Alerts are delivered as system banners and nothing else. A banner is posted by your own device or browser, on the same device the record is already open on, and only if you switch banners on in Settings \u2192 Notifications. The app previously offered Email, SMS and WhatsApp buttons that built a mailto:, sms: or wa.me message containing the alert text; those were removed, so no alert text is ever handed to a third-party messaging or mail app by this feature.',
+      'Alerts are delivered as system banners and nothing else. A banner is posted by your own device or browser, on the same device the record is already open on, and only if you switch banners on in Settings \u2192 Notifications. The banner text never names a patient: it carries the registration number (the same YYMM-series number printed on the slip and used to find the record), because a notification is readable on a locked screen and to whoever is standing next to the device. The banner channel is created with Android\u2019s private lock-screen visibility, so its content is revealed only after the device is unlocked. The in-app alert list does show names, because opening the app means unlocking it. The app previously offered Email, SMS and WhatsApp buttons that built a mailto:, sms: or wa.me message containing the alert text; those were removed, so no alert text is ever handed to a third-party messaging or mail app by this feature.',
       'Android auto-backup is disabled and device-to-device transfer is excluded for every storage domain, so the clinical database is not copied to Google One or to a replacement phone by a setup wizard.',
     ],
   },
@@ -138,7 +158,7 @@ export const PRIVACY_SECTIONS: PrivacySection[] = [
       'The app sets no retention period and never deletes records on its own: your data lives on the device until you act. There is no server-side copy that could outlive it.',
       'You can export the data you entered at any time — per-report PDFs, list CSVs, and full database snapshots from Settings → Data → Backup — and restore a snapshot onto a device. A snapshot is sealed with a passphrase you choose (PBKDF2-SHA256 + AES-256-GCM) before it is written, so a copy that leaves this device does not carry readable patient records. There is no recovery: the passphrase is never stored on the device and cannot be reset, and a snapshot you have lost the passphrase for cannot be opened. Backing up unencrypted is still available as an explicit, per-backup choice — the app does not quietly make that decision for you.',
       'To remove everything permanently, use Settings \u2192 Security \u2192 "Erase all data & delete account". It wipes the local clinical database and the account in one action, and cannot be undone. Individual patients, reports and invoices can also be deleted separately.',
-      'Uninstalling the app removes the local database. Because Android backup is disabled, no copy survives in the cloud.',
+      'Uninstalling is not the same as deleting, and the two platforms differ. On Android, uninstalling removes the app\u2019s storage, and because Android backup is disabled no copy survives in the cloud. On Windows the installer deliberately leaves the app data folder (%APPDATA%\\PathoMitra) exactly where it is — encrypted database, exported reports and backup snapshots all stay on the machine — because a lab that updates or reinstalls a version must not lose years of records to a routine maintenance step. That is a safety choice with a consequence you have to act on: before uninstalling PathoMitra from a Windows machine that has held patient records, use "Erase all data & delete account" first, then delete %APPDATA%\\PathoMitra yourself.',
     ],
   },
   {

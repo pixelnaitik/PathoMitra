@@ -1,10 +1,13 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   buildNotifications,
   formatAge,
   formatAmount,
   hoursBetween,
   resolvePrefs,
+  safeBannerFor,
   summarizeNotifications,
   DEFAULT_NOTIFICATION_PREFS,
   type NotificationItem,
@@ -427,6 +430,208 @@ describe('buildNotifications — preferences and ordering', () => {
 
   it('produces nothing for an empty lab', () => {
     expect(buildNotifications({ patients: [], reports: [], invoices: [], now: NOW })).toEqual([]);
+  });
+});
+
+/*
+ * The lock-screen rule, pinned.
+ *
+ * `title` is for the in-app centre, where the operator has already unlocked the
+ * device; `bannerTitle` is what goes to the Android notification shade, which is
+ * legible on a locked screen, in a pocket, and to anyone standing at the bench.
+ * `FLAG_SECURE` (Settings -> screenshot protection) does not cover the shade, so
+ * the only thing keeping a patient's name off a locked phone is this field. A
+ * future category that forgets it is a PHI disclosure, not a copy nit — hence an
+ * entire describe block rather than a comment.
+ */
+describe('banner text is safe for a locked screen', () => {
+  const PATIENT_NAME = 'Asha Rao';
+
+  const everyCategory = buildNotifications({
+    // p1 has no report at all, so it produces the `overdue` alert; the draft and
+    // the amendment are pinned to other patients so all four categories appear at
+    // once. Every one of them is about the patient named `PATIENT_NAME`.
+    patients: [patient()],
+    reports: [
+      report({
+        id: 'r1',
+        patientId: 'p2',
+        patientName: PATIENT_NAME,
+        status: 'draft',
+        updatedAt: ago(50),
+      }),
+      report({
+        id: 'r2',
+        patientId: 'p3',
+        patientName: PATIENT_NAME,
+        version: 2,
+        updatedAt: ago(1),
+      }),
+    ],
+    invoices: [invoice()],
+    now: NOW,
+  });
+
+  it('has one for every alert the engine can produce', () => {
+    expect(everyCategory.length).toBeGreaterThan(0);
+    for (const item of everyCategory) {
+      expect(item.bannerTitle, item.id).toBeTruthy();
+    }
+  });
+
+  it('carries no patient name in the banner text', () => {
+    for (const item of everyCategory) {
+      expect(item.bannerTitle, `${item.id} bannerTitle`).not.toContain(PATIENT_NAME);
+      expect(item.body, `${item.id} body`).not.toContain(PATIENT_NAME);
+    }
+  });
+
+  it('keeps the name in the in-app title, where it belongs', () => {
+    // The counter-assertion matters: the fix is "do not put the name in the OS
+    // shade", not "never tell the operator who the alert is about". If somebody
+    // strips names from `title` too, the alert list becomes a pile of numbers.
+    const overdue = everyCategory.find(item => item.category === 'overdue');
+    expect(overdue?.title).toContain(PATIENT_NAME);
+    expect(overdue?.bannerTitle).not.toContain(PATIENT_NAME);
+  });
+
+  it('identifies the patient by record number instead', () => {
+    const overdue = everyCategory.find(item => item.category === 'overdue');
+    expect(overdue?.bannerTitle).toContain('p1');
+  });
+
+  it('ships a banner body with every alert, and keeps confidential detail out of it', () => {
+    // Store review PR-07 / Microsoft Store Policies 10.9.3: a notification may not
+    // carry "information a customer would reasonably consider to be confidential".
+    // `body` is written for the unlocked in-app list and legitimately quotes the
+    // operator's amendment reason and the money still owed — which is exactly why
+    // the banner gets its own body instead of inheriting one.
+    expect(everyCategory.length).toBeGreaterThan(0);
+    for (const item of everyCategory) {
+      expect(item.bannerBody, item.id).toBeTruthy();
+      expect(item.bannerBody, `${item.id} bannerBody`).not.toContain(PATIENT_NAME);
+      expect(item.bannerBody, `${item.id} bannerBody`).not.toMatch(/₹/);
+      expect(item.bannerBody, `${item.id} bannerBody`).not.toMatch(/Reason:/);
+    }
+  });
+
+  it('does not let an operator-typed amendment reason reach the shade', () => {
+    // The dangerous case, constructed rather than hoped for: a lab that types the
+    // patient's name into the free-text reason field must still not put it on a
+    // lock screen. `amendReason` is unvalidated input by design.
+    const [amended] = buildNotifications({
+      patients: [patient()],
+      reports: [
+        report({
+          id: 'r9',
+          patientId: 'p4',
+          patientName: PATIENT_NAME,
+          version: 2,
+          updatedAt: ago(2),
+          amendReason: `${PATIENT_NAME} asked us to correct the spelling`,
+        }),
+      ],
+      invoices: [],
+      now: NOW,
+    }).filter(item => item.category === 'amended');
+    expect(amended).toBeDefined();
+    expect(amended.body).toContain(PATIENT_NAME); // the in-app list shows it
+    expect(amended.bannerBody).not.toContain(PATIENT_NAME);
+    expect(amended.bannerTitle).not.toContain(PATIENT_NAME);
+  });
+
+  it('keeps the outstanding amount off the banner but not off the alert list', () => {
+    const due = buildNotifications({
+      patients: [patient()],
+      reports: [],
+      invoices: [invoice()],
+      now: NOW,
+    }).find(item => item.category === 'due');
+    // Asserted, not guarded: an `if` here would pass silently the day the `due`
+    // category stops firing for this fixture, and the leak it is watching for
+    // would come back unnoticed.
+    expect(due, 'the fixture must still produce a `due` alert').toBeDefined();
+    expect(due?.title).toMatch(/₹/);
+    expect(due?.bannerTitle).not.toMatch(/₹/);
+    expect(due?.bannerBody).not.toMatch(/₹/);
+  });
+});
+
+/*
+ * The Windows / browser half of the same rule.
+ *
+ * Android can be told to hide banner text until the device is unlocked
+ * (`visibility: 0` on the channel). Chromium cannot — `new Notification()` and
+ * `showNotification()` post straight to a toast that Windows will happily render
+ * on the lock screen, so the only control left is what the app puts in the text.
+ * `bannerTitle` carries the registration number, which is pseudonymous but still
+ * names a specific record to whoever is standing at the console; on a surface with
+ * no privacy control that is the part that has to go.
+ */
+describe('safeBannerFor — a banner on a surface with no lock-screen control', () => {
+  const PATIENT = 'Asha Rao';
+
+  const everyCategory = buildNotifications({
+    patients: [patient()],
+    reports: [
+      report({ id: 'r1', patientId: 'p2', patientName: PATIENT, status: 'draft', updatedAt: ago(50) }),
+      report({ id: 'r2', patientId: 'p3', patientName: PATIENT, version: 2, updatedAt: ago(1) }),
+    ],
+    invoices: [invoice()],
+    now: NOW,
+  });
+
+  it('covers every category the engine can emit', () => {
+    const categories = new Set(everyCategory.map(item => item.category));
+    expect(categories.size).toBe(4);
+    for (const item of everyCategory) {
+      expect(safeBannerFor(item).title, item.id).toBeTruthy();
+    }
+  });
+
+  it('names no record — no id, no invoice number, no digit run', () => {
+    for (const item of everyCategory) {
+      const { title, body } = safeBannerFor(item);
+      expect(title, `${item.id} generic title`).not.toMatch(/\d/);
+      // Case-sensitive on purpose: with /i this matched the word "Invoice" itself
+      // (IN + "voice"), which is the opposite of a finding. These are the shapes a
+      // record number actually takes — patient id, report id, `IN2610-0042`.
+      expect(title, `${item.id} generic title`).not.toMatch(/\b(p\d+|r\d+|IN\d{4}-\d{4})\b/);
+      expect(title, `${item.id} generic title`).not.toContain(PATIENT);
+      // The body is reused unchanged, so re-assert the guarantee here rather than
+      // trusting the bannerBody test above to still exist.
+      expect(body, `${item.id} generic body`).not.toContain(PATIENT);
+      expect(body, `${item.id} generic body`).not.toMatch(/₹|Reason:/);
+    }
+  });
+
+  it('still distinguishes the four alert kinds from each other', () => {
+    // Stripping identifiers must not collapse every alert into "you have a
+    // notification", or the desktop banner stops being actionable at all.
+    const titles = new Set(everyCategory.map(item => safeBannerFor(item).title));
+    expect(titles.size).toBe(4);
+  });
+
+  it('differs from the Android banner, which keeps the record number', () => {
+    const overdue = everyCategory.find(item => item.category === 'overdue');
+    expect(overdue?.bannerTitle).toContain('p1');
+    expect(safeBannerFor(overdue!).title).not.toContain('p1');
+  });
+
+  it('is actually what the desktop and web banner path posts', () => {
+    /*
+     * A source-level guard, not a behaviour test, and deliberately so: there is no
+     * hook test harness in this repo, and the failure being prevented is narrow
+     * and structural — somebody routing every backend through `bannerTitle` again,
+     * which silently un-fixes Windows while leaving all 50 engine tests green. The
+     * same technique already polices the registration-sheet copy
+     * (registration-copy.test.ts) and the marketing claims.
+     */
+    const hook = readFileSync(resolve(process.cwd(), 'src/hooks/useNotifications.ts'), 'utf8');
+    expect(hook).toMatch(/safeBannerFor\(item\)/);
+    expect(hook).toMatch(/pickBackend\(\) === 'native'/);
+    // …and the generic pair is what reaches showBanner, not the identifier one.
+    expect(hook).toMatch(/showBanner\(\{\s*key:\s*item\.id,\s*\.\.\.banner\s*\}\)/);
   });
 });
 

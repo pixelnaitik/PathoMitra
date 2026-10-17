@@ -29,14 +29,19 @@ const EXPECTED_PACKAGE = 'com.pathomitra.app';
 
 /**
  * `POST_NOTIFICATIONS` is deliberately NOT forbidden: the notification centre
- * shows local banners, and on API 33+ that needs this permission. Neither are
- * `WAKE_LOCK` / `RECEIVE_BOOT_COMPLETED`, which `@capacitor/local-notifications`
- * contributes for scheduled and surviving-a-reboot alerts. None of them break the
- * offline promise — they are local alarm plumbing — but they are user-facing
- * enough (a runtime consent prompt, a boot receiver, a wake lock) to need a
- * permission declaration in the Play Console, so they are listed here with the
- * plugin that pulls them in rather than left for a `cap sync` to introduce
- * silently.
+ * shows local banners, and on API 33+ that needs this permission. Neither is
+ * `WAKE_LOCK`, which `@capacitor/local-notifications` contributes for the banner
+ * it posts. None of them break the offline promise — they are local alarm
+ * plumbing — but they are user-facing enough (a runtime consent prompt, a wake
+ * lock) to need a permission declaration in the Play Console, so they are listed
+ * here with the plugin that pulls them in rather than left for a `cap sync` to
+ * introduce silently.
+ *
+ * `RECEIVE_BOOT_COMPLETED` used to be on this list. It is not anymore: the app
+ * never schedules a notification for a future moment (`schedule()` is called with
+ * no `at`), so the plugin's restore receiver had nothing to re-arm, and a
+ * boot-time receiver is precisely what Play's "undesirable startup" review looks
+ * for. `AndroidManifest.xml` now removes both the permission and the receiver.
  */
 
 /**
@@ -57,10 +62,8 @@ const ALLOWED_PERMISSIONS = new Set([
   // --- contributed by @capacitor/local-notifications (alert banners) ---
   // Runtime-consent prompt on API 33+ so an overdue-report banner can be shown.
   'android.permission.POST_NOTIFICATIONS',
-  // Keeps a scheduled banner on time while the app is closed.
+  // Keeps a banner on time while the app is closed.
   'android.permission.WAKE_LOCK',
-  // Re-publishes pending banners after a reboot (plugin's BOOT_COMPLETED receiver).
-  'android.permission.RECEIVE_BOOT_COMPLETED',
 ]);
 
 /** Permissions that would break the offline promise or trip Play's scans. */
@@ -92,6 +95,11 @@ const FORBIDDEN_PERMISSIONS = [
   // tools:node="remove", so a re-appearing one is a regression, not a maybe.
   'android.permission.SCHEDULE_EXACT_ALARM',
   'android.permission.USE_EXACT_ALARM',
+  // Stripped in AndroidManifest.xml, receiver component and permission both. A
+  // boot receiver that re-arms nothing is an "undesirable startup" flag, and this
+  // app derives its alerts from the records on every launch instead of from a
+  // queue that would need surviving a reboot.
+  'android.permission.RECEIVE_BOOT_COMPLETED',
   'android.permission.SYSTEM_ALERT_WINDOW',
   'android.permission.REQUEST_INSTALL_PACKAGES',
 ];
@@ -241,6 +249,17 @@ for (const activity of exportedActivities) {
 if (/<category\s+android:name="android\.intent\.category\.BROWSABLE"/.test(xml)) {
   problems.push(
     'a BROWSABLE intent filter means another app can launch this one with a URL — deep-link input is untrusted data.',
+  );
+}
+
+// ---- startup surface -------------------------------------------------------
+// A BOOT_COMPLETED filter is the classic "app starts by itself and won't stop"
+// complaint. The app's manifest removes the plugin's restore receiver; this
+// asserts it actually stayed removed after the merge.
+if (/android\.intent\.action\.(?:LOCKED_)?BOOT_COMPLETED|QUICKBOOT_POWERON/.test(xml)) {
+  problems.push(
+    'a boot-completed intent filter is back in the merged manifest — the app starts itself after a reboot. ' +
+      'AndroidManifest.xml removes LocalNotificationRestoreReceiver with tools:node="remove"; something re-added it.',
   );
 }
 

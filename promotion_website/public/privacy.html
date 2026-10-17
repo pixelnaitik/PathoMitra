@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Privacy Policy — PathoMitra</title>
+    <meta
+      name="description"
+      content="How PathoMitra, an offline pathology laboratory console, handles patient and health information: what it stores, where it is kept, what it never collects, and how to delete everything."
+    />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://pathomitra.pages.dev/privacy" />
+    <style>
+      /* Inlined on purpose: this page has no build step, no CDN and no
+         JavaScript, so a reviewer on any network sees the whole document. */
+      :root { color-scheme: light dark; --ink: #1d1d1f; --soft: #66666b; --line: #d6d6db; --accent: #0a5ea6; }
+      @media (prefers-color-scheme: dark) {
+        :root { --ink: #f2f2f5; --soft: #a7a7b0; --line: #3a3a40; --accent: #58a6ff; }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; padding: 2.5rem 1.25rem 4rem;
+        font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        color: var(--ink); background: #fff;
+      }
+      @media (prefers-color-scheme: dark) { body { background: #101014; } }
+      main { max-width: 46rem; margin: 0 auto; }
+      nav { max-width: 46rem; margin: 0 auto 2rem; font-size: .85rem; }
+      .eyebrow {
+        margin: 0 0 .5rem; font-size: .75rem; font-weight: 700;
+        letter-spacing: .12em; text-transform: uppercase; color: var(--accent);
+      }
+      h1 { margin: 0 0 .5rem; font-size: clamp(1.9rem, 5vw, 2.6rem); letter-spacing: -.02em; }
+      h2 { margin: 2.25rem 0 .5rem; font-size: 1.15rem; }
+      p { margin: 0 0 .85rem; }
+      .updated { margin: 0 0 2rem; font-size: .8rem; color: var(--soft); }
+      hr { border: 0; border-top: 1px solid var(--line); margin: 2.5rem 0 1.5rem; }
+      a { color: var(--accent); }
+      .contact { font-size: .9rem; }
+      @media print { body { padding: 0; } a { color: inherit; text-decoration: none; } }
+    </style>
+  </head>
+  <body>
+    <nav><a href="/">← PathoMitra home</a></nav>
+    <main>
+      <p class="eyebrow">Legal</p>
+      <h1>Privacy Policy</h1>
+      <p class="updated">Last updated 16 October 2026</p>
+
+    <section>
+      <h2>1. Who we are and what this policy covers</h2>
+      <p>PathoMitra (&quot;the app&quot;) is a laboratory information console for professional use by pathology labs and their authorised staff. It is not a consumer health app, it is not offered to patients directly, and it is not a diagnostic device — it stores, formats and prints the data a laboratory enters into it.</p>
+      <p>The app is built to run entirely offline. The Android release does not request the INTERNET permission, so it has no ability to send your data, or your patients’ data, over a network.</p>
+      <p>This policy covers personal and health information processed by the software. It does not cover the laboratory’s own professional obligations, which remain yours.</p>
+    </section>
+    <section>
+      <h2>2. Data the app processes</h2>
+      <p>While you use the app, it stores the records you enter: patient identifiers (name, age, gender, phone, address), referring-doctor details, specimen and test information, pathology findings and report contents, and billing or invoice records.</p>
+      <p>This is personal and health information about your patients. You (the laboratory) are the data controller — under India’s Digital Personal Data Protection Act, 2023 the Data Fiduciary — for that information. The app is a processing tool you operate; the developer neither receives nor can access these records.</p>
+      <p>The app holds one local operator account. It records that operator’s display name and the issue time on each report, so a document can be traced to whoever issued it on this device.</p>
+    </section>
+    <section>
+      <h2>3. Where data is stored, and how it is protected</h2>
+      <p>Every clinical record — patients, referring doctors, reports, notes and invoices — is kept on your own device in a local SQLite database encrypted with SQLCipher (AES-256). The encryption key is randomly generated on first run, never derived from your passcode, and never leaves the device; because it is held by the platform rather than by you, the database stays encrypted while the app is locked. Where the key physically lives depends on which build you are running, and the difference is real enough that it is stated rather than smoothed over.</p>
+      <p>On Android, the key is stored in app-private storage protected by the Android Keystore. On devices whose keystore implementation is hardware-backed that means the master key never leaves a secure element; on devices whose implementation is software-only it does not, and no app can tell which it got.</p>
+      <p>On Windows, the key is written to the Windows Credential Locker and sealed by DPAPI to your Windows user account. No other user on the same machine can read it, and Windows does not roam it. DPAPI is weaker than a hardware keystore in one specific way a lab should know: any process running as your user can ask Windows to unseal it. On a shared or compromised PC the control that protects the records is the Windows account itself — screen lock plus a dedicated operator account, not the database.</p>
+      <p>In a web browser, records are kept in the browser’s own localStorage, which this app does not encrypt at all. The browser build is a convenience for trying the console, not a place to keep patient data, and the app shows a standing warning whenever it detects it is running that way.</p>
+      <p>Your lab settings, any custom tests you add, and which alerts you have already read are held in the app’s own private storage area rather than in that encrypted database. They are still unreachable by any other app on an un-rooted device, and they hold no patient results — but they are not AES-256 encrypted, and this policy says so rather than implying that every byte in the app sits inside SQLCipher.</p>
+      <p>Your unlock credential is stored as a PBKDF2-SHA256 hash with a random per-account salt — never as plaintext. Biometric or screen-lock unlock is performed by the Android operating system; no biometric sample is read by, or transmitted to, this app.</p>
+      <p>The passcode and biometric unlock gate access to the app’s interface. After five consecutive failed attempts the app enforces a rising lockout delay, and it re-locks automatically after a period of inactivity you can set yourself — the same countdown also runs while the app is in the background, so a console left open on the bench is still covered.</p>
+      <p>The following deliberately leave the encrypted database, and only when you ask for them: exported report PDFs, CSVs and diagnostics logs, which the app writes to its own private storage by default; and any file you hand to another app through the Android share sheet, which is then governed by that app’s policy. If you turn on Settings → Data → &quot;Save exports to Documents&quot;, those exported files become readable by other apps and file managers on the device.</p>
+      <p>Alerts are delivered as system banners and nothing else. A banner is posted by your own device or browser, on the same device the record is already open on, and only if you switch banners on in Settings → Notifications. The app previously offered Email, SMS and WhatsApp buttons that built a mailto:, sms: or wa.me message containing the alert text; those were removed, so no alert text is ever handed to a third-party messaging or mail app by this feature.</p>
+      <p>Android auto-backup is disabled and device-to-device transfer is excluded for every storage domain, so the clinical database is not copied to Google One or to a replacement phone by a setup wizard.</p>
+    </section>
+    <section>
+      <h2>4. What we do not collect or share</h2>
+      <p>No advertising, analytics, crash-reporting, social, location or other third-party SDK is bundled in the app. There is no measurement ID, no ad identifier and no tracker.</p>
+      <p>The app requests no dangerous Android permissions: no camera, microphone, location, contacts, SMS, call log or external storage permission.</p>
+      <p>Error capture is on-device only. Failures are kept in a local ring buffer you can read, save or clear in Settings → Data; the reporting hook that would upload them is intentionally empty, and patient identifiers are redacted before an error is even recorded.</p>
+      <p>We do not sell, rent, transmit, back up or otherwise disclose your data. Because the app holds no network permission, there is no pathway for data to leave the device on its own.</p>
+    </section>
+    <section>
+      <h2>5. Legal basis and your regulatory position</h2>
+      <p>For users in India: the app is the Data Processor and you are the Data Fiduciary for patient data. Consent, notice, data-retention limits, breach reporting and the appointment of a Grievance Officer are your obligations as the laboratory, not something this software can discharge for you. The app supports them by keeping records on your device, deletable by you.</p>
+      <p>For users in the EU/UK (GDPR) or California (CCPA/CPRA): the developer is not a controller or processor of patient data and receives no personal data at all, so no international transfer occurs and no sale or sharing of personal information takes place. There is nothing to opt out of, because nothing is collected.</p>
+      <p>This app is not certified as HIPAA-compliant, NABL-accredited, ISO-certified, CE-marked or SOC 2 audited, and it makes no such claim about itself or about any laboratory. Accreditation belongs to the laboratory and appears on reports only if the laboratory enters and attests to it in Settings.</p>
+    </section>
+    <section>
+      <h2>6. Retention, export and deletion</h2>
+      <p>The app sets no retention period and never deletes records on its own: your data lives on the device until you act. There is no server-side copy that could outlive it.</p>
+      <p>You can export the data you entered at any time — per-report PDFs, list CSVs, and full database snapshots from Settings → Data → Backup — and restore a snapshot onto a device. A snapshot is sealed with a passphrase you choose (PBKDF2-SHA256 + AES-256-GCM) before it is written, so a copy that leaves this device does not carry readable patient records. There is no recovery: the passphrase is never stored on the device and cannot be reset, and a snapshot you have lost the passphrase for cannot be opened. Backing up unencrypted is still available as an explicit, per-backup choice — the app does not quietly make that decision for you.</p>
+      <p>To remove everything permanently, use Settings → Security → &quot;Erase all data &amp; delete account&quot;. It wipes the local clinical database and the account in one action, and cannot be undone. Individual patients, reports and invoices can also be deleted separately.</p>
+      <p>Uninstalling is not the same as deleting, and the two platforms differ. On Android, uninstalling removes the app’s storage, and because Android backup is disabled no copy survives in the cloud. On Windows the installer deliberately leaves the app data folder (%APPDATA%\PathoMitra) exactly where it is — encrypted database, exported reports and backup snapshots all stay on the machine — because a lab that updates or reinstalls a version must not lose years of records to a routine maintenance step. Before uninstalling PathoMitra from a Windows machine that has held patient records, use &quot;Erase all data &amp; delete account&quot; first, then delete %APPDATA%\PathoMitra yourself.</p>
+    </section>
+    <section>
+      <h2>7. Your device, your responsibility</h2>
+      <p>These protections depend on the device itself. Keep the screen lock enabled, do not root or jailbreak a machine that holds patient records, lock the app before handing a phone to anyone, and keep backup snapshots somewhere you control rather than in shared storage.</p>
+    </section>
+    <section>
+      <h2>8. Children’s data</h2>
+      <p>The app is a professional tool for laboratory staff and is not directed at children or at the general public. A laboratory may legitimately record the health data of a minor patient; that processing is the laboratory’s responsibility under its own consent and notice obligations, and the app treats such records exactly like any other — stored locally, encrypted, never transmitted.</p>
+    </section>
+    <section>
+      <h2>9. Changes to this policy</h2>
+      <p>This policy is updated as the app evolves. The version date above marks the current text, the copy inside the app always reflects what that build actually does, and any change that increases data collection will be announced in-app before it takes effect.</p>
+    </section>
+    <section>
+      <h2>10. Contact</h2>
+      <p>Privacy and support questions can be sent to pathomitra@healthcarediagnosticscenter.in.</p>
+      <p>The current version of this policy is published at https://pathomitra.pages.dev/privacy.</p>
+    </section>
+
+      <hr />
+      <p class="contact">
+        Questions: <a href="mailto:pathomitra@healthcarediagnosticscenter.in">pathomitra@healthcarediagnosticscenter.in</a>
+        &nbsp;·&nbsp; This page is published at
+        <a href="https://pathomitra.pages.dev/privacy">https://pathomitra.pages.dev/privacy</a>
+      </p>
+    </main>
+  </body>
+</html>

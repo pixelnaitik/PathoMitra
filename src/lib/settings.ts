@@ -12,7 +12,12 @@
  * event so already-mounted components (sidebar avatar, theme) stay in sync.
  */
 import { applyAppearance, applyTheme } from './theme';
-import { RECOMMENDED_LAYOUT_DEFAULTS } from './report-layout';
+import {
+  PAD_LAYOUT_PRESET,
+  RECOMMENDED_LAYOUT_DEFAULTS,
+  type RowSeparatorMode,
+  type SectionOrderMode,
+} from './report-layout';
 import { REPORT_FIELDS, sanitizeFieldValue, type LayoutFieldKey } from './report-layout-spec';
 import { DEFAULT_NOTIFICATION_PREFS, type NotificationPrefs } from './notification-engine';
 import type { PathologyTest } from './pathology-tests';
@@ -157,6 +162,28 @@ export interface LabSettings {
   tableCellPadding: number;
   notesFontSize: number;
   footerFontSize: number;
+  /**
+   * Shrink row padding, then the result font (to an 8 pt floor), then the
+   * vertical margins until the report fits one sheet.
+   *
+   * This existed before as an invisible second rendering pass that only fired
+   * when exactly one page had spilled, and that silently printed a 9.3 pt report
+   * against a 10 pt setting. It is a stated lab choice now, and it is measured
+   * rather than guessed.
+   */
+  reportFitToOnePage: boolean;
+  /** How the results table separates its rows. See `RowSeparatorMode`. */
+  reportRowSeparators: RowSeparatorMode;
+  /**
+   * Print the lab's name, address and contact block on a self-drawing template.
+   * On by default: without it a report printed on plain paper carries no
+   * evidence of who issued it.
+   */
+  reportShowLabIdentity: boolean;
+  /** Print the signature rule and the issuing operator's name at the foot. */
+  reportShowSignatureArea: boolean;
+  /** Section order on the page. 'ordered' follows the order the lab ordered. */
+  reportSectionOrder: SectionOrderMode;
   avatarSeed: string;
   sharingTemplateImage: string;
   /**
@@ -215,6 +242,14 @@ export const DEFAULT_SETTINGS: LabSettings = {
   // Legacy field kept only as a fallback for older stored settings; the UI
   // edits reportTableBodyFontSize / shareTableBodyFontSize directly.
   tableBodyFontSize: RECOMMENDED_LAYOUT_DEFAULTS.tableBodyFontSize,
+  // Report display options. Every one of these is a printing choice a lab can
+  // reasonably want either way, so the default is the behaviour a reference
+  // laboratory's own report follows, not a new opinion.
+  reportFitToOnePage: true,
+  reportRowSeparators: 'hairline',
+  reportShowLabIdentity: true,
+  reportShowSignatureArea: true,
+  reportSectionOrder: 'ordered',
   avatarSeed: 'default',
   sharingTemplateImage: '',
   brandLogoUrl: '',
@@ -301,10 +336,15 @@ function clampLayoutFields(s: Record<string, unknown>): void {
  */
 export function migrateSettings(parsed: Record<string, unknown>): Record<string, unknown> {
   const s = { ...parsed };
-  // Auto-migrate old default margins (20/10/40/15) to new standard values (50/20/8/15)
-  if (s.reportMarginTop === 20 || s.reportMarginTop === 40) s.reportMarginTop = 50;
-  if (s.reportMarginBottom === 10) s.reportMarginBottom = 20;
-  if (s.reportMarginLeft === 15) s.reportMarginLeft = 8;
+  // Auto-migrate the pre-pad-era margins (20/10/40/15) to the pad preset
+  // (50/20/8/15). This is deliberately NOT pointed at the new compact default:
+  // a lab whose stored values still match the old pad geometry prints on
+  // pre-printed stationery, and its text must keep landing inside the artwork
+  // that is already on the paper. Nobody is migrated off a value they set.
+  if (s.reportMarginTop === 20 || s.reportMarginTop === 40)
+    s.reportMarginTop = PAD_LAYOUT_PRESET.reportMarginTop;
+  if (s.reportMarginBottom === 10) s.reportMarginBottom = PAD_LAYOUT_PRESET.reportMarginBottom;
+  if (s.reportMarginLeft === 15) s.reportMarginLeft = PAD_LAYOUT_PRESET.reportMarginLeft;
 
   const bodyFont = (s.tableBodyFontSize as number) ?? DEFAULT_SETTINGS.tableBodyFontSize;
   if (s.reportTableBodyFontSize === undefined) s.reportTableBodyFontSize = bodyFont;
@@ -319,6 +359,19 @@ export function migrateSettings(parsed: Record<string, unknown>): Record<string,
   if (typeof s.reduceTransparency !== 'boolean')
     s.reduceTransparency = DEFAULT_SETTINGS.reduceTransparency;
   if (typeof s.hapticsEnabled !== 'boolean') s.hapticsEnabled = DEFAULT_SETTINGS.hapticsEnabled;
+  // Report display toggles follow the same fail-to-default rule as the rest:
+  // a corrupt or hand-edited value must not silently change what prints on a
+  // clinical document.
+  if (typeof s.reportFitToOnePage !== 'boolean')
+    s.reportFitToOnePage = DEFAULT_SETTINGS.reportFitToOnePage;
+  if (typeof s.reportShowLabIdentity !== 'boolean')
+    s.reportShowLabIdentity = DEFAULT_SETTINGS.reportShowLabIdentity;
+  if (typeof s.reportShowSignatureArea !== 'boolean')
+    s.reportShowSignatureArea = DEFAULT_SETTINGS.reportShowSignatureArea;
+  if (!['hairline', 'zebra', 'grid', 'none'].includes(String(s.reportRowSeparators)))
+    s.reportRowSeparators = DEFAULT_SETTINGS.reportRowSeparators;
+  if (!['ordered', 'byCategory'].includes(String(s.reportSectionOrder)))
+    s.reportSectionOrder = DEFAULT_SETTINGS.reportSectionOrder;
   // A leaked PHI-export preference must fail closed, never open.
   if (typeof s.allowPublicExports !== 'boolean')
     s.allowPublicExports = DEFAULT_SETTINGS.allowPublicExports;

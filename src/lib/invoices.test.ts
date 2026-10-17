@@ -88,6 +88,20 @@ const PATIENT = {
   testSelection: [CBC, ...CBC_MEMBERS],
 };
 
+/**
+ * A test only this lab knows about — no catalogue entry, so no suggested rate.
+ *
+ * Every built-in test and package carries a suggested market rate since
+ * 2026-10-17, which is what makes a first bill printable instead of ₹0. The
+ * consequence for these tests: "an order with an unpriced line" can no longer be
+ * a plain CBC, so the lab-only name below is what carries that case.
+ */
+const LAB_ONLY = 'LAB-ONLY STAIN';
+const PART_UNPRICED_PATIENT = {
+  ...PATIENT,
+  testSelection: [CBC, ...CBC_MEMBERS, LAB_ONLY],
+};
+
 beforeEach(() => {
   store.documents.clear();
   store.writes.length = 0;
@@ -298,8 +312,18 @@ describe('buildInvoiceDraft', () => {
   });
 
   it('lists the unpriced names instead of charging them as zero', async () => {
+    const draft = buildInvoiceDraft({ patient: PART_UNPRICED_PATIENT, issuedBy: 'a' });
+    // The package is priced off the suggested rate; only the lab's own test has
+    // no rate anywhere, and that is the single name the warning may name.
+    expect(draft.unpriced).toEqual([LAB_ONLY]);
+  });
+
+  it('bills the suggested catalogue rate when the lab has set no tariff', async () => {
     const draft = buildInvoiceDraft({ patient: PATIENT, issuedBy: 'a' });
-    expect(draft.unpriced.length).toBeGreaterThan(0);
+    expect(draft.items).toHaveLength(1);
+    expect(draft.items[0]).toMatchObject({ name: CBC, kind: 'panel', unpriced: false });
+    expect(draft.totals.amount).toBeGreaterThan(0);
+    expect(draft.unpriced).toEqual([]);
   });
 
   it('never allocates a bill number for a preview', () => {
@@ -467,9 +491,14 @@ describe('summarise', () => {
   });
 
   it('counts the bills that printed an unpriced line', async () => {
-    const silent = await raiseInvoice({ patient: PATIENT, issuedBy: 'a' });
+    const silent = await raiseInvoice({ patient: PART_UNPRICED_PATIENT, issuedBy: 'a' });
     expect(billsWithUnpricedLines([silent])).toHaveLength(1);
     expect(billsWithUnpricedLines([])).toEqual([]);
+  });
+
+  it('leaves a fully-priced bill out of the unpriced list', async () => {
+    const priced = await raiseInvoice({ patient: PATIENT, issuedBy: 'a' });
+    expect(billsWithUnpricedLines([priced])).toEqual([]);
   });
 
   it('is zero on nothing', () => {

@@ -29,7 +29,7 @@ import {
 import { readPatients, readReports, type PatientRecord, type ReportRecord } from '../../lib/models';
 import { handleFirestoreError, OperationType } from '../../lib/firestore-errors';
 import { cn } from '../../lib/utils';
-import { expandTestSelection, findTestInfo } from '../../lib/pathology-tests';
+import { collapseToProfiles, expandTestSelection, findTestInfo } from '../../lib/pathology-tests';
 import { groupByDoctorName } from '../../lib/doctor-registry';
 import { CalendarRangePicker, Card, EmptyState, SectionTitle, toIsoDay } from '../../components/ui';
 import { DURATION, listStaggerProps } from '../../lib/motion';
@@ -343,12 +343,18 @@ export default function AnalyticsPage() {
 
   // Both breakdown charts used to share one dataset bucketed by `testType`, which
   // most reports never carry — so each rendered a single "Other" shape. Categories
-  // come from the test catalogue; volume from the tests actually ordered, with
-  // group headers left out because their members are counted individually.
+  // come from the test catalogue; volume from what was actually ordered.
+  //
+  // "What was ordered" is read through `collapseToProfiles`, not the raw
+  // `testSelection`: the registration sheet stores a package *and* every one of
+  // its members, so counting the raw list drew CBC as 25 bars (NEUTROPHIL,
+  // ABSOLUTE EOSINOPHIL COUNT, MCV …) and never as "CBC" — the profile the lab
+  // sells and the patient is billed for. Every package is folded to its own entry
+  // the same way, and a member ordered on its own still counts as itself.
   const categoryData = useMemo(() => {
     const counts: Record<string, number> = {};
     filteredReports.forEach(r => {
-      (r.testSelection || []).forEach(name => {
+      collapseToProfiles(r.testSelection).forEach(name => {
         const category = findTestInfo(name)?.category || 'Other';
         counts[category] = (counts[category] || 0) + 1;
       });
@@ -362,9 +368,8 @@ export default function AnalyticsPage() {
   const topTestsData = useMemo(() => {
     const counts: Record<string, number> = {};
     filteredReports.forEach(r => {
-      (r.testSelection || []).forEach(name => {
-        const info = findTestInfo(name);
-        if (info?.isGroup || info?.isHeader) return;
+      collapseToProfiles(r.testSelection).forEach(name => {
+        if (findTestInfo(name)?.isHeader) return;
         counts[name] = (counts[name] || 0) + 1;
       });
     });

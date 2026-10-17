@@ -1,0 +1,20 @@
+# Cloudflare Pages routing for the static brochure.
+#
+# The privacy policy is a REAL static file, not a router route:
+# `npm run build:privacy` (scripts/build-promo-privacy.ts) writes
+# public/privacy.html — plain HTML with no JavaScript — and Cloudflare Pages
+# serves a static `foo.html` at the clean URL `/foo` with a direct 200.
+#
+# There is deliberately NO `/privacy` rule here. Verified locally with
+# `wrangler pages dev`: adding `/privacy /privacy.html 200` produced
+# `308 -> /privacy`, because Pages also canonicalises `/privacy.html` down to
+# `/privacy`, and the rewrite re-triggers the same rule — an infinite loop on
+# the one URL Google's reviewer and crawler must reach. Pages flagged it and
+# ignored the rule; a real deployment would have failed the policy link.
+#
+# What the SPA fallback below does is serve every BrowserRouter path
+# (/technology, /solutions, /download) from index.html. Static files take
+# precedence over it, which is why /privacy answers with the policy on
+# `pages dev`; the live deployment is re-probed after every change to this
+# pairing, because the local emulator skips the wildcard rule entirely.
+/*    /index.html    200

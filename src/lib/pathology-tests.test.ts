@@ -11,6 +11,7 @@ import {
   getSearchableTests,
   auditPathologyCatalogue,
   expandTestSelection,
+  collapseToProfiles,
   DEFAULT_PATHOLOGY_TESTS,
   ADULT_MIN_AGE_YEARS,
   INFANT_MAX_AGE_YEARS,
@@ -406,5 +407,95 @@ describe('expandTestSelection — one honest test count (AN-4)', () => {
         expect(headers.has(leaf)).toBe(false);
       }
     }
+  });
+});
+
+/**
+ * The other half of the same problem: what a report *counts as ordered*.
+ *
+ * `expandTestSelection` answers "how many parameters were reported"; this answers
+ * "how many things did the lab sell". Analytics charts and the overview list used
+ * to read the stored list raw, so a CBC appeared as 25 separate tests and never
+ * once as the profile the patient was billed for.
+ */
+describe('collapseToProfiles — one entry per thing ordered', () => {
+  it('folds a panel when its members were stored alongside it', () => {
+    expect(collapseToProfiles(['CBC (COMPLETE BLOOD COUNT)', 'HB (HAEMOGLOBIN)', 'MCV'])).toEqual([
+      'CBC (COMPLETE BLOOD COUNT)',
+    ]);
+  });
+
+  it('folds every package in the catalogue, not only CBC', () => {
+    // The owner asked for this for all profiles. Checked per panel so a profile
+    // added later cannot quietly keep splitting into its components.
+    const split: string[] = [];
+    for (const panel of DEFAULT_PATHOLOGY_TESTS.filter(t => t.isGroup)) {
+      const order = [panel.name, ...(panel.includedTests ?? [])];
+      const folded = collapseToProfiles(order);
+      if (folded.length !== 1 || folded[0] !== panel.name) split.push(`${panel.name} → ${folded}`);
+    }
+    expect(split).toEqual([]);
+  });
+
+  it('keeps a test that belongs to no ordered package', () => {
+    expect(collapseToProfiles(['HB (HAEMOGLOBIN)', 'Vitamin B12'])).toEqual([
+      'HB (HAEMOGLOBIN)',
+      'Vitamin B12',
+    ]);
+  });
+
+  it('keeps a package and an unrelated test as two entries', () => {
+    expect(collapseToProfiles(['CBC (COMPLETE BLOOD COUNT)', 'HbA1c'])).toEqual([
+      'CBC (COMPLETE BLOOD COUNT)',
+      'HbA1c',
+    ]);
+  });
+
+  it('returns nothing for a missing, empty or blank selection', () => {
+    expect(collapseToProfiles(undefined)).toEqual([]);
+    expect(collapseToProfiles([])).toEqual([]);
+    expect(collapseToProfiles(['', '   ', null as unknown as string])).toEqual([]);
+  });
+});
+
+describe('the catalogue\u2019s suggested tariff', () => {
+  const billable = DEFAULT_PATHOLOGY_TESTS.filter(t => !t.isHeader);
+
+  it('carries a rate for every billable test and package', () => {
+    const missing = billable.filter(t => typeof t.price !== 'number').map(t => t.name);
+    expect(missing).toEqual([]);
+  });
+
+  it('leaves only the section headers unpriced', () => {
+    const priced = DEFAULT_PATHOLOGY_TESTS.filter(t => typeof t.price === 'number');
+    expect(priced).toHaveLength(billable.length);
+  });
+
+  it('keeps every rate inside a sane rupee band', () => {
+    // 0 is legal and means "no separate charge" (eGFR is calculated, a Widal
+    // impression is a conclusion). Nothing else should be free, and nothing in
+    // this catalogue is a ₹50,000 genetic panel.
+    const odd = billable
+      .filter(t => (t.price ?? -1) < 0 || (t.price ?? 0) > 5000)
+      .map(t => `${t.name}: ${t.price}`);
+    expect(odd).toEqual([]);
+  });
+
+  it('sells a package for less than buying its parts one by one', () => {
+    const tooDear: string[] = [];
+    let checked = 0;
+    for (const panel of DEFAULT_PATHOLOGY_TESTS.filter(t => t.isGroup)) {
+      const members = panel.includedTests ?? [];
+      const known = members.map(name => findTestInfo(name));
+      // WIDAL lists its titres as 'o' / 'H' and URINE ANALYSIS carries a
+      // 'Quantity' line that is not a catalogue record — where a member cannot
+      // be priced on its own, the "cheaper than the sum" rule has no meaning.
+      if (known.some(info => !info) || members.length < 2) continue;
+      const sum = known.reduce((total, info) => total + (info?.price ?? 0), 0);
+      if ((panel.price ?? 0) >= sum) tooDear.push(`${panel.name}: ${panel.price} vs ${sum}`);
+      checked += 1;
+    }
+    expect(checked).toBeGreaterThanOrEqual(15);
+    expect(tooDear).toEqual([]);
   });
 });

@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   bannerIdFor,
+  CHANNEL_SPECS,
+  CHANNEL_VISIBILITY,
   currentPermission,
   dismissBanner,
   isSupported,
@@ -110,5 +112,34 @@ describe('mapPermission', () => {
     expect(mapPermission('prompt-with-rationale')).toBe('prompt');
     expect(mapPermission('default')).toBe('prompt');
     expect(mapPermission(undefined)).toBe('prompt');
+  });
+});
+
+/**
+ * A pathology console alerts about other people's medical records, and an Android
+ * notification is readable on a locked screen. `VISIBILITY_PUBLIC` (1) prints the
+ * whole banner there; `VISIBILITY_PRIVATE` (0) holds the content back until the
+ * device is unlocked. The channel this shipped with was created as PUBLIC, which
+ * is the kind of defect that survives a code review because the number looks
+ * arbitrary — so the number is now asserted, for every channel, including ones
+ * added later.
+ */
+describe('notification channels are lock-screen private', () => {
+  const channelIds = Object.keys(CHANNEL_SPECS);
+
+  it('has at least the two channels the app posts into', () => {
+    expect(channelIds.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it.each(channelIds)('%s is PRIVATE, not PUBLIC', id => {
+    expect(CHANNEL_SPECS[id].visibility).toBe(CHANNEL_VISIBILITY.private);
+    expect(CHANNEL_SPECS[id].visibility).not.toBe(CHANNEL_VISIBILITY.public);
+  });
+
+  it.each(channelIds)('%s is named and described for the device settings screen', id => {
+    // A channel with no description is a channel the user cannot reason about
+    // when Android offers to silence it.
+    expect(CHANNEL_SPECS[id].name.trim().length).toBeGreaterThan(0);
+    expect(CHANNEL_SPECS[id].description.trim().length).toBeGreaterThan(0);
   });
 });

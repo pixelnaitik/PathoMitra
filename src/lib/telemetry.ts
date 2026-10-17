@@ -7,11 +7,19 @@
  *
  *   1. log the error loudly enough to survive the build,
  *   2. de-duplicate the same failure being reported in a loop,
- *   3. forward a minimal, PHI-free payload to the same-origin
- *      `/api/client-errors` endpoint for structured server logs.
+ *   3. hand a scrubbed payload to {@link reportTo}, which on every shipped
+ *      surface writes it to the on-device ring buffer
+ *      (`Settings -> Data & Diagnostics`) and nowhere else.
  *
  * There is deliberately no vendor SDK here: `reportTo()` is the seam. A Sentry
  * (or Glitchtip) integration plugs in by implementing that one function.
+ *
+ * There is also no server. An earlier revision of this file described a
+ * same-origin `/api/client-errors` endpoint on an Express `server.ts` that does
+ * not exist in this repository and never shipped; comments like that survive a
+ * build and get read as a data-flow disclosure, so the wording here is the
+ * actual flow. If an ingest endpoint is ever added, this file, the privacy
+ * policy and the Data Safety answers all change in the same commit.
  */
 
 export type ErrorContext = Record<string, string | number | boolean | undefined>;

@@ -3,10 +3,17 @@
  * <ListRow> — iOS inset-list row for mobile stacks.
  * <EmptyState> / <Skeleton> — the two "nothing here yet" surfaces.
  */
-import { forwardRef, type InputHTMLAttributes, type ReactNode } from 'react';
+import {
+  forwardRef,
+  useRef,
+  type InputHTMLAttributes,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from 'react';
 import { Search, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { hapticTap } from '../../lib/haptics';
+import { hapticMedium, hapticTap } from '../../lib/haptics';
 
 /* ---------------------------------- Search ---------------------------------- */
 
@@ -54,12 +61,76 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(functi
 
 /* --------------------------------- ListRow --------------------------------- */
 
+/** Hold time before a press counts as a long-press, and the drag that cancels it. */
+const LONG_PRESS_MS = 500;
+const LONG_PRESS_MOVE_TOLERANCE = 12;
+
+/**
+ * Long-press detection for a touch target, built on pointer events so it behaves
+ * the same on the APK (touch) and the desktop / web build (mouse). Fires once
+ * after the pointer holds still for {@link LONG_PRESS_MS}; a drag past the
+ * tolerance or a lift before the timer cancels it. `fired` lets the caller drop
+ * the click that follows the pointer-up, so a long-press never also runs the
+ * row's normal action.
+ */
+function useLongPress(onLongPress?: () => void) {
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const firedRef = useRef(false);
+  const origin = useRef<{ x: number; y: number } | null>(null);
+
+  const cancel = () => {
+    if (timer.current !== null) {
+      clearTimeout(timer.current);
+      timer.current = null;
+    }
+    origin.current = null;
+  };
+
+  const handlers = {
+    onPointerDown: (event: ReactPointerEvent) => {
+      if (!onLongPress || event.button !== 0) return;
+      firedRef.current = false;
+      origin.current = { x: event.clientX, y: event.clientY };
+      timer.current = setTimeout(() => {
+        timer.current = null;
+        origin.current = null;
+        firedRef.current = true;
+        hapticMedium();
+        onLongPress();
+      }, LONG_PRESS_MS);
+    },
+    onPointerMove: (event: ReactPointerEvent) => {
+      if (!onLongPress || !origin.current) return;
+      const dx = event.clientX - origin.current.x;
+      const dy = event.clientY - origin.current.y;
+      if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_TOLERANCE) cancel();
+    },
+    onPointerUp: () => {
+      if (onLongPress) cancel();
+    },
+    onPointerLeave: () => {
+      if (onLongPress) cancel();
+    },
+    onPointerCancel: () => {
+      if (onLongPress) cancel();
+    },
+    onContextMenu: (event: ReactMouseEvent) => {
+      // Android emits contextmenu on a long-press; swallow it so the native
+      // callout / selection menu doesn't stack on top of our own action.
+      if (onLongPress) event.preventDefault();
+    },
+  };
+
+  return { firedRef, handlers };
+}
+
 export function ListRow({
   leading,
   title,
   subtitle,
   trailing,
   onClick,
+  onLongPress,
   primaryLabel,
   className,
 }: {
@@ -69,6 +140,13 @@ export function ListRow({
   trailing?: ReactNode;
   onClick?: () => void;
   /**
+   * Fires when the row is pressed and held. Used to surface a secondary action
+   * (e.g. editing a doctor's commission rate) without crowding the row with a
+   * third visible button. The row's normal `onClick` is suppressed on the
+   * pointer-up that follows a long-press.
+   */
+  onLongPress?: () => void;
+  /**
    * Accessible name for the primary action. When the title is composed of
    * rich content (a name + inline badges), `aria-label` on the button is the
    * only reliable announcement TalkBack / VoiceOver gets. Falls back to the
@@ -77,6 +155,7 @@ export function ListRow({
   primaryLabel?: string;
   className?: string;
 }) {
+  const { firedRef, handlers } = useLongPress(onLongPress);
   // When `onClick` is set AND `trailing` contains further interactive controls
   // (the pattern every mobile list row in this app is), the whole row cannot
   // be a single <button> — nesting a button inside a button is invalid HTML
@@ -96,9 +175,15 @@ export function ListRow({
         <button
           type="button"
           onClick={() => {
+            // A long-press already opened its own sheet — don't also open the row.
+            if (firedRef.current) {
+              firedRef.current = false;
+              return;
+            }
             hapticTap();
             onClick();
           }}
+          {...handlers}
           aria-label={primaryLabel}
           className="-mx-2 flex min-w-0 flex-1 items-center gap-3.5 rounded-2xl px-2 py-1 text-left transition-colors hover:bg-surface-container-low active:bg-surface-container-high focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
@@ -130,11 +215,16 @@ export function ListRow({
               // Rows are the most-tapped thing in the app and every other
               // pressable surface already ticks — a row that opens a sheet or a
               // record felt dead next to a button.
+              if (firedRef.current) {
+                firedRef.current = false;
+                return;
+              }
               hapticTap();
               onClick();
             }
           : undefined
       }
+      {...handlers}
       aria-label={onClick ? primaryLabel : undefined}
       className={cn(
         'cv-row group flex min-h-[60px] w-full items-center gap-3.5 px-4 py-3 text-left transition-colors',

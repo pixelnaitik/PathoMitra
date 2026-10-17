@@ -139,9 +139,17 @@ export function generateDefaultTemplateImage(
   // Right side color-ribbon accent
   ctx.fillRect(width - 14, 150, 6, height - 300);
 
-  // 7. Footer — lab identity, attested credentials, issuance statement.
+  // 7. Footer — lab identity, attested credentials, document type.
+  //
+  // This ribbon used to reserve 104 px (~18 mm of an A4 sheet) for an issuance
+  // statement and a professional-use disclaimer. Both were switched off at
+  // source on 2026-10-12 (`buildReportLegalLines` returns them empty), so the
+  // artwork kept drawing a dark band for two `fillText('')` calls — space taken
+  // off the page for nothing, and a visible empty stripe on every shared report.
+  // The ribbon is now sized to what actually prints.
   const legal = buildReportLegalLines(legalInput);
-  const footerStart = height - 104;
+  const ribbonHeight = 64;
+  const footerStart = height - ribbonHeight - 8;
 
   // Teal accent hairline above footer
   ctx.fillStyle = '#12b8a6';
@@ -152,7 +160,7 @@ export function generateDefaultTemplateImage(
   footGrad.addColorStop(0, '#08477e');
   footGrad.addColorStop(1, '#0a5ea6');
   ctx.fillStyle = footGrad;
-  ctx.fillRect(0, footerStart + 3, width, 101);
+  ctx.fillRect(0, footerStart + 3, width, ribbonHeight - 3);
 
   const left = 40;
   const right = width - 40;
@@ -161,37 +169,26 @@ export function generateDefaultTemplateImage(
   ctx.fillStyle = '#ffffff';
   ctx.font = 'bold 15px "Inter", "Helvetica", sans-serif';
   ctx.textAlign = 'left';
-  ctx.fillText((labName || 'Laboratory').toUpperCase(), left, footerStart + 28);
+  ctx.fillText((labName || 'Laboratory').toUpperCase(), left, footerStart + 26);
 
   // Document type on the right, where the fake accreditation claim used to sit.
   ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
   ctx.font = 'bold 10px "JetBrains Mono", "Courier New", monospace';
   ctx.textAlign = 'right';
-  ctx.fillText(legal.tagline.toUpperCase(), right, footerStart + 28);
+  ctx.fillText(legal.tagline.toUpperCase(), right, footerStart + 26);
 
   // Accreditation / registration: printed only because the operator asserted
-  // it and accepted responsibility for it in Settings → Legal footer.
+  // it and accepted responsibility for it in Settings → Legal footer. Wrapped,
+  // because a registration line can exceed one row at this width.
   const credential = legal.accreditation || legal.licence;
   if (credential) {
     ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
     ctx.font = '10px "Inter", "Helvetica", sans-serif';
     ctx.textAlign = 'left';
-    ctx.fillText(credential, left, footerStart + 47);
+    wrapText(ctx, credential, width - 80, 2).forEach((line, i) => {
+      ctx.fillText(line, left, footerStart + 43 + i * 13);
+    });
   }
-
-  // How the report came to exist — factual, and explicit that nothing outside
-  // the device can confirm it.
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.72)';
-  ctx.font = 'italic 9.5px "Inter", "Helvetica", sans-serif';
-  ctx.textAlign = 'left';
-  const signerLines = wrapText(ctx, legal.signer, width - 80, 2);
-  signerLines.forEach((line, i) => {
-    ctx.fillText(line, left, footerStart + 67 + i * 14);
-  });
-
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
-  ctx.font = '9px "Inter", "Helvetica", sans-serif';
-  ctx.fillText(legal.disclaimer, left, footerStart + 96);
 
   return canvas.toDataURL('image/png');
 }

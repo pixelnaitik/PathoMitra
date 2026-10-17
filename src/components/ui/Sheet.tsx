@@ -5,6 +5,8 @@
  * Desktop: centered dialog. Escape + scrim click close it; scroll is locked.
  * Focus moves in on open, is trapped while open, and returns to the trigger on
  * close — without it, Tab walks straight out of the dialog into the page behind.
+ * While open, `#main-content` is marked `inert`, so the page behind is out of the
+ * accessibility tree too, not just out of the tab order.
  *
  * Replaces the hand-rolled `fixed inset-0 flex items-end sm:items-center`
  * markup that every dashboard page used to duplicate.
@@ -68,6 +70,37 @@ function tabbableWithin(root: HTMLElement): HTMLElement[] {
   );
 }
 
+/**
+ * How many sheets are open right now.
+ *
+ * `inert` is a property, not a stack: two sheets open at once (the doctor detail
+ * sheet opening the statement sheet over it) must not have the second one's
+ * cleanup re-enable the page while the first is still up. Hence a counter rather
+ * than a per-instance flag.
+ */
+let openSheets = 0;
+
+/**
+ * Put the page behind an open dialog out of the accessibility tree.
+ *
+ * `aria-modal` already tells a screen reader to stay inside the dialog, and the
+ * Tab trap above enforces it for the keyboard — but neither removes the content
+ * underneath from the reading order, so a Narrator user travelling by caret or
+ * by list can still read a patient record sitting behind the sheet. `inert` does
+ * remove it, from focus, interaction and the a11y tree at once.
+ *
+ * `#main-content` (DashboardLayout) is the target rather than `#root`: the root
+ * also holds the header, the toast live regions and the nav rail, and muting those
+ * while a dialog is open would break the announcements the sheet itself causes.
+ * The sheet is portalled onto `document.body`, so it is never inside this subtree.
+ */
+function setBackgroundInert(inert: boolean): void {
+  const background = document.getElementById('main-content');
+  if (!background) return;
+  if (inert) background.setAttribute('inert', '');
+  else background.removeAttribute('inert');
+}
+
 export function Sheet({
   open,
   onClose,
@@ -95,6 +128,8 @@ export function Sheet({
 
   useEffect(() => {
     if (!open) return;
+    openSheets += 1;
+    setBackgroundInert(true);
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && dismissible) onClose();
     };
@@ -104,6 +139,8 @@ export function Sheet({
     return () => {
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = prev;
+      openSheets = Math.max(0, openSheets - 1);
+      if (openSheets === 0) setBackgroundInert(false);
     };
   }, [open, onClose, dismissible]);
 

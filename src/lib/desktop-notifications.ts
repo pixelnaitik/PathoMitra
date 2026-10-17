@@ -28,6 +28,19 @@ export type BannerBackend = 'native' | 'service-worker' | 'page' | 'none';
 
 type LocalNotificationsModule = typeof import('@capacitor/local-notifications');
 
+/**
+ * The plugin's own `createChannel` argument, reached through the lazy module type
+ * so this file still imports nothing from `@capacitor/local-notifications` at
+ * runtime (that is what keeps it out of the web bundle).
+ *
+ * Needed because `importance` and `visibility` are numeric *enums* there: a
+ * literal `0` type-checks in an object literal, but the values moved into
+ * `CHANNEL_SPECS` so a test can assert every channel is lock-screen private, and
+ * by then they are just `number`. Casting through the real parameter type keeps
+ * the rule testable without loosening the types anywhere else.
+ */
+type ChannelOptions = Parameters<LocalNotificationsModule['LocalNotifications']['createChannel']>[0];
+
 /** Android 8+ groups banners under a channel the user can silence in settings. */
 const ALERT_CHANNEL_ID = 'pathomitra-alerts';
 /**
@@ -36,17 +49,35 @@ const ALERT_CHANNEL_ID = 'pathomitra-alerts';
  */
 export const FILE_CHANNEL_ID = 'pathomitra-files';
 
-/** Channel labels as they appear in the device's own notification settings. */
-const CHANNEL_SPECS: Record<string, { name: string; description: string }> = {
+/**
+ * Channel labels as they appear in the device's own notification settings, plus
+ * the two Android levels each channel is created at. Exported so
+ * `desktop-notifications.test.ts` can prove every channel — including one added
+ * tomorrow — is lock-screen private, rather than trusting a reviewer to notice.
+ */
+export const CHANNEL_SPECS: Record<
+  string,
+  { name: string; description: string; importance: number; visibility: number }
+> = {
   [ALERT_CHANNEL_ID]: {
     name: 'Lab alerts',
     description: 'Overdue samples, unissued drafts, amendments and unpaid dues',
+    // Android NotificationManager constants, as numbers because the plugin takes
+    // numbers: IMPORTANCE_HEADS_UP = 4 (a heads-up banner), VISIBILITY_PRIVATE = 0.
+    // PRIVATE is the whole point — see ensureChannel.
+    importance: 4,
+    visibility: 0,
   },
   [FILE_CHANNEL_ID]: {
     name: 'Saved files',
     description: 'A notice each time a report or export is written to this device',
+    importance: 4,
+    visibility: 0,
   },
 };
+
+/** Exported so a test can assert no channel was ever added as lock-screen public. */
+export const CHANNEL_VISIBILITY = { private: 0, public: 1, secret: -1 } as const;
 
 let nativeMod: LocalNotificationsModule | null | undefined;
 /** Channels created this run — `createChannel` is idempotent but not free. */
@@ -168,8 +199,17 @@ async function ensureChannel(m: LocalNotificationsModule, channelId: string): Pr
       id: channelId,
       name: spec.name,
       description: spec.description,
-      importance: 4,
-      visibility: 1,
+      importance: spec.importance as ChannelOptions['importance'],
+      // Android `VISIBILITY_PRIVATE` (0), never `VISIBILITY_PUBLIC` (1).
+      // These banners are about other people's medical records: with PUBLIC the
+      // full text is legible on a locked screen, to whoever is standing at the
+      // bench or holding the phone, and `FLAG_SECURE` (Settings -> screenshot
+      // protection) does not cover the notification shade at all. PRIVATE keeps
+      // the heads-up alert and reveals the content only once the device is
+      // unlocked. The banner text is already name-free (`bannerTitle` in
+      // lib/notification-engine.ts); this is the second half of the same rule,
+      // and desktop-notifications.test.ts fails if either half is reversed.
+      visibility: spec.visibility as ChannelOptions['visibility'],
       vibration: true,
     });
   } catch {

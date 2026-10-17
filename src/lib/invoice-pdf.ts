@@ -18,6 +18,7 @@
  * report path so the library stays out of the initial bundle.
  */
 import { buildReportPalette, A4, resolveReportLayout } from './report-layout';
+import { winAnsiSafe } from './pdf-text';
 import { THEME_OPTIONS } from './theme';
 import { formatAmount } from './notification-engine';
 import { legacyInvoiceNo } from './invoice-registry';
@@ -68,28 +69,20 @@ export function pdfMoney(value: number): string {
 /**
  * Strip what a WinAnsi font cannot draw, rather than let it print mojibake.
  *
- * Conservative: Latin-1 and the common commercial punctuation survive, an em
- * dash becomes a hyphen, a curly quote a straight one, and the rupee sign —
- * which a name field can carry if a lab typed it — becomes `Rs.`. Anything
- * outside that set is dropped instead of rendered as a box, because a bill with
- * `Rahul ??arma` on it is unusable and nobody can tell which characters were
- * lost. Devanagari names are the known casualty of `F-1`.
+ * The rule itself lives in `lib/pdf-text` because the *clinical* report needs
+ * exactly the same protection and used not to have it: a bill sanitised every
+ * string while a report printed a Devanagari patient name raw, and jsPDF writes
+ * an undrawable code point as two bytes of unrelated Latin ("रा" comes back as a
+ * tab and a zero). One rule, both documents.
+ *
+ * It is now also less destructive than this function used to be. The old body
+ * downgraded en/em dashes and curly quotes to ASCII, but the probe in
+ * `scripts/probes/jspdf-encoding-probe.mjs` shows cp1252 encodes those correctly — so
+ * "13.0 – 17.0" and "NOTE —" now print as typed instead of as hyphens.
+ * Devanagari names remain the known casualty of `F-1`.
  */
 export function pdfSafeText(value: unknown): string {
-  return (
-    String(value ?? '')
-      .replace(/[\u2018\u2019\u201B]/g, "'")
-      .replace(/[\u201C\u201D]/g, '"')
-      .replace(/[\u2013\u2014\u2212]/g, '-')
-      .replace(/\u2026/g, '...')
-      .replace(/\u00A0/g, ' ')
-      .replace(/\u20B9/g, 'Rs.')
-      .replace(/\u221A/g, 'sqrt')
-      // Anything outside Latin-1 printable + ASCII cannot be drawn.
-      .replace(/[^\x20-\x7E\u00A0-\u00FF]/g, '')
-      .replace(/\s{2,}/g, ' ')
-      .trim()
-  );
+  return winAnsiSafe(value);
 }
 
 interface Letterhead {
@@ -121,7 +114,15 @@ function letterhead(settings: LabSettings): Letterhead {
   };
 }
 
-/** Draw the lab block + the document title, and return the y below the rule. */
+/**
+ * Draw the lab block + the document title, and return the y below the rule.
+ *
+ * The two blocks share the first baseline, so each owns one half of the line and
+ * wraps inside it. Before that ceiling existed, a long laboratory name ran the
+ * full page width and printed straight through the right-aligned document title
+ * — the owner's "overlapping lines" on the counter copy. `splitTextToSize` is
+ * measured against the font actually set, so the wrap holds for any theme.
+ */
 function drawHeader(
   doc: jsPdfDoc,
   h: Letterhead,
@@ -130,48 +131,68 @@ function drawHeader(
   dateLine: string,
 ): number {
   const right = A4.widthMm - M.right;
+  const width = right - M.left;
+
+  // Font first, measure second — `splitTextToSize` uses the size currently set,
+  // so splitting before `setFont` would wrap a 16 pt name as if it were 10 pt.
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(16);
   ink(doc, h.brandDark);
-  doc.text(pdfSafeText(h.labName), M.left, M.top + 4);
+  const nameBlock = doc.splitTextToSize(
+    pdfSafeText(h.labName),
+    width * 0.56,
+  ) as unknown as string[];
+  doc.text(nameBlock, M.left, M.top + 4);
+  // 16 pt helvetica is a 5.6 mm line; the small print below it is 4 mm.
+  let y = M.top + 4 + nameBlock.length * 5.6;
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8);
   doc.setTextColor(90, 95, 100);
-  let y = M.top + 9;
+  y += 1;
   if (h.address) {
-    doc.text(pdfSafeText(h.address), M.left, y);
+    doc.text(pdfSafeText(h.address), M.left, y, { maxWidth: width * 0.56 });
     y += 4;
   }
   if (h.contact) {
-    doc.text(pdfSafeText(h.contact), M.left, y);
+    doc.text(pdfSafeText(h.contact), M.left, y, { maxWidth: width * 0.56 });
     y += 4;
   }
   if (h.credentials) {
     doc.setFontSize(7);
-    doc.text(pdfSafeText(h.credentials), M.left, y);
+    doc.text(pdfSafeText(h.credentials), M.left, y, { maxWidth: width * 0.56 });
     y += 4;
   }
 
-  // Document title sits opposite the lab block, right-aligned.
+  // Document title sits opposite the lab block, right-aligned, in its own column.
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(13);
   ink(doc, h.brand);
-  doc.text(pdfSafeText(title), right, M.top + 4, { align: 'right' });
+  const titleBlock = doc.splitTextToSize(pdfSafeText(title), width * 0.42) as unknown as string[];
+  doc.text(titleBlock, right, M.top + 4, { align: 'right' });
+  let refY = M.top + 4 + titleBlock.length * 4.6 + 1.4;
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8.5);
   doc.setTextColor(70, 74, 78);
-  doc.text(pdfSafeText(refNo), right, M.top + 10, { align: 'right' });
-  doc.text(pdfSafeText(dateLine), right, M.top + 14.5, { align: 'right' });
+  doc.text(pdfSafeText(refNo), right, refY, { align: 'right' });
+  refY += 4.5;
+  doc.text(pdfSafeText(dateLine), right, refY, { align: 'right' });
 
-  const rule = Math.max(y, M.top + 18) + 2;
+  const rule = Math.max(y, refY, M.top + 18) + 2;
   draw(doc, h.brand);
   doc.setLineWidth(0.6);
   doc.line(M.left, rule, right, rule);
   return rule + 6;
 }
 
-/** A two-column field/value grid for the "Bill To" block. */
+/**
+ * A two-column field/value grid.
+ *
+ * A value that does not fit its column wraps inside it and the row grows to fit,
+ * rather than running under the next column or over the label beneath it — the
+ * second place the printed bill used to overlap itself (a long patient name or
+ * referring-doctor name on the counter copy).
+ */
 function drawFieldGrid(
   doc: jsPdfDoc,
   y: number,
@@ -179,6 +200,7 @@ function drawFieldGrid(
 ): number {
   const right = A4.widthMm - M.right;
   const half = (right - M.left) / 2;
+  const cellWidth = half - 6; // gutter between the two columns
   let cursor = y;
   for (const [labelA, valueA, labelB, valueB] of rows) {
     doc.setFont('helvetica', 'bold');
@@ -190,9 +212,17 @@ function drawFieldGrid(
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(9.5);
     doc.setTextColor(25, 28, 31);
-    doc.text(pdfSafeText(valueA), M.left, cursor + 4);
-    if (valueB !== undefined) doc.text(pdfSafeText(valueB), M.left + half, cursor + 4);
-    cursor += 10;
+    const linesA = doc.splitTextToSize(valueA, cellWidth) as unknown as string[];
+    const linesB =
+      valueB === undefined
+        ? ([] as string[])
+        : (doc.splitTextToSize(valueB, cellWidth) as unknown as string[]);
+    doc.text(linesA, M.left, cursor + 4);
+    if (valueB !== undefined) doc.text(linesB, M.left + half, cursor + 4);
+
+    // 9.5 pt is a 3.4 mm line; + 6 mm keeps the row clear of the label under it.
+    // A single-line row advances exactly as far as it always did (10 mm).
+    cursor += 4 + Math.max(linesA.length, linesB.length, 1) * 3.4 + 2.6;
   }
   return cursor;
 }
@@ -258,15 +288,23 @@ export async function buildInvoicePdf(input: InvoicePdfInput): Promise<jsPdfDoc>
       'Referring Doctor',
       pdfSafeText(invoice.doctorName || input.patient?.doctorName || 'Self'),
     ],
-    [
-      'Contact',
-      pdfSafeText(input.patient?.phone || '-'),
-      'Raised By',
-      pdfSafeText(invoice.issuedBy || '-'),
-    ],
   ]);
 
-  const columnWidths = [A4.widthMm - M.left - M.right - 24 - 20 - 26 - 12, 24, 20, 26, 12];
+  /**
+   * Column widths, in mm, for a 182 mm table.
+   *
+   * The Amount column used to be 12 mm wide — 8.4 mm once the 1.8 mm cell
+   * padding on both sides was taken off, which is narrower than its own
+   * "Amount" heading. The header wrapped to "Amou / nt" and any rupee figure
+   * above a few thousand wrapped with it, so the money column of a printed bill
+   * read as a stack of broken words. Rate carries "not priced" on the same
+   * footing, and the test name takes whatever is left.
+   */
+  const SPECIMEN_W = 24;
+  const QTY_W = 12;
+  const RATE_W = 24;
+  const AMOUNT_W = 24;
+  const nameColWidth = A4.widthMm - M.left - M.right - SPECIMEN_W - QTY_W - RATE_W - AMOUNT_W;
 
   autoTable(doc, {
     startY: y + 2,
@@ -288,11 +326,11 @@ export async function buildInvoicePdf(input: InvoicePdfInput): Promise<jsPdfDoc>
     },
     alternateRowStyles: { fillColor: [248, 249, 251] },
     columnStyles: {
-      0: { cellWidth: columnWidths[0] },
-      1: { cellWidth: 24, textColor: [90, 95, 100] },
-      2: { cellWidth: 20, halign: 'center' },
-      3: { cellWidth: 26, halign: 'right' },
-      4: { cellWidth: 12, halign: 'right', fontStyle: 'bold' },
+      0: { cellWidth: nameColWidth },
+      1: { cellWidth: SPECIMEN_W, textColor: [90, 95, 100] },
+      2: { cellWidth: QTY_W, halign: 'center' },
+      3: { cellWidth: RATE_W, halign: 'right' },
+      4: { cellWidth: AMOUNT_W, halign: 'right', fontStyle: 'bold' },
     },
     margin: { left: M.left, right: M.right, top: M.top },
   });
@@ -327,6 +365,11 @@ export async function buildInvoicePdf(input: InvoicePdfInput): Promise<jsPdfDoc>
       doc.addPage();
       ty = M.top + 4;
     }
+    // The emphasised line carries a rule above it. It used to sit 3.2 mm over a
+    // baseline only 5 mm below the previous figure, so the rule landed between
+    // the two and read on paper as a strike-through across "Total". The extra
+    // lead-in and the wider step give the rule its own air on both sides.
+    if (emphasise) ty += 3;
     doc.setFont('helvetica', emphasise ? 'bold' : 'normal');
     doc.setFontSize(emphasise ? 11 : 9);
     ink(doc, emphasise ? h.brandDark : [40, 44, 48]);
@@ -335,12 +378,17 @@ export async function buildInvoicePdf(input: InvoicePdfInput): Promise<jsPdfDoc>
     if (emphasise) {
       draw(doc, h.brand);
       doc.setLineWidth(0.4);
-      doc.line(boxLeft, ty - 3.2, right, ty - 3.2);
+      doc.line(boxLeft, ty - 4.6, right, ty - 4.6);
     }
-    ty += emphasise ? 7 : 5;
+    ty += emphasise ? 8 : 5.5;
   }
 
   // ---- Payment status ----------------------------------------------------
+  // A plain unpaid bill prints no status stamp. "PAYABLE ON COLLECTION" was
+  // removed on the lab's request (2026-10-17): the Total line and the terms
+  // footer already say what is due, and the red stamp read as an alarm on an
+  // ordinary counter copy. Only a settled, part-paid or cancelled bill is
+  // stamped.
   const statusWord =
     invoice.status === 'void'
       ? 'CANCELLED'
@@ -348,19 +396,21 @@ export async function buildInvoicePdf(input: InvoicePdfInput): Promise<jsPdfDoc>
         ? 'PAID'
         : invoice.status === 'partial'
           ? `PART PAYMENT - ${formatAmount(outstanding)} DUE`
-          : 'PAYABLE ON COLLECTION';
-  const statusY = Math.min(A4.heightMm - M.bottom - 14, ty + 4);
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(12);
-  if (invoice.status === 'paid') {
-    ink(doc, h.brand);
-    draw(doc, h.brand);
-    doc.setLineWidth(0.5);
-    doc.roundedRect(M.left, statusY - 5, 60, 11, 2, 2, 'S');
-    doc.text(pdfSafeText(statusWord), M.left + 30, statusY + 1.5, { align: 'center' });
-  } else {
-    doc.setTextColor(150, 40, 40);
-    doc.text(pdfSafeText(statusWord), M.left, statusY + 2);
+          : '';
+  if (statusWord) {
+    const statusY = Math.min(A4.heightMm - M.bottom - 14, ty + 4);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(12);
+    if (invoice.status === 'paid') {
+      ink(doc, h.brand);
+      draw(doc, h.brand);
+      doc.setLineWidth(0.5);
+      doc.roundedRect(M.left, statusY - 5, 60, 11, 2, 2, 'S');
+      doc.text(pdfSafeText(statusWord), M.left + 30, statusY + 1.5, { align: 'center' });
+    } else {
+      doc.setTextColor(150, 40, 40);
+      doc.text(pdfSafeText(statusWord), M.left, statusY + 2);
+    }
   }
 
   // No commission line here, deliberately. What a referring practitioner is owed
@@ -388,22 +438,26 @@ export async function buildInvoicePdf(input: InvoicePdfInput): Promise<jsPdfDoc>
 }
 
 /**
- * Build one doctor's monthly referral statement.
+ * Build one doctor's referral statement for a period.
  *
  * Carries what the lab asked for and nothing a patient should see: patient names,
  * the tests done for them, the bill reference and date, the rate agreed with this
  * practitioner, and the commission each bill earned — summed at the foot.
+ *
+ * `periodLabel` is a pre-formatted human string ("October 2026", "01 Oct 2026 -
+ * 15 Oct 2026", "All dates") supplied by the caller, so the heading matches the
+ * window that was actually built (month or custom range) rather than assuming one.
  */
 export async function buildStatementPdf(
   statement: DoctorStatement,
   settings: LabSettings,
-  month: string,
+  periodLabel: string,
 ): Promise<jsPdfDoc> {
   const { jsPDF } = await import('jspdf');
   const { default: autoTable } = await import('jspdf-autotable');
   const h = letterhead(settings);
 
-  const filename = `Referral statement ${statement.doctorName} ${month}.pdf`;
+  const filename = `Referral statement ${statement.doctorName} ${periodLabel}.pdf`;
   const doc = new jsPDF();
   doc.setProperties({ title: filename });
 
@@ -411,7 +465,7 @@ export async function buildStatementPdf(
     doc,
     h,
     'REFERRAL STATEMENT',
-    `Period: ${pdfSafeText(monthLabel(month))}`,
+    `Period: ${pdfSafeText(periodLabel)}`,
     `Issued: ${formatDate(new Date().toISOString())}`,
   );
 
@@ -492,6 +546,7 @@ export async function buildStatementPdf(
       doc.addPage();
       ty = M.top + 4;
     }
+    if (emphasise) ty += 3; // see the bill totals: the rule needs its own air
     doc.setFont('helvetica', emphasise ? 'bold' : 'normal');
     doc.setFontSize(emphasise ? 11 : 9);
     ink(doc, emphasise ? h.brandDark : [40, 44, 48]);
@@ -500,9 +555,9 @@ export async function buildStatementPdf(
     if (emphasise) {
       draw(doc, h.brand);
       doc.setLineWidth(0.4);
-      doc.line(boxLeft, ty - 3.2, right, ty - 3.2);
+      doc.line(boxLeft, ty - 4.6, right, ty - 4.6);
     }
-    ty += emphasise ? 7 : 5;
+    ty += emphasise ? 8 : 5.5;
   }
 
   const footY = A4.heightMm - M.bottom - 8;

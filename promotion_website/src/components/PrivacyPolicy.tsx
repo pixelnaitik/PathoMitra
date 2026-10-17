@@ -16,9 +16,9 @@ export function PrivacyPolicyContent({ className = '' }: { className?: string })
           Last updated: {PRIVACY_LAST_UPDATED}
         </p>
         <p className="mt-1 text-xs text-on-surface-variant">
-          PathoMitra stores and processes data entirely on your device. This build does not request
-          network access, so your records and your patients&rsquo; health information are never
-          transmitted to us or anyone else.
+          PathoMitra stores and processes data entirely on your device. The Android build does not
+          even request network access, and no build transmits your records or your patients&rsquo;
+          health information to us or anyone else.
         </p>
       </div>
       {PRIVACY_SECTIONS.map(section => (

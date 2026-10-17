@@ -88,6 +88,29 @@ export interface NotificationItem {
   severity: NotificationSeverity;
   title: string;
   body: string;
+  /**
+   * The same alert without any patient name, for the system banner.
+   *
+   * `title` is what the in-app centre shows — an operator reading it has already
+   * unlocked the console, so naming the patient is fine and useful. The banner
+   * goes to the Android notification shade, which is visible on a locked screen,
+   * on a bench, to whoever is standing near it, and `FLAG_SECURE` (screenshot
+   * protection) does not cover the shade at all. So the banner carries the
+   * registration number instead: staff read `26100042` the same way they read a
+   * name off a slip, and no patient is identifiable from the outside.
+   */
+  bannerTitle: string;
+  /**
+   * The shade-safe twin of `body`, for the same reason `bannerTitle` exists.
+   *
+   * `body` is written for the in-app list, where the operator has already unlocked
+   * the console, so it may quote their own amendment reason or state the money
+   * still owed. Neither belongs on a lock screen: Microsoft Store Policies 10.9.3
+   * forbids "information a customer would reasonably consider to be confidential"
+   * in a notification, and an amendment reason is operator free-text that can name
+   * a patient, while an outstanding balance is the lab's financial detail.
+   */
+  bannerBody: string;
   /** Person or record the alert is about — used for delivery messaging. */
   entityName: string;
   entityId: string;
@@ -135,6 +158,42 @@ export const CATEGORY_LABEL: Record<NotificationCategory, string> = {
   amended: 'Amended report',
   due: 'Payment due',
 };
+
+/**
+ * Banner titles for a surface the app cannot make private.
+ *
+ * `bannerTitle` already drops the patient name and keeps the registration number,
+ * which is the right trade on Android: that channel is created with
+ * `visibility: 0`, so the OS hides the text until the device is unlocked. The
+ * desktop and web paths have no such control — `new Notification()` and
+ * `ServiceWorkerRegistration.showNotification()` hand the text straight to the
+ * Windows toast, which renders it on the lock screen whenever the user's own
+ * "show notifications on the lock screen" setting is on. A registration number is
+ * pseudonymous, but it still tells whoever is standing at the console that this
+ * record has an outstanding pathology test or an unpaid bill — which is exactly
+ * what Store Policies 10.9.3 covers ("information a customer would reasonably
+ * consider to be confidential").
+ *
+ * Keyed by the category union so a fifth alert type cannot be added without the
+ * compiler asking for its generic title. The body needs no twin: `bannerBody` is
+ * already written identifier-free, and notification-engine.test.ts pins that.
+ */
+const GENERIC_BANNER_TITLES: Record<NotificationCategory, string> = {
+  overdue: 'A registered patient is still awaiting a report',
+  draft: 'A draft report was never issued',
+  amended: 'An issued report was amended',
+  due: 'An invoice is unpaid',
+};
+
+/**
+ * The banner pair for a platform with no lock-screen privacy control: a generic
+ * title that names no record, plus the already-safe body. The in-app centre keeps
+ * `title` / `bannerTitle` — an operator who has unlocked the console is entitled
+ * to know which case to open.
+ */
+export function safeBannerFor(item: NotificationItem): { title: string; body: string } {
+  return { title: GENERIC_BANNER_TITLES[item.category], body: item.bannerBody };
+}
 
 const SEVERITY_RANK: Record<NotificationSeverity, number> = {
   critical: 0,
@@ -259,7 +318,11 @@ export function buildNotifications(source: NotificationSource): NotificationItem
         category: 'overdue',
         severity,
         title: `${patient.name} is still awaiting a report`,
+        bannerTitle: `Patient ${patient.id} is still awaiting a report`,
         body: `${outstanding.length} of ${ordered.length} ${pluralTests(ordered.length)} collected ${formatAge(age)} ago have no report yet (${label}${extra}).`,
+        // The ordered test names stay off the banner: "p1 — HIV SEROLOGY" on a
+        // locked screen is a diagnosis, not a reminder.
+        bannerBody: `${outstanding.length} of ${ordered.length} ${pluralTests(ordered.length)} collected ${formatAge(age)} ago have no report yet.`,
         entityName: patient.name,
         entityId: patient.id,
         ageHours: age,
@@ -281,7 +344,9 @@ export function buildNotifications(source: NotificationSource): NotificationItem
         category: 'draft',
         severity,
         title: `Draft for ${report.patientName} was never issued`,
+        bannerTitle: `Draft for patient ${report.patientId} was never issued`,
         body: `Last edited ${formatAge(age)} ago${report.testType ? ` · ${report.testType}` : ''}. It stays in the lab until the report is issued.`,
+        bannerBody: `Last edited ${formatAge(age)} ago. It stays in the lab until the report is issued.`,
         entityName: report.patientName,
         entityId: report.id,
         ageHours: age,
@@ -308,7 +373,12 @@ export function buildNotifications(source: NotificationSource): NotificationItem
         category: 'amended',
         severity: reAmended ? 'warning' : 'info',
         title: `Issued report for ${report.patientName} was amended`,
+        bannerTitle: `Issued report for patient ${report.patientId} was amended`,
         body: `Version ${report.version}${reAmended ? ' — changed more than once' : ''}, last edited ${formatAge(age)} ago.${report.amendReason ? ` Reason: ${report.amendReason}.` : ' No reason recorded.'}`,
+        // No reason, ever: `amendReason` is free-text the operator typed, and a
+        // lab that writes "patient called to change the name" puts a name on the
+        // lock screen through a field this file cannot vet.
+        bannerBody: `Version ${report.version}${reAmended ? ' — changed more than once' : ''}, last edited ${formatAge(age)} ago.`,
         entityName: report.patientName,
         entityId: report.id,
         ageHours: age,
@@ -336,6 +406,13 @@ export function buildNotifications(source: NotificationSource): NotificationItem
         // Never louder than warning — money is not a clinical emergency.
         severity: severity === 'critical' ? 'warning' : severity,
         title: `${formatAmount(balance)} unpaid for ${invoice.patientName}`,
+        // The bill number is the useful handle on a locked screen — it is what the
+        // operator types into the bills desk. The amount deliberately is not: the
+        // money the lab is owed is its own business (10.9.3).
+        bannerTitle: `Bill ${invoice.invoiceNo || invoice.id} is unpaid`,
+        // Amounts are the lab's money, not public. The banner says a bill is
+        // unpaid; the bills desk says how much.
+        bannerBody: `Invoice raised ${formatAge(age)} ago and still marked pending.`,
         body:
           invoice.paidAmount > 0
             ? `${invoice.invoiceNo ? `${invoice.invoiceNo}: ` : ''}${formatAmount(balance)} of the ${formatAmount(invoice.amount)} bill raised ${formatAge(age)} ago is still outstanding.`

@@ -1,18 +1,18 @@
 # PathoMitra
 
 > An offline-first digital pathology laboratory management system — patient records,
-> encrypted reports, billing and analytics, entirely on-device.
+> encrypted reports, billing, and analytics, entirely on-device for Android and Desktop (Windows).
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![CI](https://github.com/pixelnaitik/PathoMitra/actions/workflows/ci.yml/badge.svg)
 ![Android](https://github.com/pixelnaitik/PathoMitra/actions/workflows/android.yml/badge.svg)
 ![Release](https://github.com/pixelnaitik/PathoMitra/actions/workflows/release.yml/badge.svg)
 
-**PathoMitra** is built with React 19, Vite, Tailwind CSS and Capacitor 8. It runs as a
-web app during development and ships as an Android APK/AAB where every clinical record
-lives in an encrypted on-device database. It requests **no `INTERNET` permission**, talks
-to no backend, and contains no analytics or third-party crash reporting — the laboratory
-owns its data, full stop.
+**PathoMitra** is built with React 19, Vite, Tailwind CSS, Electron, and Capacitor 8. It runs as a
+desktop application on Windows, an Android mobile app, and a web app during development. Every clinical record
+lives in an encrypted on-device database. It requests **no `INTERNET` permission** for the clinical app, talks
+to no tracking backend, and contains zero third-party analytics or invasive crash reporting — the laboratory
+owns and controls its data locally.
 
 ---
 
@@ -23,31 +23,32 @@ owns its data, full stop.
 3. [Tech Stack](#tech-stack)
 4. [Project Structure](#project-structure)
 5. [Getting Started (Web)](#getting-started-web)
-6. [Building for Android](#building-for-android)
-7. [Command Reference](#command-reference)
-8. [Quality Gates](#quality-gates)
-9. [CI/CD & Releases](#cicd--releases)
-10. [Versioning](#versioning)
-11. [Documentation](#documentation)
-12. [Security](#security)
-13. [Contributing](#contributing)
-14. [License](#license)
+6. [Desktop Application (Electron)](#desktop-application-electron)
+7. [Building for Android](#building-for-android)
+8. [Command Reference](#command-reference)
+9. [Quality Gates](#quality-gates)
+10. [CI/CD & Releases](#cicd--releases)
+11. [Versioning](#versioning)
+12. [Documentation](#documentation)
+13. [Security](#security)
+14. [Contributing](#contributing)
+15. [License](#license)
 
 ---
 
 ## Features
 
-- **Dashboard & Analytics** — revenue, test volume, new patients and pending-report KPIs with charts, plus exportable CSVs.
-- **Patient & Doctor Management** — registration, search and referral registers, with a multi-range calendar (presets, custom from/to ranges, month switching, per-day record dots) built into both lists.
-- **Report Generation** — accurate pathology reports (CBC, LFT, lipid profile, …) rendered to PDF with jsPDF, in four templates: _Modern_, _Classic_, _Minimalist_ and _Plain / Pre-printed Pad_ for existing letterheads. Keyboard-driven result entry for high-speed data capture.
-- **Custom Tests & Profiles** — define new tests with categories, units and male/female or adult/child reference boundaries; results are flagged against age- and sex-appropriate ranges.
-- **Drafts & Amendment History** — reports save as drafts (never signed, never patient-visible) and are finalized on issue. Amending a finalized report bumps its version and records who changed it and when; the issuing operator and issue time are printed on the PDF.
-- **Encrypted On-Device Store** — lab settings, custom tests and every clinical record live in a SQLCipher (AES-256) SQLite database whose key is held in the Android hardware keystore, with `localStorage` as the fast UI cache.
-- **Bounded Lists** — report and patient lists page through results and cap what a single read returns, so a growing lab history never turns a screen into a full table scan.
-- **Notification Center** — overdue reports, unissued drafts, stale invoices and malformed records are derived from the data you already have, with per-operator read/mute state kept on the device.
-- **Local Authentication** — one operator account unlocked by a PBKDF2-hashed passcode with optional biometric / screen-lock credential. Failed unlocks escalate a lockout, and the session re-locks on background or after an idle interval.
-- **Settings & Themes** — lab identity, logos, contact details and print layout, with five healthcare-tuned palettes (zero layout flash on load).
-- **Data Backups** — JSON snapshots the operator creates and keeps; the app never phones home.
+- **Multi-Platform Support** — Runs on Android tablets/phones (Capacitor) and Windows Desktop (Electron with native MSI/MSIX installers and DPI-aware printing).
+- **Dashboard & Analytics** — Revenue, test volume, new patients and pending-report KPIs with charts, plus exportable CSVs.
+- **Patient & Doctor Management** — Registration, quick search, doctor directories, and referral registers with calendar range filtering.
+- **Billing & Invoices** — Built-in laboratory pricing management, billing receipts, and referral statement calculations.
+- **Pathology Catalogue & Report Generation** — 160+ clinical test definitions (CBC, LFT, Lipid, Thyroid, Renal, Urine, etc.) rendered into clean PDFs with multiple design templates (*Modern*, *Classic*, *Minimalist*, *Pre-printed Letterhead*).
+- **Keyboard-First Result Entry** — Rapid data entry designed for clinical lab technicians.
+- **Custom Tests & Profiles** — Define custom test parameters, categories, units, and demographic reference ranges.
+- **Drafts & Amendment Auditing** — Drafts remain strictly confidential; finalized reports record amendment history and issuing technician metadata.
+- **Encrypted On-Device Database** — SQLCipher (AES-256) database with hardware-backed key management (Android Keystore / OS Keychain).
+- **Notification Center** — Derives actionable local reminders for pending reports, unissued drafts, and stale bills with no remote push servers.
+- **Local Authentication** — Single-operator security with PBKDF2 passcode hashing, rate-limiting lockout backoff, and optional biometric unlock.
 
 There is deliberately **no QR verification service and no external signing endpoint** —
 the offline build has no server, so a report states what actually happened (who issued
@@ -139,7 +140,36 @@ npm run dev
 ```
 
 Open `http://localhost:3000`. Data persists in browser storage in the web build; the
-production product target is the encrypted Android build below.
+production product targets are the encrypted Electron Desktop build and Android build below.
+
+---
+
+## Desktop Application (Electron)
+
+PathoMitra runs as a standalone desktop application with encrypted on-device database support (using `better-sqlite3-multiple-ciphers` with hardware keychain integration via `@napi-rs/keyring`).
+
+### Development
+
+```bash
+npm run desktop:dev
+```
+
+### Packaging Windows Installers
+
+- **MSI Installer**:
+  ```bash
+  npm run desktop:msi
+  ```
+- **EXE Installer (NSIS)**:
+  ```bash
+  npm run desktop:installer
+  ```
+- **MSIX / AppX Store Package**:
+  ```bash
+  npm run desktop:msix
+  ```
+
+Outputs are generated under `dist-electron/` and `release-desktop/`.
 
 ---
 

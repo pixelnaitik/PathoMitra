@@ -59,11 +59,15 @@ const navItems: NavItem[] = [
 // four-column grid, so this list must stay at four entries — a fifth wrapped
 // onto a second row under the pill and showed up as a stray half-hidden gear.
 // Settings is reachable from the drawer and from the header avatar.
+//
+// Reports before Bills, matching the desktop rail above: the lab's work is
+// register → report → money, and the owner asked for the tab bar to read in that
+// order rather than putting the cash desk ahead of the report desk.
 const bottomNavItems: NavItem[] = [
   { id: 'dashboard', label: 'Overview', icon: BarChart3 },
   { id: 'patients', label: 'Patients', icon: Users },
-  { id: 'bills', label: 'Bills', icon: ReceiptText },
   { id: 'reports', label: 'Reports', icon: FileText },
+  { id: 'bills', label: 'Bills', icon: ReceiptText },
 ];
 
 /**

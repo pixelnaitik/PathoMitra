@@ -161,13 +161,66 @@ function saveFile(args: SaveArgs): { name: string; uri: string; path: string; is
   throw lastError instanceof Error ? lastError : new Error('could not write the file');
 }
 
+/**
+ * The origin the app's own renderer is served from — see `SCHEME` in
+ * `electron/main.ts`. Every `pm:*` channel below can read the clinical database,
+ * write to the app's storage roots, spool print jobs or touch the Windows
+ * credential store, so an invocation is only accepted when the frame that sent
+ * it is this page and nothing else.
+ *
+ * Without it, any frame that ends up inside the main window's webContents — a
+ * future embedded <iframe>, a PDF viewer frame, a frame reached through a
+ * navigation bug — could call `pm:db:save` and overwrite every patient record.
+ * The path allow-lists and `assertEntity` guard *what* may be asked for; nothing
+ * else in this file guarded *who* may ask.
+ */
+const TRUSTED_SENDER_ORIGIN = 'pathomitra://app';
+
+/** True only for the app's own top-level page, in the main window. */
+function isTrustedSender(event: Electron.IpcMainInvokeEvent): boolean {
+  const frame = event.senderFrame;
+  // `senderFrame` is null when the frame has already been destroyed — that call
+  // cannot be attributed to anybody, so it is refused rather than assumed safe.
+  if (!frame) return false;
+  try {
+    return new URL(frame.url).href.startsWith(TRUSTED_SENDER_ORIGIN);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `ipcMain.handle` with the sender check welded in front of it.
+ *
+ * Every channel in `registerIpc()` is registered through this wrapper, so the
+ * check is impossible to forget on a channel added later — which is the usual
+ * way this class of hole survives review.
+ *
+ * Generic over the argument tuple so a channel can keep a typed signature
+ * (`pm:files:save` takes a `SaveArgs`); the cast is the IPC boundary itself,
+ * where the arguments arrive from the renderer as untyped JSON and every handler
+ * validates them on its own.
+ */
+function handle<A extends unknown[]>(
+  channel: string,
+  listener: (event: Electron.IpcMainInvokeEvent, ...args: A) => unknown,
+): void {
+  ipcMain.handle(channel, (event, ...args) => {
+    if (!isTrustedSender(event)) {
+      console.error(`PathoMitra desktop: refused ${channel} from an untrusted frame`);
+      throw new Error(`Untrusted IPC sender for ${channel}.`);
+    }
+    return listener(event, ...(args as A));
+  });
+}
+
 export function registerIpc(): void {
   /* Database façade -------------------------------------------------------- */
-  ipcMain.handle('pm:db:init', async () => {
+  handle('pm:db:init', async () => {
     await openDatabase();
   });
-  ipcMain.handle('pm:db:load', (_e, entity: unknown) => loadEntity(assertEntity(entity)));
-  ipcMain.handle('pm:db:save', (_e, entity: unknown, json: unknown) => {
+  handle('pm:db:load', (_e, entity: unknown) => loadEntity(assertEntity(entity)));
+  handle('pm:db:save', (_e, entity: unknown, json: unknown) => {
     const name = assertEntity(entity);
     if (typeof json !== 'string') throw new Error('db payload must be a JSON string');
     // Parse-on-write: the encrypted file must never hold something the
@@ -175,7 +228,7 @@ export function registerIpc(): void {
     JSON.parse(json);
     saveEntity(name, json);
   });
-  ipcMain.handle('pm:db:clear', () => clearEntities());
+  handle('pm:db:clear', () => clearEntities());
   /**
    * Atomic multi-collection write (see `saveEntitiesBulk`). Each entry is
    * validated exactly like a single `pm:db:save` — allow-listed collection name,
@@ -183,7 +236,7 @@ export function registerIpc(): void {
    * transaction, so the renderer's `transaction()` is only ever atomic or not at
    * all, never half-applied.
    */
-  ipcMain.handle('pm:db:commit', (_e, entries: unknown) => {
+  handle('pm:db:commit', (_e, entries: unknown) => {
     if (!Array.isArray(entries)) throw new Error('db commit expects an array of collections');
     const rows = entries.map(entry => {
       const row = entry as { entity?: unknown; json?: unknown } | null;
@@ -196,12 +249,12 @@ export function registerIpc(): void {
   });
 
   /* Files ------------------------------------------------------------------ */
-  ipcMain.handle('pm:files:save', (_e, args: SaveArgs) => saveFile(args));
-  ipcMain.handle('pm:files:readText', (_e, rel: unknown) => {
+  handle('pm:files:save', (_e, args: SaveArgs) => saveFile(args));
+  handle('pm:files:readText', (_e, rel: unknown) => {
     if (typeof rel !== 'string') throw new Error('bad path');
     return fs.readFileSync(within(privateRoot(), rel), 'utf8');
   });
-  ipcMain.handle('pm:files:list', (_e, relDir: unknown, extension: unknown) => {
+  handle('pm:files:list', (_e, relDir: unknown, extension: unknown) => {
     if (typeof relDir !== 'string') throw new Error('bad path');
     const dir = within(privateRoot(), relDir);
     const ext = typeof extension === 'string' ? extension : '';
@@ -216,7 +269,7 @@ export function registerIpc(): void {
       throw err;
     }
   });
-  ipcMain.handle('pm:files:uri', (_e, rel: unknown) => {
+  handle('pm:files:uri', (_e, rel: unknown) => {
     if (typeof rel !== 'string') throw new Error('bad path');
     return pathToFileURL(within(privateRoot(), rel)).href;
   });
@@ -227,7 +280,7 @@ export function registerIpc(): void {
    * the renderer actually lists — a compromised page still cannot wipe the
    * Electron profile or the WAL sidecars of the database.
    */
-  ipcMain.handle('pm:files:delete', (_e, rel: unknown) => {
+  handle('pm:files:delete', (_e, rel: unknown) => {
     if (typeof rel !== 'string') throw new Error('bad path');
     const root = privateRoot();
     const abs = within(root, rel);
@@ -246,12 +299,12 @@ export function registerIpc(): void {
    * open prompt lives in `print.ts`. Window-modal, so the prompt belongs to the
    * window that asked for it.
    */
-  ipcMain.handle('pm:files:print', (event, target: unknown) => {
+  handle('pm:files:print', (event, target: unknown) => {
     const abs = resolveTarget(target);
     return printPdfFile(abs, BrowserWindow.fromWebContents(event.sender) ?? undefined);
   });
   /** Open with the user's default handler, or reveal in Explorer. */
-  ipcMain.handle('pm:shell:show', async (_e, target: unknown) => {
+  handle('pm:shell:show', async (_e, target: unknown) => {
     const abs = resolveTarget(target);
     const err = await shell.openPath(abs);
     if (err) throw new Error(err);
@@ -259,7 +312,7 @@ export function registerIpc(): void {
 
   /* In-app print dialog ---------------------------------------------------- */
   /** Installed printers for the dialog's dropdown. */
-  ipcMain.handle('pm:print:printers', event =>
+  handle('pm:print:printers', event =>
     listPrinters(BrowserWindow.fromWebContents(event.sender) ?? undefined),
   );
   /**
@@ -269,7 +322,7 @@ export function registerIpc(): void {
    * generated document. Failures come back as `{ ok: false }` rather than a
    * rejection: the dialog shows them inline, it does not crash on them.
    */
-  ipcMain.handle(
+  handle(
     'pm:print:job',
     (event, request: unknown): Promise<PrintJobResult> | PrintJobResult => {
       const job = request as Partial<PrintJobRequest> | null;
@@ -296,15 +349,15 @@ export function registerIpc(): void {
    * denies `db-key` and any name outside the renderer namespace, so this surface
    * cannot read, overwrite or delete the SQLCipher key.
    */
-  ipcMain.handle('pm:keyring:set', (_e, account: unknown, secret: unknown) => {
+  handle('pm:keyring:set', (_e, account: unknown, secret: unknown) => {
     const name = assertRendererAccount(account);
     if (typeof secret !== 'string') throw new Error('bad keyring args');
     return setSecret(name, secret);
   });
-  ipcMain.handle('pm:keyring:get', (_e, account: unknown) =>
+  handle('pm:keyring:get', (_e, account: unknown) =>
     getSecret(assertRendererAccount(account)),
   );
-  ipcMain.handle('pm:keyring:delete', (_e, account: unknown) =>
+  handle('pm:keyring:delete', (_e, account: unknown) =>
     deleteSecret(assertRendererAccount(account)),
   );
 }

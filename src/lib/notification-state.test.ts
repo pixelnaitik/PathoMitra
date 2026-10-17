@@ -21,7 +21,11 @@ function item(overrides: Partial<NotificationItem> = {}): NotificationItem {
     category: 'overdue',
     severity: 'warning',
     title: 'Asha Rao is still awaiting a report',
+    // Lock-screen-safe twin: `title` is for the in-app list, `bannerTitle` is what
+    // the OS shade may show. See notification-engine.test.ts for the rule.
+    bannerTitle: 'Patient p1 is still awaiting a report',
     body: '2 tests collected 30h ago',
+    bannerBody: '2 of 3 tests collected 30h ago have no report yet.',
     entityName: 'Asha Rao',
     entityId: 'p1',
     ageHours: 30,

@@ -28,7 +28,7 @@
 import { CapacitorSQLite, SQLiteConnection } from '@capacitor-community/sqlite';
 import type { SQLiteDBConnection } from '@capacitor-community/sqlite';
 import type { DataRepository, EntityName, ListOptions, LocalDoc, WhereFilter } from './types';
-import { applyQuery, generateId, makeDoc } from './query';
+import { applyQuery, generateId, generateSecret, makeDoc } from './query';
 
 const DB_NAME = 'pathlab';
 const DB_VERSION = 1;
@@ -163,7 +163,10 @@ export class SqliteRepository implements DataRepository {
     // Ensure an encryption secret exists before opening an encrypted DB.
     const stored = await this.sqlite.isSecretStored();
     if (!stored.result) {
-      await this.sqlite.setEncryptionSecret(`${generateId()}${generateId()}`);
+      // `generateSecret`, not `generateId`: this string is the SQLCipher passphrase
+      // for every patient record on the device, and generateId has a `Math.random`
+      // fallback for platforms with no Web Crypto. 32 bytes = 256 bits, hex encoded.
+      await this.sqlite.setEncryptionSecret(generateSecret(32));
     }
 
     const isConn = (await this.sqlite.isConnection(DB_NAME, false)).result;
@@ -243,10 +246,19 @@ export class SqliteRepository implements DataRepository {
     id: string,
     value: Record<string, unknown>,
   ): Promise<void> {
+    // `transaction = false`: the native plugin wraps a `run()` in its own
+    // BEGIN/COMMIT whenever the third argument is left at its `true` default.
+    // Inside `transaction()` the connection is already inside a BEGIN, so that
+    // second BEGIN throws "Already in transaction" — and the failed run's own
+    // rollback then ends the OUTER transaction, discarding the batch in flight.
+    // This was the "Could not issue the report / Run: Failed in beginTransaction"
+    // failure. A single statement is already atomic in autocommit; multi-statement
+    // atomicity is `transaction()`'s job, and it owns the native BEGIN.
     await this.conn().run(
       `INSERT INTO ${entity} (id, data) VALUES (?, ?)
        ON CONFLICT(id) DO UPDATE SET data = excluded.data;`,
       [id, JSON.stringify(value)],
+      false,
     );
     await this.emit(entity);
   }
@@ -271,7 +283,8 @@ export class SqliteRepository implements DataRepository {
   async delete(entity: EntityName, id: string): Promise<void> {
     await this.init();
     await this.enqueue(async () => {
-      await this.conn().run(`DELETE FROM ${entity} WHERE id = ?;`, [id]);
+      // See `applySet`: never let the plugin open a nested transaction here.
+      await this.conn().run(`DELETE FROM ${entity} WHERE id = ?;`, [id], false);
       await this.emit(entity);
     });
   }
@@ -432,7 +445,9 @@ export class SqliteRepository implements DataRepository {
     await this.init();
     for (const entity of ENTITIES) {
       await this.enqueue(async () => {
-        await this.conn().run(`DELETE FROM ${entity};`);
+        // `transaction = false` for the same reason as `applySet`, and because
+        // `VACUUM` below cannot run inside a transaction at all.
+        await this.conn().run(`DELETE FROM ${entity};`, [], false);
         await this.emit(entity);
       });
     }
@@ -440,7 +455,7 @@ export class SqliteRepository implements DataRepository {
     // leaves the pages in the file, so the clinical documents a lab believes it
     // destroyed stay recoverable from the database file until it is rebuilt.
     try {
-      await this.conn().run('VACUUM;');
+      await this.conn().run('VACUUM;', [], false);
     } catch (error) {
       console.error('PathoMitra: could not compact the database after erasing', error);
     }

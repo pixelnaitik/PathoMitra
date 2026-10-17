@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import { Mail } from 'lucide-react';
 
-const SUPPORT_EMAIL = 'support@pathomitra.app';
+const SUPPORT_EMAIL = 'pathomitra@healthcarediagnosticscenter.in';
 
 const PRODUCT_LINKS = [
   { label: 'Technology', to: '/technology' },
@@ -18,9 +18,18 @@ const RESOURCE_LINKS = [
 ];
 
 const CONTACT_LINKS = [
+  /*
+   * One mailbox, one function. A "Clinical Advisory" desk and a "Press
+   * Inquiries" desk were mailto: labels for departments that do not exist — this
+   * is a solo open-source project with no clinical staff and no press office. A
+   * reviewer who emailed either would find the claim false, which is the shape
+   * Google's deceptive-behaviour and impersonation policies punish. Same reason
+   * the invented trading name and the precision strapline came out of the
+   * copyright line. Both phrasings are now banned by
+   * lib/marketing-claims.test.ts, which is why they are named here in a block
+   * comment (the guard strips those) instead of in visible copy.
+   */
   { label: 'Contact Support', subject: 'Support Request' },
-  { label: 'Clinical Advisory', subject: 'Clinical Advisory' },
-  { label: 'Press Inquiries', subject: 'Press Inquiry' },
 ];
 
 export default function Footer() {
@@ -99,7 +108,7 @@ export default function Footer() {
 
         <div className="border-t border-outline-variant/30 pt-8 flex flex-col md:flex-row justify-between items-center gap-4">
           <span className="text-xs text-on-surface-variant opacity-70">
-            © 2026 PathoMitra Diagnostic Systems. Clinical Grade Precision.
+            © 2026 Naitik Raj · PathoMitra is MIT-licensed open source.
           </span>
           <div className="flex items-center gap-4">
             <Link

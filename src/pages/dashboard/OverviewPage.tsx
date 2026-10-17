@@ -19,6 +19,7 @@ import { Users, FileText, Plus, Trash2, UserPlus } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { listStaggerProps } from '../../lib/motion';
 import { reportStatusView } from '../../lib/report-status';
+import { collapseToProfiles } from '../../lib/pathology-tests';
 import { useAuth } from '../../contexts/AuthContext';
 import CountUp from '../../components/CountUp';
 import {
@@ -30,6 +31,22 @@ import {
   EmptyState,
   useToast,
 } from '../../components/ui';
+
+/**
+ * A patient's pending order, phrased the way the lab phrases it: one entry per
+ * thing that was added.
+ *
+ * `testSelection` stores a package *and* every parameter inside it (the clinical
+ * report needs the members), so joining the raw list put "CBC (COMPLETE BLOOD
+ * COUNT), WHITE CELL COUNT(TC), NEUTROPHIL, LYMPHOCYTE …" — twenty-odd names —
+ * into one table cell. That wrapped over its own row on a phone and made the
+ * recent-activity table read as a wall of text. `collapseToProfiles` folds each
+ * package back to its single entry, for every package, not just CBC.
+ */
+function orderedSummary(testSelection: string[] | undefined): string {
+  const units = collapseToProfiles(testSelection);
+  return units.length > 0 ? units.join(', ') : 'No test selected';
+}
 
 export default function OverviewPage({
   setActiveTab,
@@ -431,9 +448,7 @@ export default function OverviewPage({
                   const name = isReport ? item.patientName : item.name;
                   const testSub = isReport
                     ? item.testType || 'General'
-                    : item.testSelection?.length > 0
-                      ? item.testSelection.join(', ')
-                      : 'No test selected';
+                    : orderedSummary(item.testSelection);
                   // Same state model as the Reports tab card and the detail
                   // sheet — one source of truth for Draft / Issued / Amended
                   // so the overview cannot disagree with the record it links to.
@@ -519,9 +534,7 @@ export default function OverviewPage({
               const name = isReport ? item.patientName : item.name;
               const testSub = isReport
                 ? item.testType || 'General'
-                : item.testSelection?.length > 0
-                  ? item.testSelection.join(', ')
-                  : 'No test selected';
+                : orderedSummary(item.testSelection);
               const statusView = isReport
                 ? reportStatusView({ status: item.status, version: item.version })
                 : null;

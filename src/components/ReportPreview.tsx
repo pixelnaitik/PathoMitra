@@ -896,7 +896,10 @@ function ReportBody({
           display: 'flex',
           fontSize: pt(L.tableBodyFont),
           padding: `${cell}px ${mm(1.5)}px`,
-          borderBottom: `1px solid ${rgba(colors.HAIRLINE, 0.5)}`,
+          // The pad form carries its own ruling, so the generator prints no rule
+          // under a row on that template. The preview follows the document.
+          borderBottom:
+            L.template === 'blank' ? undefined : `1px solid ${rgba(colors.HAIRLINE, 0.5)}`,
           overflow: 'hidden',
           whiteSpace: 'nowrap',
         };
@@ -912,7 +915,18 @@ function ReportBody({
             >
               {r[1]}{' '}
               {arrow && (
-                <span style={{ color: r[4] === 'up' ? '#b02a3a' : rgba(colors.BRAND) }}>
+                /*
+                 * One ink for both directions, and small enough to read as part of
+                 * the number rather than as a column of its own — the same mark the
+                 * PDF draws as a 1.3 × 1.5 mm triangle (black on the pad, body ink
+                 * on plain paper).
+                 */
+                <span
+                  style={{
+                    color: L.template === 'blank' ? '#000' : rgba(colors.INK),
+                    fontSize: '0.8em',
+                  }}
+                >
                   {arrow}
                 </span>
               )}
@@ -982,19 +996,24 @@ function ReportBody({
       >
         {L.template === 'blank' ? '*** End of Report ***' : '— End of Report —'}
       </div>
-      <div
-        style={{
-          position: 'absolute',
-          bottom: mm(2),
-          left: 0,
-          right: 0,
-          textAlign: 'center',
-          fontSize: pt(Math.max(8, L.footerFont - 2)),
-          color: 'rgb(120,120,120)',
-        }}
-      >
-        Page 1 of 1
-      </div>
+      {/* The per-sheet band (identity + page counter) is a plain-paper feature:
+          the generator prints nothing of the sort on the pad template, because
+          the artwork already on the sheet carries it. */}
+      {L.template !== 'blank' && (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: mm(2),
+            left: 0,
+            right: 0,
+            textAlign: 'center',
+            fontSize: pt(Math.max(8, L.footerFont - 2)),
+            color: 'rgb(120,120,120)',
+          }}
+        >
+          Page 1 of 1
+        </div>
+      )}
     </>
   );
 

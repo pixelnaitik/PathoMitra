@@ -1,17 +1,19 @@
-import { MotionConfig } from 'motion/react';
-import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { useEffect } from 'react';
+import { AnimatePresence, MotionConfig, useReducedMotion } from 'motion/react';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import LandingPage from './LandingPage';
 import TechnologyPage from './pages/TechnologyPage';
 import SolutionsPage from './pages/SolutionsPage';
 import PrivacyPage from './pages/PrivacyPage';
+import DownloadPage from './pages/DownloadPage';
 import { scrollToId } from './lib/scroll';
 
 /**
  * Static brochure router.
  *
- * HashRouter (not BrowserRouter) on purpose: a static-only build has no server to
- * rewrite deep links back to index.html, and `#/technology` resolves from a plain
- * file, a subfolder, or object storage with no SPA fallback rule. There is no
+ * BrowserRouter gives clean paths (`/technology`, `/privacy`) instead of
+ * `#/technology`. Deep links work because Cloudflare Pages serves index.html for
+ * any unmatched route via `public/_redirects` (`/* /index.html 200`). There is no
  * `/auth` route and no protected route — every page here is public.
  */
 export default function App() {
@@ -34,15 +36,37 @@ export default function App() {
       >
         Skip to content
       </a>
-      <HashRouter>
-        <Routes>
-          <Route path="/" element={<LandingPage />} />
-          <Route path="/technology" element={<TechnologyPage />} />
-          <Route path="/solutions" element={<SolutionsPage />} />
-          <Route path="/privacy" element={<PrivacyPage />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </HashRouter>
+      <BrowserRouter>
+        <AnimatedRoutes />
+      </BrowserRouter>
     </MotionConfig>
+  );
+}
+
+/**
+ * Route swap wrapped in AnimatePresence: each page mounts inside a
+ * <PageTransition> shell (see components/ui/motion.tsx) and is keyed by the
+ * pathname, so leaving a page fades out before the next fades in. Scroll
+ * position resets on navigation — instant for reduced-motion visitors.
+ */
+function AnimatedRoutes() {
+  const location = useLocation();
+  const reduceMotion = useReducedMotion();
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'instant' });
+  }, [location.pathname, reduceMotion]);
+
+  return (
+    <AnimatePresence mode="wait" initial={false}>
+      <Routes location={location} key={location.pathname}>
+        <Route path="/" element={<LandingPage />} />
+        <Route path="/technology" element={<TechnologyPage />} />
+        <Route path="/solutions" element={<SolutionsPage />} />
+        <Route path="/download" element={<DownloadPage />} />
+        <Route path="/privacy" element={<PrivacyPage />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </AnimatePresence>
   );
 }

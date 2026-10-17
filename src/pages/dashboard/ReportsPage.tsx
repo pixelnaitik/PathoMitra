@@ -13,10 +13,12 @@ import {
 } from '../../data/fs';
 import { deleteReportCascade } from '../../lib/cascades';
 import { useCollectionList, type ListFilter } from '../../hooks/useCollectionList';
+import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { handleFirestoreError, OperationType } from '../../lib/firestore-errors';
 import { useAuth } from '../../contexts/AuthContext';
 import {
   FilePlus,
+  FileText,
   Search,
   FileSpreadsheet,
   FileSignature,
@@ -66,9 +68,9 @@ import {
   type PathologyTest,
 } from '../../lib/pathology-tests';
 import { recalculateCBC } from '../../lib/report-calculations';
-import { THEME_OPTIONS } from '../../lib/theme';
 import { readSettings } from '../../lib/settings';
-import { getPrintableArea, getColumnWidths } from '../../lib/report-layout';
+import { countPageUnits, estimatePrintedPages, resolveReportLayout } from '../../lib/report-layout';
+import { buildReportDocument } from '../../lib/report-pdf';
 import {
   buildReportLegalLines,
   resolveSigner,
@@ -120,6 +122,21 @@ const asResultMap = (data: Record<string, unknown> | undefined): Record<string, 
 /** Older forms saved names with stray padding; announcements must not repeat it. */
 const spokenName = (name: string | undefined) => (name || '').trim() || 'this report';
 
+/**
+ * The desktop results table: one column plan shared by the header row and every
+ * entry row, which is the only reason the columns line up across a 27-member
+ * profile. Test | Reference | Result | Unit | remove.
+ */
+const COMPOSER_COLS =
+  'grid grid-cols-[minmax(0,1.5fr)_minmax(0,1.15fr)_minmax(0,1.25fr)_5.5rem_2.25rem] items-center gap-3';
+
+/** Same field the stacked card draws, sized for its own column. */
+const COMPOSER_INPUT =
+  'test-result-input w-full min-w-0 px-3 py-1.5 bg-surface-container-lowest border border-outline-variant/30 rounded-lg focus:border-accent focus:outline-none transition font-bold text-primary';
+
+/** `lg` in Tailwind's scale — the edge where a 5-column table has room to breathe. */
+const COMPOSER_WIDE_MQ = '(min-width: 1024px)';
+
 export default function ReportsPage({
   initialReportId,
   clearAction,
@@ -133,6 +150,8 @@ export default function ReportsPage({
 }) {
   const { user, role } = useAuth();
   const toast = useToast();
+  /** A PC gets the aligned entry table; a phone keeps its stacked cards. */
+  const isWideComposer = useMediaQuery(COMPOSER_WIDE_MQ);
   /** Guests are told the records are view-only; the UI must not offer writes. */
   const canEdit = role !== 'guest';
   const [patients, setPatients] = useState<PatientRecord[]>([]);
@@ -243,6 +262,37 @@ export default function ReportsPage({
     () => (isModalOpen ? expandTestSelection(newReport.testSelection).length : 0),
     [isModalOpen, newReport.testSelection],
   );
+
+  /**
+   * Approximate page count for the report about to be issued.
+   *
+   * A lab that prints one sheet per patient finds out here rather than at the
+   * printer, which is the only place the mistake used to surface. It is an
+   * estimate on purpose — the truth is whatever `buildReportDocument` returns,
+   * and after issuing the operator is told the real number. This line never
+   * gates anything.
+   */
+  const composerPages = useMemo(() => {
+    if (!isModalOpen || composerTotal === 0) return 1;
+    const layout = resolveReportLayout(readSettings());
+    const groupRows = newReport.testSelection.filter(name => findTestInfo(name)?.isGroup).length;
+    // Rows per category in the order they were ordered — that is what decides the
+    // sheet breaks, because a big package (a CBC, a full urine analysis) takes a
+    // sheet to itself. Without this the hint promises one page for a CBC plus a
+    // urine analysis that prints on two.
+    const rowsByCategory = new Map<string, number>();
+    newReport.testSelection.forEach(name => {
+      const info = findTestInfo(name);
+      if (info?.isHeader) return;
+      const category = info?.category || 'GENERAL';
+      rowsByCategory.set(category, (rowsByCategory.get(category) ?? 0) + 1);
+    });
+    return estimatePrintedPages(layout, {
+      bodyRows: composerTotal,
+      bandRows: rowsByCategory.size + groupRows,
+      units: countPageUnits([...rowsByCategory.values()]),
+    });
+  }, [isModalOpen, composerTotal, newReport.testSelection]);
 
   const filteredAvailableTests = useMemo(
     () =>
@@ -624,850 +674,106 @@ export default function ReportsPage({
     }
   };
 
+  /**
+   * Render the report and hand it to the requested destination.
+   *
+   * The document itself is built by `lib/report-pdf`, which takes a plain input
+   * object and returns the page count it actually produced. Everything that
+   * decides what lands on paper now lives in one module with tests, instead of
+   * in this closure — which is how a wrong printout went unnoticed for this long.
+   *
+   * What stays here is what genuinely belongs to the page: reading the store,
+   * resolving the share letterhead (a canvas round-trip, so it cannot live in
+   * the builder if the builder is to stay testable), and dispatching to the
+   * printer, the viewer, the filesystem or the share sheet.
+   */
   const patient_report = async (
-    report: any,
+    report: ReportRecord,
     action: 'print' | 'preview' | 'download' | 'share' = 'print',
   ) => {
-    const { jsPDF } = await import('jspdf');
-    const { default: autoTable } = await import('jspdf-autotable');
-    const patient = patients.find(p => p.id === report.patientId) || {
-      name: report.patientName,
-      age: 'N/A',
-      gender: 'N/A',
-      doctorName: 'Self',
-      id: report.patientId || '',
-      createdAt: report.createdAt,
-    };
-
-    // Filename carries the report's identity, not only the patient's name.
-    // `<name>_lab_report.pdf` meant two patients with the same name wrote over
-    // each other's file, a v2 amendment silently replaced the v1 that had already
-    // been handed over, and the patient's name appeared in a path that Windows
-    // indexes and any file browser shows. The name stays inside the document.
-    const reportVersion = Number(report.version) || 1;
-    const issuedDay = toIsoDay(
-      new Date(report.updatedAt || report.createdAt || new Date().toISOString()),
-    );
-    const filename = `PathoMitra-${issuedDay}-${String(report.id || 'draft').slice(-6)}-v${reportVersion}.pdf`;
-
-    // Get template, margins and typography from centrally-managed lab settings
     const s = readSettings();
-    const template =
-      action === 'share'
-        ? s.shareTemplate || s.reportTemplate || 'blank'
-        : s.reportTemplate || 'blank';
-    const labName = s.labName
-      ? template === 'classic'
-        ? s.labName.toUpperCase()
-        : s.labName
-      : 'PathoMitra Report';
+    const patient = patients.find(p => p.id === report.patientId) ?? null;
 
-    // Credential / issuance wording for this document. Derived, never typed
-    // inline: an accreditation only prints when the operator has attested it,
-    // and the signature line says what actually happened rather than claiming
-    // a verification service this offline build does not have.
-    // The signer is whoever issued the stored report, not whoever is viewing
-    // it — printing the current operator's name on a colleague's report would
-    // be a fresh misattribution.
+    // Credential / issuance wording for this document, derived rather than typed
+    // inline: an accreditation only prints when the operator has attested it, and
+    // the signer is whoever issued the stored report, never whoever is viewing it.
+    const signerName = resolveSigner(report);
     const legalInput: ReportLegalInput = {
       accreditationBody: s.accreditationBody,
       accreditationNumber: s.accreditationNumber,
       licenceNumber: s.licenceNumber,
       accreditationAttestedAt: s.accreditationAttestedAt,
-      signerName: resolveSigner(report),
+      signerName,
       signedAt: report.updatedAt || report.createdAt,
     };
     const legal = buildReportLegalLines(legalInput);
 
-    // ---- Premium PDF palette ------------------------------------------------
-    // Brand RGB is derived from the lab's active web palette so printed reports
-    // match the product identity. 'blank' keeps the legacy rendering exactly.
-    type Rgb = [number, number, number];
-    const legacy = template === 'blank';
-    const brandHex = (THEME_OPTIONS.find(t => t.id === (s.themeId || 'navy')) || THEME_OPTIONS[0])
-      .previewColor;
-    const hexToRgb = (hex: string): Rgb => {
-      const m = hex.replace('#', '');
-      return [
-        parseInt(m.slice(0, 2), 16),
-        parseInt(m.slice(2, 4), 16),
-        parseInt(m.slice(4, 6), 16),
-      ];
-    };
-    const mixWhite = (rgb: Rgb, amt: number): Rgb => [
-      Math.round(rgb[0] + (255 - rgb[0]) * amt),
-      Math.round(rgb[1] + (255 - rgb[1]) * amt),
-      Math.round(rgb[2] + (255 - rgb[2]) * amt),
-    ];
-    const BRAND = hexToRgb(brandHex);
-    const BRAND_DARK: Rgb = [
-      Math.round(BRAND[0] * 0.62),
-      Math.round(BRAND[1] * 0.62),
-      Math.round(BRAND[2] * 0.62),
-    ];
-    const BRAND_TINT = mixWhite(BRAND, 0.93); // patient-box fill
-    const BRAND_TINT2 = mixWhite(BRAND, 0.8); // patient-box border / rules
-    const BRAND_SOFT = mixWhite(BRAND, 0.86); // category band
-    const INK: Rgb = [29, 29, 31];
-    const INK_SOFT: Rgb = [102, 102, 109];
-    const BLACK: Rgb = [0, 0, 0];
-    const HAIRLINE: Rgb = legacy ? BLACK : mixWhite(BRAND, 0.72);
-    const labelCol = legacy ? BLACK : INK_SOFT;
-    const valueCol = legacy ? BLACK : INK;
-    // --------------------------------------------------------------------------
-    const customMarginTop = action === 'share' ? s.shareMarginTop : s.reportMarginTop;
-    const customMarginBottom = action === 'share' ? s.shareMarginBottom : s.reportMarginBottom;
-    const customMarginLeft = action === 'share' ? s.shareMarginLeft : s.reportMarginLeft;
-    const customMarginRight = action === 'share' ? s.shareMarginRight : s.reportMarginRight;
-    const reportTitleFontSize = s.reportTitleFontSize;
-    const patientInfoFontSize = s.patientInfoFontSize;
-    const patientLineHeight = s.patientLineHeight;
-    const reportSectionGap = s.reportSectionGap;
-    const tableHeaderFontSize = s.tableHeaderFontSize;
-    const tableBodyFontSize =
-      action === 'share'
-        ? (s.shareTableBodyFontSize ?? s.tableBodyFontSize ?? 10)
-        : (s.reportTableBodyFontSize ?? s.tableBodyFontSize ?? 10);
-    const tableCellPadding = s.tableCellPadding;
-    const notesFontSize = s.notesFontSize;
-    const footerFontSize = s.footerFontSize;
-    let sharingTemplateImage = s.sharingTemplateImage || '';
-
-    if (action === 'share' && !sharingTemplateImage) {
+    // The share letterhead is a full-bleed image behind the text. A stored upload
+    // wins; otherwise the shipped default is fetched and re-encoded, and if the
+    // device can do neither, the canvas-drawn template is generated. A missing
+    // letterhead is a plain report, never a failed one.
+    const resolveShareLetterhead = async (): Promise<string> => {
+      if (s.sharingTemplateImage) return s.sharingTemplateImage;
+      const labTitle = s.labName || 'PathoMitra Lab';
       try {
-        const loadDefaultShareImage = (): Promise<string> => {
-          return new Promise(resolve => {
-            const img = new Image();
-            img.crossOrigin = 'Anonymous';
-            img.onload = () => {
-              const canvas = document.createElement('canvas');
-              canvas.width = img.width;
-              canvas.height = img.height;
-              const ctx = canvas.getContext('2d');
-              if (ctx) {
-                ctx.drawImage(img, 0, 0);
-                resolve(canvas.toDataURL('image/jpeg'));
-              } else {
-                resolve(generateDefaultTemplateImage(labName, legalInput));
-              }
-            };
-            img.onerror = () => {
-              resolve(generateDefaultTemplateImage(labName, legalInput));
-            };
-            img.src = '/default-share-template.png';
-          });
-        };
-        sharingTemplateImage = await loadDefaultShareImage();
-      } catch (e) {
-        console.error('Failed to load default sharing template background', e);
-        sharingTemplateImage = generateDefaultTemplateImage(labName, legalInput);
-      }
-    } else if (!sharingTemplateImage) {
-      try {
-        sharingTemplateImage = generateDefaultTemplateImage(labName, legalInput);
-      } catch (e) {
-        console.error('Failed to generate default sharing template background', e);
-      }
-    }
-
-    // Wrapped PDF generation logic to support standard rendering and Option C compact rendering
-    const generatePdf = (compactMode: boolean = false) => {
-      const doc = new jsPDF();
-      doc.setProperties({
-        title: filename,
-      });
-
-      // Apply compacted parameters if compactMode is enabled
-      let cellPadding = tableCellPadding;
-      let bodyFontSize = tableBodyFontSize;
-      let sectionGap = reportSectionGap;
-      let ptLineHeight = patientLineHeight;
-      let mTop = customMarginTop;
-      let mBottom = customMarginBottom;
-      const mLeft = customMarginLeft;
-      const mRight = customMarginRight;
-
-      if (compactMode) {
-        cellPadding = Math.max(0.6, tableCellPadding - 0.45);
-        bodyFontSize = Math.max(7.5, tableBodyFontSize - 0.7);
-        sectionGap = Math.max(3, reportSectionGap - 2);
-        ptLineHeight = Math.max(4.0, patientLineHeight - 1.0);
-        mTop = Math.max(25, customMarginTop - 8);
-        mBottom = Math.max(12, customMarginBottom - 5);
-      }
-
-      // Shared with the live A4 preview (src/lib/report-layout) so the printed
-      // PDF and the Settings preview always agree on the printable width.
-      const totalWidth = getPrintableArea({
-        top: mTop,
-        bottom: mBottom,
-        left: mLeft,
-        right: mRight,
-      }).width;
-      const [col0Width, col1Width, col2Width, col3Width] = getColumnWidths(totalWidth);
-
-      // Function to draw the complete header including lab name, patient info, and table columns header
-      const drawFullHeader = () => {
-        // Draw custom background template when sharing if provided
-        if (action === 'share' && sharingTemplateImage) {
-          try {
-            const format = sharingTemplateImage
-              .substring(sharingTemplateImage.indexOf('/') + 1, sharingTemplateImage.indexOf(';'))
-              .toUpperCase();
-            doc.addImage(sharingTemplateImage, format === 'PNG' ? 'PNG' : 'JPEG', 0, 0, 210, 297);
-          } catch (e) {
-            console.error('Failed to draw sharing template image', e);
-          }
-        }
-
-        let currentY = mTop;
-
-        // 1. Lab Header
-        if (template === 'minimalist') {
-          // Editorial: quiet wordmark, wide-tracked descriptor, single hairline
-          doc.setFont('helvetica', 'bold');
-          doc.setFontSize(reportTitleFontSize - 3);
-          doc.setTextColor(INK[0], INK[1], INK[2]);
-          doc.text(labName, mLeft, currentY);
-          doc.setFont('helvetica', 'normal');
-          doc.setFontSize(Math.max(6.5, reportTitleFontSize - 11));
-          doc.setTextColor(INK_SOFT[0], INK_SOFT[1], INK_SOFT[2]);
-          doc.text('D I G I T A L   P A T H O L O G Y   R E P O R T', mLeft, currentY + 5);
-          doc.setDrawColor(HAIRLINE[0], HAIRLINE[1], HAIRLINE[2]);
-          doc.setLineWidth(0.2);
-          doc.line(mLeft, currentY + 8.5, 210 - mRight, currentY + 8.5);
-          currentY += sectionGap + 4;
-        } else if (template === 'classic') {
-          // Formal: double rules framing a centered serif masthead
-          doc.setDrawColor(BLACK[0], BLACK[1], BLACK[2]);
-          doc.setLineWidth(0.9);
-          doc.line(mLeft - 5, currentY - 3, 210 - mRight + 5, currentY - 3);
-          doc.setLineWidth(0.2);
-          doc.line(mLeft - 5, currentY - 1.4, 210 - mRight + 5, currentY - 1.4);
-          doc.setFont('times', 'bold');
-          doc.setFontSize(reportTitleFontSize + 2);
-          doc.setTextColor(0, 0, 0);
-          doc.text(labName, 105, currentY + 5.5, { align: 'center' });
-          doc.setFont('times', 'italic');
-          doc.setFontSize(Math.max(8, reportTitleFontSize - 8));
-          doc.setTextColor(60, 60, 60);
-          doc.text(legal.tagline, 105, currentY + 11, {
-            align: 'center',
-          });
-          doc.setLineWidth(0.2);
-          doc.line(mLeft - 5, currentY + 13.5, 210 - mRight + 5, currentY + 13.5);
-          doc.setLineWidth(0.9);
-          doc.line(mLeft - 5, currentY + 15.1, 210 - mRight + 5, currentY + 15.1);
-          currentY += sectionGap * 2 + 9;
-        } else if (template === 'blank') {
-          currentY += sectionGap;
-        } else {
-          // Modern: accent keystone, left wordmark, right meta, full-bleed hairline
-          doc.setFillColor(BRAND[0], BRAND[1], BRAND[2]);
-          doc.roundedRect(mLeft, currentY - 4.2, 1.7, 10.5, 0.85, 0.85, 'F');
-          doc.setFont('helvetica', 'bold');
-          doc.setFontSize(reportTitleFontSize);
-          doc.setTextColor(BRAND_DARK[0], BRAND_DARK[1], BRAND_DARK[2]);
-          doc.text(labName, mLeft + 4.6, currentY);
-          doc.setFont('helvetica', 'normal');
-          doc.setFontSize(Math.max(6.5, reportTitleFontSize - 11));
-          doc.setTextColor(INK_SOFT[0], INK_SOFT[1], INK_SOFT[2]);
-          doc.text('DIGITAL PATHOLOGY REPORT', mLeft + 4.8, currentY + 5.2);
-          // Right-aligned report meta
-          doc.setFontSize(8);
-          doc.text(
-            `Report No. ${(report.id || '').substring(0, 8).toUpperCase() || 'N/A'}`,
-            210 - mRight,
-            currentY - 1,
-            { align: 'right' },
-          );
-          doc.setTextColor(BRAND[0], BRAND[1], BRAND[2]);
-          doc.setFont('helvetica', 'bold');
-          doc.text('FINAL', 210 - mRight, currentY + 5.2, { align: 'right' });
-          doc.setDrawColor(HAIRLINE[0], HAIRLINE[1], HAIRLINE[2]);
-          doc.setLineWidth(0.3);
-          doc.line(mLeft, currentY + 9, 210 - mRight, currentY + 9);
-          currentY += sectionGap * 1.5 + 6;
-        }
-
-        // 2. Patient Details
-        const startY = currentY + 4;
-        const lh = ptLineHeight;
-
-        const ptNameLines = doc.splitTextToSize(`: ${patient.name || ''}`, totalWidth * (55 / 180));
-        const nameHeightOffset = (ptNameLines.length - 1) * ptLineHeight;
-
-        const boxTop = startY - 12;
-        const boxHeight = lh * 2 + nameHeightOffset + 15;
-
-        if (template === 'modern') {
-          doc.setFillColor(BRAND_TINT[0], BRAND_TINT[1], BRAND_TINT[2]);
-          doc.setDrawColor(BRAND_TINT2[0], BRAND_TINT2[1], BRAND_TINT2[2]);
-          doc.setLineWidth(0.25);
-          doc.roundedRect(mLeft - 5, boxTop, totalWidth + 10, boxHeight, 2.6, 2.6, 'FD');
-        } else if (template === 'classic') {
-          doc.setDrawColor(0);
-          doc.setLineWidth(0.5);
-          doc.rect(mLeft - 5, boxTop, totalWidth + 10, boxHeight, 'S');
-          doc.setLineWidth(0.15);
-          doc.rect(mLeft - 3.8, boxTop + 1.2, totalWidth + 7.6, boxHeight - 2.4, 'S');
-        } else if (template === 'minimalist') {
-          doc.setDrawColor(HAIRLINE[0], HAIRLINE[1], HAIRLINE[2]);
-          doc.setLineWidth(0.2);
-          doc.line(mLeft - 5, boxTop + boxHeight + 1, 210 - mRight + 5, boxTop + boxHeight + 1);
-        }
-
-        doc.setFontSize(patientInfoFontSize);
-        doc.setFont('helvetica', 'bold');
-        doc.setTextColor(labelCol[0], labelCol[1], labelCol[2]);
-        if (!legacy) doc.setCharSpace(0.25);
-
-        const drawLabel = () => {
-          doc.setFont('helvetica', 'bold');
-          doc.setTextColor(labelCol[0], labelCol[1], labelCol[2]);
-          doc.setCharSpace(legacy ? 0 : 0.25);
-        };
-        const drawValue = () => {
-          doc.setFont('helvetica', 'normal');
-          doc.setTextColor(valueCol[0], valueCol[1], valueCol[2]);
-          doc.setCharSpace(0);
-        };
-
-        // Left column
-        drawLabel();
-        doc.text('Patient Name', mLeft, startY);
-        drawValue();
-        doc.text(ptNameLines, mLeft + 27, startY);
-
-        drawLabel();
-        doc.text('Ref By', mLeft, startY + lh + nameHeightOffset);
-        doc.text('Patient ID', mLeft, startY + lh * 2 + nameHeightOffset);
-
-        drawValue();
-        doc.text(`: ${patient.doctorName || 'Self'}`, mLeft + 27, startY + lh + nameHeightOffset);
-        doc.text(
-          `: ${patient.id ? patient.id.substring(0, 8).toUpperCase() : 'N/A'}`,
-          mLeft + 27,
-          startY + lh * 2 + nameHeightOffset,
-        );
-
-        // Middle column (Age, Sex, Reported on) - shifted slightly to the right
-        const formatDateTime = (isoString: string) => {
-          if (!isoString) return '';
-          const d = new Date(isoString);
-          return `${d.toLocaleDateString('en-IN').replace(/\//g, '-')} ${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`;
-        };
-
-        drawLabel();
-
-        doc.text('Age', mLeft + 97, startY);
-        doc.text('Sex', mLeft + 97, startY + lh + nameHeightOffset);
-        doc.text('Reported on', mLeft + 97, startY + lh * 2 + nameHeightOffset);
-
-        drawValue();
-
-        doc.text(`: ${patient.age} Years`, mLeft + 120, startY);
-        doc.text(
-          `: ${patient.gender.charAt(0).toUpperCase() + patient.gender.slice(1)}`,
-          mLeft + 120,
-          startY + lh + nameHeightOffset,
-        );
-        const repDate = formatDateTime(report.createdAt);
-        doc.text(`: ${repDate}`, mLeft + 120, startY + lh * 2 + nameHeightOffset);
-
-        // 4. Table Columns Header
-        const columnsHeaderY =
-          startY + Math.max(lh * 3, lh * 2 + nameHeightOffset) + sectionGap + 5;
-
-        const headerX0 = mLeft + 1.5;
-        const headerX1 = mLeft + col0Width + 1.5;
-        const headerX2 = mLeft + col0Width + col1Width + 1.5;
-        const headerX3 = mLeft + col0Width + col1Width + col2Width + 1.5;
-
-        if (!legacy && template !== 'classic') {
-          // Solid brand band with reversed type (modern) / airy hairlines (minimalist)
-          if (template === 'modern') {
-            doc.setFillColor(BRAND_DARK[0], BRAND_DARK[1], BRAND_DARK[2]);
-            doc.roundedRect(mLeft - 5, columnsHeaderY - 6.2, totalWidth + 10, 9.5, 1.6, 1.6, 'F');
-            doc.setTextColor(255, 255, 255);
-          } else {
-            doc.setDrawColor(HAIRLINE[0], HAIRLINE[1], HAIRLINE[2]);
-            doc.setLineWidth(0.2);
-            doc.line(mLeft, columnsHeaderY - 5, 210 - mRight, columnsHeaderY - 5);
-            doc.setTextColor(INK_SOFT[0], INK_SOFT[1], INK_SOFT[2]);
-          }
-          doc.setFontSize(tableHeaderFontSize);
-          doc.setFont('helvetica', 'bold');
-          doc.setCharSpace(0.4);
-          doc.text('TEST DESCRIPTION', headerX0, columnsHeaderY);
-          doc.text('RESULT', headerX1, columnsHeaderY);
-          doc.text('UNITS', headerX2, columnsHeaderY);
-          doc.text('REFERENCE RANGE', headerX3, columnsHeaderY);
-          doc.setCharSpace(0);
-          if (template === 'minimalist') {
-            doc.setDrawColor(HAIRLINE[0], HAIRLINE[1], HAIRLINE[2]);
-            doc.line(mLeft, columnsHeaderY + 2, 210 - mRight, columnsHeaderY + 2);
-          }
-        } else {
-          doc.setDrawColor(0);
-          doc.setLineWidth(0.5);
-          doc.line(mLeft, columnsHeaderY - 5, 210 - mRight, columnsHeaderY - 5);
-
-          doc.setFontSize(tableHeaderFontSize);
-          doc.setFont('helvetica', 'bold');
-          doc.setCharSpace(0);
-          doc.setTextColor(0);
-
-          doc.text('TEST DESCRIPTION', headerX0, columnsHeaderY);
-          doc.text('RESULT', headerX1, columnsHeaderY);
-          doc.text('UNITS', headerX2, columnsHeaderY);
-          doc.text('REFERENCE RANGE', headerX3, columnsHeaderY);
-          doc.line(mLeft, columnsHeaderY + 2, 210 - mRight, columnsHeaderY + 2);
-        }
-
-        return columnsHeaderY + 3; // return finalY to start writing table rows
-      };
-
-      // Draw the first page header immediately
-      let finalY = drawFullHeader();
-
-      const pagesWithHeader = new Set<number>();
-      pagesWithHeader.add((doc.internal as any).getCurrentPageInfo().pageNumber);
-
-      const onDidDrawPage = () => {
-        const pageNum = (doc.internal as any).getCurrentPageInfo().pageNumber;
-        if (!pagesWithHeader.has(pageNum)) {
-          drawFullHeader();
-          pagesWithHeader.add(pageNum);
-        }
-      };
-
-      // Use the finalY from full header as our top margin, so subsequent pages start correctly below the header
-      const autoTableMarginTop = finalY;
-
-      // Group tests by category
-      const testsByCategory: Record<string, string[]> = {};
-
-      (report.testSelection || []).forEach((testName: string) => {
-        if (
-          testName === 'DIFFERENTIAL COUNT WBC' ||
-          testName === 'DIFFERENTIAL LEUCOCYTE ABSOLUTE COUNT'
-        ) {
-          return;
-        }
-        const testInfo = findTestInfo(testName);
-        const category = testInfo?.category || 'GENERAL';
-        if (!testsByCategory[category]) testsByCategory[category] = [];
-        testsByCategory[category].push(testName);
-      });
-
-      if (report.resultData) {
-        Object.keys(report.resultData).forEach(testName => {
-          if (
-            testName === 'DIFFERENTIAL COUNT WBC' ||
-            testName === 'DIFFERENTIAL LEUCOCYTE ABSOLUTE COUNT'
-          ) {
-            return;
-          }
-          if (!(report.testSelection || []).includes(testName)) {
-            const testInfo = findTestInfo(testName);
-            const category = testInfo?.category || 'GENERAL';
-            if (!testsByCategory[category]) testsByCategory[category] = [];
-            testsByCategory[category].push(testName);
-          }
-        });
-      }
-
-      const buildTableDataForCategories = (categoriesList: string[]) => {
-        const data: any[] = [];
-        categoriesList.forEach(category => {
-          if (!testsByCategory[category] || testsByCategory[category].length === 0) return;
-
-          // Add Category Header
-          const catStyles: any = {
-            fontStyle: 'bold',
-            cellPadding: {
-              top: Math.max(1.5, cellPadding * 2.5),
-              bottom: Math.max(1.5, cellPadding * 2.5),
-              left: 2,
-            },
-            halign: 'center',
-          };
-          if (legacy) {
-            catStyles.fillColor = false;
-            catStyles.textColor = [0, 0, 0];
-          } else if (template === 'classic') {
-            catStyles.fillColor = false;
-            catStyles.textColor = [0, 0, 0];
-            catStyles.lineWidth = { top: 0.15, bottom: 0.15, left: 0, right: 0 };
-            catStyles.lineColor = [0, 0, 0];
-          } else if (template === 'modern') {
-            catStyles.fillColor = BRAND_SOFT;
-            catStyles.textColor = BRAND_DARK;
-            catStyles.halign = 'left';
-            catStyles.cellPadding = {
-              top: Math.max(2, cellPadding * 2.6),
-              bottom: Math.max(2, cellPadding * 2.6),
-              left: 3,
-            };
-          } else {
-            // minimalist: airy small-caps label, hairline above
-            catStyles.fillColor = false;
-            catStyles.textColor = INK_SOFT;
-            catStyles.halign = 'left';
-            catStyles.lineWidth = { top: 0.2, bottom: 0, left: 0, right: 0 };
-            catStyles.lineColor = HAIRLINE;
-            catStyles.cellPadding = {
-              top: Math.max(2.6, cellPadding * 3.4),
-              bottom: Math.max(1.2, cellPadding * 1.4),
-              left: 0,
-            };
-          }
-          data.push([{ content: category.toUpperCase(), colSpan: 4, styles: catStyles }]);
-
-          // Add tests for this category
-          testsByCategory[category].forEach(testName => {
-            const testInfo = findTestInfo(testName);
-            if (testInfo?.isGroup || testInfo?.isHeader) {
-              let groupFill: any = false;
-              let groupText: Rgb;
-              if (legacy) {
-                groupFill = testInfo.isGroup ? [248, 250, 252] : false;
-                groupText = [11, 60, 93];
-              } else if (template === 'classic') {
-                groupFill = false;
-                groupText = [0, 0, 0];
-              } else if (template === 'modern') {
-                groupFill = testInfo.isGroup ? BRAND_TINT : false;
-                groupText = BRAND_DARK;
-              } else {
-                groupText = BRAND;
-              }
-              data.push([
-                {
-                  content: testName,
-                  colSpan: 4,
-                  styles: {
-                    fontStyle: 'bold',
-                    fillColor: groupFill,
-                    textColor: groupText,
-                    cellPadding: {
-                      top: Math.max(1.5, cellPadding * 1.8),
-                      bottom: Math.max(1.5, cellPadding * 1.8),
-                      left: 2,
-                    },
-                    halign: testInfo.isGroup
-                      ? legacy || template === 'classic' || template === 'modern'
-                        ? 'center'
-                        : 'left'
-                      : 'left',
-                  },
-                },
-              ]);
+        return await new Promise<string>(resolve => {
+          const img = new Image();
+          img.crossOrigin = 'Anonymous';
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width;
+            canvas.height = img.height;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) {
+              resolve(generateDefaultTemplateImage(labTitle, legalInput));
               return;
             }
-
-            const result = report.resultData[testName] || '';
-            const range = resolveReferenceRange(
-              testInfo?.ranges,
-              ageAsNumber(patient),
-              patient.gender,
-            );
-            const refRangeLabel = range.label;
-            const refValues = range.values;
-            const unit = testInfo?.unit || '';
-            const method = testInfo?.method ? `\nMethod: ${testInfo.method}` : '';
-
-            let formattedResult: any = result;
-            if (result && refValues && !isNaN(Number(result))) {
-              const numResult = Number(result);
-              let isBold = false,
-                suffix = '';
-              if (refValues.min !== undefined && numResult < refValues.min) {
-                isBold = true;
-                suffix = '__DOWN__';
-              } else if (refValues.max !== undefined && numResult > refValues.max) {
-                isBold = true;
-                suffix = '__UP__';
-              }
-              if (isBold)
-                formattedResult = { content: result + suffix, styles: { fontStyle: 'bold' } };
-            }
-            data.push([testName + method, formattedResult, unit, refRangeLabel]);
-          });
+            ctx.drawImage(img, 0, 0);
+            resolve(canvas.toDataURL('image/jpeg'));
+          };
+          img.onerror = () => resolve(generateDefaultTemplateImage(labTitle, legalInput));
+          img.src = '/default-share-template.png';
         });
-        return data;
-      };
-
-      const commonTableOpts = {
-        theme: (!legacy && template === 'classic' ? 'grid' : 'plain') as 'grid' | 'plain',
-        showHead: false,
-        pageBreak: 'auto' as const,
-        margin: { top: autoTableMarginTop, left: mLeft, right: mRight, bottom: mBottom },
-        styles: {
-          cellPadding: cellPadding,
-          fontSize: bodyFontSize,
-          textColor: 0,
-          ...(legacy
-            ? {}
-            : template === 'classic'
-              ? { lineColor: [190, 196, 202] as Rgb, lineWidth: 0.1 }
-              : { font: 'helvetica', textColor: INK }),
-        },
-        columnStyles: {
-          0: { cellWidth: col0Width },
-          1: { cellWidth: col1Width },
-          2: { cellWidth: col2Width },
-          3: { cellWidth: col3Width },
-        },
-        didParseCell: function (data: any) {
-          if (data.section === 'body' && data.column.index === 1) {
-            if (data.cell.raw && typeof data.cell.raw === 'object' && 'content' in data.cell.raw) {
-              const content = String((data.cell.raw as any).content);
-              if (content.includes('__UP__')) {
-                data.cell.text[0] = content.replace('__UP__', '').trim();
-                (data.cell as any).drawArrow = 'up';
-              } else if (content.includes('__DOWN__')) {
-                data.cell.text[0] = content.replace('__DOWN__', '').trim();
-                (data.cell as any).drawArrow = 'down';
-              }
-            }
-          }
-          // Modern/minimalist: soften reference + unit columns
-          if (
-            !legacy &&
-            template !== 'classic' &&
-            data.section === 'body' &&
-            (data.column.index === 2 || data.column.index === 3)
-          ) {
-            data.cell.styles.textColor = INK_SOFT;
-          }
-        },
-        didDrawCell: function (data: any) {
-          // Hairline row separators for the airy templates
-          if (
-            !legacy &&
-            template !== 'classic' &&
-            data.section === 'body' &&
-            data.column.index === 3
-          ) {
-            doc.setDrawColor(HAIRLINE[0], HAIRLINE[1], HAIRLINE[2]);
-            doc.setLineWidth(0.1);
-            doc.line(
-              mLeft,
-              data.cell.y + data.cell.height,
-              210 - mRight,
-              data.cell.y + data.cell.height,
-            );
-          }
-          if (data.section === 'body' && data.column.index === 1 && (data.cell as any).drawArrow) {
-            const isHigh = (data.cell as any).drawArrow === 'up';
-            doc.setFontSize(bodyFontSize + 0.8);
-            doc.setFont('helvetica', 'bold');
-            const textWidth = doc.getTextWidth(data.cell.text[0] || '');
-            let padding = 3;
-            if (typeof data.cell.styles.cellPadding === 'number') {
-              padding = data.cell.styles.cellPadding;
-            } else if (
-              data.cell.styles.cellPadding &&
-              typeof data.cell.styles.cellPadding === 'object'
-            ) {
-              padding = (data.cell.styles.cellPadding as any).left || 3;
-            }
-            const x = data.cell.x + padding + textWidth + 3;
-            const y = data.cell.y + data.cell.height / 2;
-
-            const arrowCol: Rgb =
-              !legacy && template !== 'classic' ? (isHigh ? [176, 42, 58] : BRAND) : BLACK;
-            doc.setFillColor(arrowCol[0], arrowCol[1], arrowCol[2]);
-            doc.setDrawColor(arrowCol[0], arrowCol[1], arrowCol[2]);
-            doc.setLineWidth(0.4);
-            const w = 1.0;
-            const hh = 1.2;
-
-            if (isHigh) {
-              doc.line(x + w / 2, y + 1.5, x + w / 2, y - 1.5 + hh);
-              doc.triangle(x, y - 1.5 + hh, x + w / 2, y - 1.5, x + w, y - 1.5 + hh, 'FD');
-            } else {
-              doc.line(x + w / 2, y - 1.5, x + w / 2, y + 1.5 - hh);
-              doc.triangle(x, y + 1.5 - hh, x + w / 2, y + 1.5, x + w, y + 1.5 - hh, 'FD');
-            }
-          }
-        },
-        didDrawPage: onDidDrawPage,
-      };
-
-      const availableCategories = Object.keys(testsByCategory);
-      const blocks: { categories: string[] }[] = [];
-
-      const otherCategories = availableCategories.filter(
-        c => c !== 'HAEMATOLOGY' && c !== 'CLINICAL PATHOLOGY',
-      );
-      if (otherCategories.length > 0) {
-        blocks.push({ categories: otherCategories });
+      } catch (err) {
+        console.error('Share letterhead could not be prepared; printing without it', err);
+        return '';
       }
-
-      if (availableCategories.includes('HAEMATOLOGY')) {
-        blocks.push({ categories: ['HAEMATOLOGY'] });
-      }
-
-      if (availableCategories.includes('CLINICAL PATHOLOGY')) {
-        blocks.push({ categories: ['CLINICAL PATHOLOGY'] });
-      }
-
-      let isFirstBlock = true;
-      blocks.forEach(block => {
-        const blockData = buildTableDataForCategories(block.categories);
-        if (blockData.length === 0) return;
-
-        if (!isFirstBlock) {
-          doc.addPage();
-          const newPageNum = (doc.internal as any).getCurrentPageInfo().pageNumber;
-          finalY = drawFullHeader();
-          pagesWithHeader.add(newPageNum);
-        } else {
-          isFirstBlock = false;
-        }
-
-        autoTable(doc, {
-          startY: finalY,
-          body: blockData,
-          ...commonTableOpts,
-        });
-        finalY = (doc as any).lastAutoTable.finalY + Math.max(sectionGap, 8);
-      });
-
-      // Keep track of which page the last actual test row rendered on
-      const lastTestPage = (doc.internal as any).getCurrentPageInfo().pageNumber;
-
-      finalY += 4;
-
-      const checkPageBreak = (neededHeight: number) => {
-        if (finalY + neededHeight > 297 - mBottom) {
-          doc.addPage();
-          const pageNum = (doc.internal as any).getCurrentPageInfo().pageNumber;
-          if (!pagesWithHeader.has(pageNum)) {
-            drawFullHeader();
-            pagesWithHeader.add(pageNum);
-          }
-          finalY = autoTableMarginTop + 2;
-        }
-      };
-
-      checkPageBreak(5);
-      doc.setDrawColor(HAIRLINE[0], HAIRLINE[1], HAIRLINE[2]);
-      doc.setLineWidth(legacy ? 0.5 : 0.2);
-      doc.line(mLeft, finalY, 210 - mRight, finalY);
-      finalY += 10;
-
-      // Draw clinical significance or notes
-      const testsWithNotes = (report.testSelection || [])
-        .map((t: string) => findTestInfo(t))
-        .filter((t: any) => t?.notes || t?.clinicalSignificance);
-
-      if (testsWithNotes.length > 0) {
-        doc.setFontSize(notesFontSize);
-        testsWithNotes.forEach((testInfo: any) => {
-          doc.setFont('helvetica', 'bold');
-          doc.setCharSpace(0);
-
-          if (testInfo.notes && testInfo.notes.length > 0) {
-            checkPageBreak(5 + testInfo.notes.length * 4.5);
-            if (legacy) {
-              doc.setTextColor(0);
-              doc.text('NOTE-', mLeft, finalY);
-            } else {
-              doc.setTextColor(BRAND_DARK[0], BRAND_DARK[1], BRAND_DARK[2]);
-              doc.text('NOTE —', mLeft, finalY);
-            }
-            finalY += 4;
-            doc.setFont('helvetica', 'normal');
-            doc.setTextColor(legacy ? 0 : INK[0], legacy ? 0 : INK[1], legacy ? 0 : INK[2]);
-            testInfo.notes.forEach((note: string) => {
-              doc.text(note, mLeft, finalY);
-              finalY += 4.5;
-            });
-            finalY += 2;
-          }
-
-          if (testInfo.clinicalSignificance) {
-            const splitText = doc.splitTextToSize(testInfo.clinicalSignificance, totalWidth);
-            checkPageBreak(8 + splitText.length * 4.5);
-            doc.setFont('helvetica', 'bold');
-            doc.setTextColor(
-              legacy ? 0 : BRAND_DARK[0],
-              legacy ? 0 : BRAND_DARK[1],
-              legacy ? 0 : BRAND_DARK[2],
-            );
-            doc.text(legacy ? 'Clinical significance :' : 'Clinical significance —', mLeft, finalY);
-            finalY += 4;
-            doc.setFont('helvetica', 'normal');
-            doc.setTextColor(legacy ? 0 : INK[0], legacy ? 0 : INK[1], legacy ? 0 : INK[2]);
-            doc.text(splitText, mLeft, finalY);
-            finalY += splitText.length * 4.5 + 5;
-          }
-        });
-
-        checkPageBreak(5);
-        doc.setDrawColor(HAIRLINE[0], HAIRLINE[1], HAIRLINE[2]);
-        doc.setLineWidth(legacy ? 0.5 : 0.2);
-        doc.line(mLeft, finalY, 210 - mRight, finalY);
-        finalY += 10;
-      }
-
-      checkPageBreak(10);
-
-      // Issuance record, any attested credential, and the professional-use
-      // disclaimer. Printed on the document itself so a patient or referring
-      // doctor can see who issued it and that it is not externally verifiable.
-      doc.setFont('helvetica', 'italic');
-      doc.setFontSize(Math.max(7, footerFontSize - 2));
-      doc.setTextColor(INK_SOFT[0], INK_SOFT[1], INK_SOFT[2]);
-      const closingLines = [
-        legal.accreditation,
-        legal.licence,
-        legal.signer,
-        legal.disclaimer,
-      ].filter(Boolean);
-      closingLines.forEach((line, i) => {
-        doc.text(line, mLeft, finalY + i * 4.2);
-      });
-      finalY += closingLines.length * 4.2 + 2;
-
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(footerFontSize);
-      if (!legacy) {
-        doc.setTextColor(INK_SOFT[0], INK_SOFT[1], INK_SOFT[2]);
-        doc.setCharSpace(0.3);
-        doc.text('— End of Report —', 105, finalY, { align: 'center' });
-        doc.setCharSpace(0);
-      } else {
-        doc.text('*** End of Report ***', 105, finalY, { align: 'center' });
-      }
-
-      return { doc, lastTestPage };
     };
 
-    // First Rendering Pass (Standard settings)
-    const firstPass = generatePdf(false);
-    let doc = firstPass.doc;
-    const { lastTestPage } = firstPass;
-    const totalPages = (doc.internal as any).getNumberOfPages();
+    const shareTemplateImage = action === 'share' ? await resolveShareLetterhead() : '';
 
-    // Option C: If only "End of Report" or note sections spilled over onto a new page,
-    // re-run in compactMode to auto-shrink the vertical coordinates and pull them back onto the preceding page.
-    if (totalPages > 1 && lastTestPage === totalPages - 1) {
-      const compacted = generatePdf(true);
-      doc = compacted.doc;
+    const built = await buildReportDocument({
+      report,
+      patient,
+      settings: s,
+      mode: action === 'share' ? 'share' : 'print',
+      signerName,
+      legal,
+      shareTemplateImage,
+    }).catch((err: unknown) => {
+      console.error(`Could not build the report (${action}):`, err);
+      toast.error('The report could not be prepared. Try again or use Download.');
+      return null;
+    });
+    if (!built) return;
+    const { doc, filename, pageCount, compacted } = built;
+
+    // Printing a draft stays possible on purpose — a bench prints one to review
+    // it with the pathologist — but the paper is stamped DRAFT by the builder and
+    // the operator is told, because the document used to print the literal word
+    // 'FINAL' on an unissued report while the share action was gated.
+    if (report.status === 'draft') {
+      toast.warning('Draft printout — this copy is stamped DRAFT and is not an issued report.');
     }
 
-    // Draw page numbers for all pages of the final selected PDF document
-    const finalTotalPages = (doc.internal as any).getNumberOfPages();
-    for (let i = 1; i <= finalTotalPages; i++) {
-      doc.setPage(i);
-      doc.setFontSize(Math.max(8, footerFontSize - 2));
-      doc.setTextColor(100, 100, 100);
-      doc.text(`Page ${i} of ${finalTotalPages}`, 105, 297 - 11, { align: 'center' });
+    // The lab set the typography; a one-page fit was achieved by reducing it, and
+    // the operator is told rather than left to notice it on paper.
+    if (compacted) {
+      toast.info(
+        'Fitted onto one page — row spacing and result text were reduced from the saved settings.',
+      );
+    } else if (pageCount > 1) {
+      toast.info(`This report prints as ${pageCount} pages.`);
     }
 
     if (action === 'print') {
@@ -1476,7 +782,11 @@ export default function ReportsPage({
       // On the APK this raises the system print sheet (printers + "Save as
       // PDF"); in a browser it keeps opening the autoPrint blob in a tab.
       if (getShellKind() === 'desktop') {
-        setPrintJob({ title: `Report — ${patient.name}`, filename, pdfBase64: pdfToBase64(doc) });
+        setPrintJob({
+          title: `Report — ${spokenName(report.patientName)}`,
+          filename,
+          pdfBase64: pdfToBase64(doc),
+        });
         return;
       }
       try {
@@ -1509,13 +819,13 @@ export default function ReportsPage({
           doc,
           filename,
           'Diagnostic Report',
-          `Diagnostic report for ${patient.name}`,
+          `Diagnostic report for ${patient?.name || report.patientName || 'the patient'}`,
         );
         // Non-null only for outcomes worth a word: saved-but-no-share-target, or
         // a browser that had to download instead. A dismissed sheet is null.
         if (message) toast.info(message);
       } catch (err) {
-        console.error('Error sharing report:', err);
+        console.error('Error sharing the report:', err);
         toast.error('Could not share the report. Use Download instead.');
       }
     } else {
@@ -1958,7 +1268,11 @@ export default function ReportsPage({
                         aria-label={`Print report for ${spokenName(report.patientName)}`}
                         onClick={() => patient_report(report, 'print')}
                         className="p-2 bg-surface-container hover:bg-primary-container hover:text-on-primary-container hover:-translate-y-0.5 rounded-xl transition shadow-card z-20"
-                        title="Print report"
+                        title={
+                          report.status === 'draft'
+                            ? 'Print a working copy (stamped DRAFT)'
+                            : 'Print report'
+                        }
                       >
                         <Printer className="w-5 h-5" />
                       </button>
@@ -2096,12 +1410,13 @@ export default function ReportsPage({
           setModalError(null);
         }}
         title="Generate Diagnostic Report"
-        width="lg"
+        width="xl"
+        className="sm:max-w-[min(1240px,94vw)]"
         footer={
-          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:gap-3">
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end sm:gap-3">
             <Button
               variant="outline"
-              className="w-full sm:flex-1"
+              className="w-full sm:w-auto sm:px-6"
               onClick={() => {
                 setIsModalOpen(false);
                 setNewReport({ patientId: '', testSelection: [], results: {} });
@@ -2115,7 +1430,7 @@ export default function ReportsPage({
             <Button
               type="button"
               variant="ghost"
-              className="w-full sm:flex-1"
+              className="w-full sm:w-auto sm:px-6"
               disabled={!newReport.patientId || loading}
               onClick={e => handleCreateReport(e, 'draft')}
             >
@@ -2125,7 +1440,7 @@ export default function ReportsPage({
               type="submit"
               form="create-report-form"
               variant="brand"
-              className="w-full sm:flex-1"
+              className="w-full sm:w-auto sm:px-6"
               loading={loading}
               disabled={!newReport.patientId}
               title={!newReport.patientId ? 'Search and select a patient first' : undefined}
@@ -2313,13 +1628,59 @@ export default function ReportsPage({
                   <span>
                     {composerMissing.length} of {composerTotal} ordered result
                     {composerTotal === 1 ? '' : 's'} left blank
-                    {composerTotal > 1 ? ' will print as empty lines' : ' prints as an empty line'}.
-                    Fill them now, or issue as it stands.
+                    {composerTotal === 1 ? ' prints as' : ' will print as'} an em dash on the
+                    report. Fill them now, or issue as it stands.
                   </span>
                 </p>
               )}
 
-              <div className="space-y-3">
+              {/* The same panel now sizes the sheet too, because "it fits" used to
+                  be discoverable only at the printer. */}
+              <p
+                role="status"
+                aria-live="polite"
+                className="flex items-start gap-1.5 text-[12px] leading-relaxed text-on-surface-variant"
+              >
+                <FileText className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span>
+                  Prints as about {composerPages} {composerPages === 1 ? 'page' : 'pages'}
+                  {composerPages > 1
+                    ? readSettings().reportFitToOnePage
+                      ? ' — the one-page fit will tighten spacing if it can.'
+                      : ' — one-page fit is off in Settings → Report template.'
+                    : '.'}
+                </span>
+              </p>
+
+              {/* A CBC alone is 27 parameters and a full panel runs to 44, so on a PC
+                  the results are an entry table — one row per test, five aligned
+                  columns, a sticky header, no card chrome eating the height. Below
+                  1024 px it is the stacked cards the phone has always had, rendered
+                  *instead of* hidden: the Enter / Arrow-down bench navigation walks
+                  `.test-result-input` by index and cannot have a second invisible
+                  set of fields in the document. */}
+              <div
+                className={
+                  isWideComposer
+                    ? 'rounded-2xl border border-outline-variant/30 bg-surface'
+                    : 'space-y-3'
+                }
+              >
+                {isWideComposer && newReport.testSelection.length > 0 && (
+                  <div
+                    className={cn(
+                      COMPOSER_COLS,
+                      'sticky top-0 z-10 rounded-t-2xl border-b border-outline-variant/40 bg-surface-container-low px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-on-surface-variant',
+                    )}
+                  >
+                    <span>Test</span>
+                    <span>Reference</span>
+                    <span>Result</span>
+                    <span>Unit</span>
+                    <span className="sr-only">Remove</span>
+                  </div>
+                )}
+
                 {newReport.testSelection.length === 0 && (
                   <div className="p-4 text-center text-sm text-on-surface-variant bg-surface-container-low rounded-xl">
                     No tests selected. Please select a patient or add tests above.
@@ -2328,8 +1689,47 @@ export default function ReportsPage({
 
                 {newReport.testSelection.map(testName => {
                   const testInfo = findTestInfo(testName);
+                  /** Takes a profile / section heading out of the order with its members. */
+                  const dropGroup = () => {
+                    const toRemove = [
+                      testName,
+                      ...(testInfo?.isGroup ? (testInfo.includedTests ?? []) : []),
+                    ];
+                    setNewReport({
+                      ...newReport,
+                      testSelection: newReport.testSelection.filter(t => !toRemove.includes(t)),
+                    });
+                  };
+
                   // If it's a Group or Header, just show it distinctively without input
                   if (testInfo?.isGroup || testInfo?.isHeader) {
+                    if (isWideComposer) {
+                      return (
+                        <div
+                          key={testName}
+                          className={cn(
+                            COMPOSER_COLS,
+                            'border-b border-outline-variant/25 px-3 py-1.5',
+                            testInfo.isGroup ? 'bg-primary/10' : 'bg-surface-container-low/70',
+                          )}
+                        >
+                          <h4
+                            className="col-span-4 truncate text-[11px] font-bold uppercase tracking-[0.06em] text-primary"
+                            title={testName}
+                          >
+                            {testName}
+                          </h4>
+                          <button
+                            type="button"
+                            onClick={dropGroup}
+                            aria-label={`Remove ${testName}`}
+                            className="justify-self-end rounded p-1 text-primary opacity-50 transition hover:bg-primary hover:text-on-primary hover:opacity-100"
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        </div>
+                      );
+                    }
                     return (
                       <div
                         key={testName}
@@ -2340,18 +1740,8 @@ export default function ReportsPage({
                         </h4>
                         <button
                           type="button"
-                          onClick={() => {
-                            let toRemove = [testName];
-                            if (testInfo.isGroup && testInfo.includedTests) {
-                              toRemove = [...toRemove, ...testInfo.includedTests];
-                            }
-                            setNewReport({
-                              ...newReport,
-                              testSelection: newReport.testSelection.filter(
-                                t => !toRemove.includes(t),
-                              ),
-                            });
-                          }}
+                          onClick={dropGroup}
+                          aria-label={`Remove ${testName}`}
                           className="p-1 text-primary opacity-50 hover:bg-primary hover:text-on-primary rounded transition"
                         >
                           <X className="w-4 h-4" />
@@ -2385,6 +1775,108 @@ export default function ReportsPage({
                     }
                   }
 
+                  const flagPill = valueStatus ? (
+                    <StatusPill
+                      tone={
+                        valueStatus === 'high'
+                          ? 'error'
+                          : valueStatus === 'low'
+                            ? 'warning'
+                            : 'success'
+                      }
+                      dot
+                    >
+                      {valueStatus === 'high' ? 'High' : valueStatus === 'low' ? 'Low' : 'Normal'}
+                    </StatusPill>
+                  ) : null;
+
+                  /** Takes this one test out of the order. */
+                  const dropTest = () =>
+                    setNewReport({
+                      ...newReport,
+                      testSelection: newReport.testSelection.filter(t => t !== testName),
+                    });
+
+                  /** Writing a value, through the same derived-cell recompute the
+                   *  card layout has always used — both layouts must derive alike. */
+                  const setResult = (next: string) =>
+                    setNewReport({
+                      ...newReport,
+                      results: recalculateCBC(newReport.results, testName, next),
+                    });
+
+                  if (isWideComposer) {
+                    return (
+                      <div
+                        key={testName}
+                        className={cn(
+                          COMPOSER_COLS,
+                          'border-b border-outline-variant/20 px-3 py-1.5 transition-colors last:border-b-0 hover:bg-accent/5',
+                        )}
+                      >
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span
+                            className="truncate text-[13px] font-bold text-primary"
+                            title={testName}
+                          >
+                            {testName}
+                          </span>
+                          {flagPill}
+                        </div>
+                        <div
+                          className="min-w-0 truncate text-xs text-on-surface-variant"
+                          title={`Ref: ${rangeLabel}${testInfo?.unit ? ` ${testInfo.unit}` : ''}`}
+                        >
+                          <span className="font-medium">Ref:</span> {rangeLabel || '—'}
+                          {patient && resolvedRange && resolvedRange.kind !== 'none' && (
+                            <span className="ml-1 rounded bg-secondary-container/10 px-1 text-[10px] font-medium text-secondary">
+                              adjusted
+                            </span>
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          {testInfo?.options ? (
+                            <Combobox
+                              className="w-full min-w-0"
+                              inputClassName={COMPOSER_INPUT}
+                              value={enteredValue}
+                              options={testInfo.options}
+                              placeholder="Select…"
+                              ariaLabel={`Result for ${testName}`}
+                              onChange={setResult}
+                              onNavigate={handleInputKeyDown}
+                            />
+                          ) : (
+                            <input
+                              type="text"
+                              inputMode={isNumericTest(testInfo) ? 'decimal' : undefined}
+                              aria-label={`Result for ${testName}`}
+                              value={enteredValue}
+                              onChange={e => setResult(e.target.value)}
+                              onKeyDown={handleInputKeyDown}
+                              className={COMPOSER_INPUT}
+                              placeholder="Result…"
+                            />
+                          )}
+                        </div>
+                        <span
+                          className="truncate text-xs font-semibold text-on-surface-variant"
+                          title={testInfo?.unit}
+                        >
+                          {testInfo?.unit || '—'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={dropTest}
+                          aria-label={`Remove ${testName}`}
+                          className="justify-self-end rounded-lg p-1.5 text-error opacity-40 transition hover:bg-error-container hover:opacity-100"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                    );
+                  }
+
                   return (
                     <div
                       key={testName}
@@ -2394,24 +1886,7 @@ export default function ReportsPage({
                         <div>
                           <div className="flex items-center flex-wrap gap-2">
                             <label className="text-sm font-bold text-primary">{testName}</label>
-                            {valueStatus && (
-                              <StatusPill
-                                tone={
-                                  valueStatus === 'high'
-                                    ? 'error'
-                                    : valueStatus === 'low'
-                                      ? 'warning'
-                                      : 'success'
-                                }
-                                dot
-                              >
-                                {valueStatus === 'high'
-                                  ? 'High'
-                                  : valueStatus === 'low'
-                                    ? 'Low'
-                                    : 'Normal'}
-                              </StatusPill>
-                            )}
+                            {flagPill}
                           </div>
                           {testInfo && (
                             <div className="text-xs text-on-surface-variant mt-0.5">
@@ -2433,12 +1908,8 @@ export default function ReportsPage({
                         </div>
                         <button
                           type="button"
-                          onClick={() =>
-                            setNewReport({
-                              ...newReport,
-                              testSelection: newReport.testSelection.filter(t => t !== testName),
-                            })
-                          }
+                          onClick={dropTest}
+                          aria-label={`Remove ${testName}`}
                           className="p-1.5 text-error opacity-50 hover:bg-error-container hover:opacity-100 rounded-lg transition"
                         >
                           <X className="w-4 h-4" />
@@ -2453,13 +1924,7 @@ export default function ReportsPage({
                             options={testInfo.options}
                             placeholder="Select or type result..."
                             ariaLabel={`Result for ${testName}`}
-                            onChange={next => {
-                              const nextResults = recalculateCBC(newReport.results, testName, next);
-                              setNewReport({
-                                ...newReport,
-                                results: nextResults,
-                              });
-                            }}
+                            onChange={setResult}
                             onNavigate={handleInputKeyDown}
                           />
                         ) : (
@@ -2468,17 +1933,7 @@ export default function ReportsPage({
                             inputMode={isNumericTest(testInfo) ? 'decimal' : undefined}
                             aria-label={`Result for ${testName}`}
                             value={newReport.results[testName] || ''}
-                            onChange={e => {
-                              const nextResults = recalculateCBC(
-                                newReport.results,
-                                testName,
-                                e.target.value,
-                              );
-                              setNewReport({
-                                ...newReport,
-                                results: nextResults,
-                              });
-                            }}
+                            onChange={e => setResult(e.target.value)}
                             onKeyDown={handleInputKeyDown}
                             className="test-result-input flex-1 min-w-0 px-4 py-2.5 bg-surface-container-lowest border border-outline-variant/30 rounded-lg focus:border-accent focus:outline-none transition font-bold text-primary"
                             placeholder={`Enter result...`}

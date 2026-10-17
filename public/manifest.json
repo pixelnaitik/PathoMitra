@@ -1,7 +1,7 @@
 {
   "name": "PathoMitra",
   "short_name": "PathoMitra",
-  "description": "Clinical Digital Pathology Laboratory Portal",
+  "description": "Offline pathology lab console - patient records, reports and billing, stored on your device",
   "start_url": "/dashboard",
   "display": "standalone",
   "display_override": ["window-controls-overlay", "standalone"],

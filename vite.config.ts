@@ -115,12 +115,14 @@ export default defineConfig(() => {
         },
       },
       /**
-       * Minified stack traces are otherwise unreadable, and `/api/client-errors`
-       * (server.ts) is the only place web production failures land — on the APK
-       * the on-device crash log in src/lib/crash-log.ts is. `hidden` emits .map
-       * files without a `//# sourceMappingURL` comment in the shipped bundle, so
-       * they can be kept for symbolication without being served publicly. Off by
-       * default so a normal build cannot leak sources.
+       * Minified stack traces are otherwise unreadable, and the only failure sink
+       * this product has is on-device: the ring buffer in src/lib/crash-log.ts,
+       * read from Settings -> Data & Diagnostics. There is no server and no
+       * ingest endpoint — an older comment here named an Express `server.ts`
+       * `/api/client-errors` route that never existed in this repo. `hidden`
+       * emits .map files without a `//# sourceMappingURL` comment in the shipped
+       * bundle, so they can be kept for symbolication without being served
+       * publicly. Off by default so a normal build cannot leak sources.
        */
       sourcemap: process.env.SOURCEMAP === 'true' ? 'hidden' : false,
     },

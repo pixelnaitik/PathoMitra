@@ -20,21 +20,37 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import dotenv from 'dotenv';
 
-import {
+/*
+ * The two modules below are imported *dynamically*, after the environment is
+ * loaded, and that ordering is the whole trick: `src/lib/privacy-policy.ts`
+ * resolves PRIVACY_CONTACT_EMAIL at module-evaluation time, so a static
+ * `import` would run before any `dotenv.config()` in this file's body — ESM
+ * hoists imports above the statements. With the static import the generator read
+ * its own `set-VITE_…@example.invalid` fallback and refused to run on every
+ * machine, which is how a script named "build the privacy policy" ended up never
+ * having produced one. Same reason `check-release-config.mjs` loads dotenv itself.
+ */
+dotenv.config({ quiet: true, path: path.resolve(process.cwd(), '.env') });
+
+const {
   PRIVACY_CONTACT_EMAIL,
   PRIVACY_LAST_UPDATED,
   PRIVACY_POLICY_URL,
   PRIVACY_SECTIONS,
   hasPlaceholderPrivacyContact,
-  type PrivacySection,
-} from '../src/lib/privacy-policy.ts';
-import {
+} = await import('../src/lib/privacy-policy.ts');
+const {
   TERMS_LAST_UPDATED,
   TERMS_SECTIONS,
   TERMS_VERSION,
-  type TermsSection,
-} from '../src/lib/terms.ts';
+} = await import('../src/lib/terms.ts');
+
+// `PrivacySection` / `TermsSection` are type-only and erased, so they can stay
+// in the static position without affecting the load order above.
+type PrivacySection = import('../src/lib/privacy-policy.ts').PrivacySection;
+type TermsSection = import('../src/lib/terms.ts').TermsSection;
 
 const OUT_DIR = path.resolve(process.cwd(), 'privacy-site');
 

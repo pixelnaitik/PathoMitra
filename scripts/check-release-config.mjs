@@ -35,6 +35,32 @@ const BLOCKED_HOSTS = [
 const BLOCKED_URL_HOSTS = ['pages.dev', 'vercel.app', 'netlify.app', 'github.io'];
 
 /**
+ * The one exception to the block above, and it is narrow on purpose: an exact
+ * hostname, not a suffix.
+ *
+ * Why an exception exists at all — owner decision, 2026-10-16. The rule this
+ * entry bends is "the policy must live somewhere you control". `pathomitra.pages.dev`
+ * is a Cloudflare Pages project inside the developer's own account, served over
+ * HTTPS, with the DNS, the deployment pipeline and the teardown all in their
+ * hands — which is a different thing from a stray `some-app.vercel.app` anyone on
+ * a free tier could stand up. Google's actual requirement is a publicly
+ * reachable policy that matches the app; the shared-subdomain rule is this repo
+ * being stricter than the letter of the policy.
+ *
+ * What the exception does NOT relax:
+ *   - the live probe below still has to fetch the URL, get HTTP 200, see real
+ *     HTML, and find VITE_SUPPORT_EMAIL inside the served body — so a JS-rendered
+ *     route that shows a crawler an empty shell fails here exactly as it would
+ *     fail a reviewer. Hosting a plain-HTML policy is mandatory, not optional.
+ *   - every other shared subdomain stays blocked.
+ *
+ * Replacing this with a domain the brand actually owns (`pathomitra.*`) is still
+ * the right end state; when that happens, delete this entry rather than leaving
+ * two accepted hosts in place.
+ */
+const OWNER_APPROVED_POLICY_HOSTS = ['pathomitra.pages.dev'];
+
+/**
  * Reserved, never-resolvable top-level domains (RFC 2606 / RFC 6761).
  *
  * This list exists because the old block-list only caught the literal
@@ -54,6 +80,9 @@ function isReservedHost(host) {
 }
 
 const problems = [];
+
+/** Exact-hostname exceptions used on this run, reported loudly at the end. */
+const approvedPolicyHosts = [];
 
 /**
  * `--allow-placeholder` is the only way past the placeholder block, and it exists
@@ -126,8 +155,12 @@ function checkUrl(value, name) {
     );
   }
   // A free platform subdomain works today but can be taken away, and Play asks
-  // that the policy live at a developer-controlled location.
-  if (BLOCKED_URL_HOSTS.some(shared => host === shared || host.endsWith(`.${shared}`))) {
+  // that the policy live at a developer-controlled location. The exact-hostname
+  // OWNER_APPROVED_POLICY_HOSTS list is the only exception, and the live probe
+  // still has to prove the URL serves a readable policy.
+  if (OWNER_APPROVED_POLICY_HOSTS.includes(host)) {
+    approvedPolicyHosts.push(host);
+  } else if (BLOCKED_URL_HOSTS.some(shared => host === shared || host.endsWith(`.${shared}`))) {
     problems.push(
       `${name}="${value}" points at a shared platform subdomain rather than a domain you own.`,
     );
@@ -146,6 +179,14 @@ function bail() {
 
 checkEmail(process.env.VITE_SUPPORT_EMAIL, 'VITE_SUPPORT_EMAIL');
 checkUrl(process.env.VITE_PRIVACY_URL, 'VITE_PRIVACY_URL');
+
+for (const host of approvedPolicyHosts) {
+  console.warn(
+    `  ⚠ Using the owner-approved policy host "${host}" — a platform subdomain, not a ` +
+      'domain bearing your brand.\n' +
+      '    The live probe still has to prove the page serves readable HTML.\n',
+  );
+}
 
 const envFile = path.resolve(process.cwd(), '.env');
 if (!fs.existsSync(envFile)) {

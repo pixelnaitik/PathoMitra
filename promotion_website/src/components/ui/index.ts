@@ -11,3 +11,4 @@ export {
 } from './Button';
 export { Card, SectionTitle, type CardProps } from './Card';
 export { StatusPill, type PillTone } from './StatusPill';
+export { Reveal, Eyebrow, PageTransition } from './motion';

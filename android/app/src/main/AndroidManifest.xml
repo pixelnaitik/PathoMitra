@@ -38,6 +38,21 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
+
+        <!-- @capacitor/local-notifications registers a BOOT_COMPLETED receiver to
+             re-arm notifications that were scheduled for a future moment. This app
+             never schedules one: lib/desktop-notifications.ts calls schedule() with
+             no `at`, so every banner is posted the instant the alert is derived, and
+             lib/notification-engine.ts recomputes the whole alert list from the
+             database on each launch anyway. A boot receiver that can only ever
+             re-publish nothing is exactly what Play's "undesirable startup" review
+             looks for, and it is the reason RECEIVE_BOOT_COMPLETED existed. Both go.
+             Removing the component (not just the permission) also means the
+             intent-filter cannot survive a manifest merge and reappear in the
+             uploaded binary. -->
+        <receiver
+            android:name="com.capacitorjs.plugins.localnotifications.LocalNotificationRestoreReceiver"
+            tools:node="remove" />
     </application>
 
     <!-- Permissions -->
@@ -62,5 +77,11 @@
         tools:node="remove"/>
     <uses-permission
         android:name="android.permission.USE_EXACT_ALARM"
+        tools:node="remove"/>
+    <!-- Same plugin contributes this for its BOOT_COMPLETED receiver, which is
+         removed above. Nothing in this app survives a reboot deliberately: the
+         alert list is derived from the records, not from a queue. -->
+    <uses-permission
+        android:name="android.permission.RECEIVE_BOOT_COMPLETED"
         tools:node="remove"/>
 </manifest>

@@ -15,7 +15,7 @@ import {
 import { authenticate, checkBiometric } from '../lib/biometric';
 import { getRepository } from '../data';
 import { installSessionLock } from '../lib/session-lock';
-import { SETTINGS_UPDATED_EVENT, readSettings } from '../lib/settings';
+import { SETTINGS_UPDATED_EVENT, DEFAULT_SETTINGS, readSettings, writeSettings } from '../lib/settings';
 
 /**
  * Local, offline authentication for the single device admin.
@@ -136,6 +136,27 @@ function toUser(name: string): AuthUser {
   return { uid: LOCAL_UID, email: null, displayName: name, photoURL: null };
 }
 
+/**
+ * Adopt the account's lab name into `settings.labName` while that field still
+ * holds the built-in placeholder.
+ *
+ * The onboarding field carries the LAB name (owner 2026-10-14), but the printed
+ * bill / report letterhead reads its name from `settings.labName`. The two were
+ * disconnected, so a lab that named itself at setup still got a bill headed
+ * "PathoMitra Lab". Seeding closes that gap for new and existing installs alike
+ * — but only while the field is empty or still the default: a name the lab typed
+ * in Settings is theirs and is never overwritten.
+ */
+function adoptLabNameFromAccount(accountName: string, previousName = ''): void {
+  const trimmed = accountName.trim();
+  if (!trimmed) return;
+  const s = readSettings();
+  const current = s.labName?.trim();
+  const isPlaceholder = !current || current === DEFAULT_SETTINGS.labName;
+  const wasMirroring = !!previousName && current === previousName.trim();
+  if (isPlaceholder || wasMirroring) writeSettings({ ...s, labName: trimmed });
+}
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [status, setStatus] = useState<AuthStatus>('loading');
   const [userName, setUserName] = useState<string>('');
@@ -176,6 +197,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (account) {
         setUserName(account.name);
         setBiometricEnabled(account.biometricEnabled && bio.available);
+        // Existing installs: bring a bill/report still headed with the built-in
+        // placeholder in line with the lab name captured at setup.
+        adoptLabNameFromAccount(account.name);
         setStatus('locked');
       } else {
         setStatus('onboarding');
@@ -229,6 +253,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setBiometricAvailable(useBiometric ? true : biometricAvailable);
       setBiometricEnabled(useBiometric);
       setTermsPending(false);
+      // The onboarding name IS the lab name — put it on the letterhead so the
+      // first bill this lab prints carries its own name, not "PathoMitra Lab".
+      adoptLabNameFromAccount(account.name);
       enterUnlocked(account.name);
     },
     [biometricAvailable, enterUnlocked],
@@ -277,6 +304,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const renameAccount = useCallback(async (name: string) => {
     const trimmed = name.trim();
     if (!trimmed) throw new Error('Name cannot be empty.');
+    const previous = (await getAccount())?.name ?? '';
     await updateAccountName(trimmed);
     setUserName(trimmed);
     try {
@@ -284,6 +312,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch {
       // non-fatal
     }
+    // Keep the printed letterhead in step when it was mirroring the account name.
+    adoptLabNameFromAccount(trimmed, previous);
   }, []);
 
   const lock = useCallback(() => {

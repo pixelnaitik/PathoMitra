@@ -30,6 +30,29 @@ export function generateId(): string {
   return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
 }
 
+/**
+ * A cryptographically strong secret of `bytes` random bytes, hex encoded.
+ *
+ * Deliberately separate from {@link generateId}, and deliberately without the
+ * `Math.random` branch that `generateId` falls back to. That fallback is fine for
+ * a document id — a collision there costs a retry — and unacceptable for the
+ * SQLCipher passphrase, where a predictable generator means the encrypted
+ * database of a whole laboratory can be reconstructed. This one throws instead
+ * of degrading: no key is better than a guessable one, and the caller surfaces a
+ * clear failure rather than silently shipping a weak vault.
+ */
+export function generateSecret(bytes = 32): string {
+  const c = globalThis.crypto;
+  if (!c || typeof c.getRandomValues !== 'function') {
+    throw new Error(
+      'A cryptographic random source is unavailable, so the on-device database key cannot be generated safely.',
+    );
+  }
+  const out = new Uint8Array(bytes);
+  c.getRandomValues(out);
+  return Array.from(out, b => b.toString(16).padStart(2, '0')).join('');
+}
+
 function readField(doc: LocalDoc, field: string): unknown {
   return doc.data()[field];
 }

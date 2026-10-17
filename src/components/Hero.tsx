@@ -110,26 +110,27 @@ function Sparkline() {
   );
 }
 
-/** CSS/SVG product mock — replaces the old external placeholder screenshot. */
+/**
+ * CSS/SVG product mock — replaces the old external placeholder screenshot.
+ *
+ * It is an *illustration*, and it has to read as one. Store Policies 10.1.1
+ * forbids anything that "attempts to mislead customers as to the actual features,
+ * functionality" of the product, and this mock used to carry a URL pill naming a
+ * host that does not resolve, plus a pulsing "Live" badge (this app has no
+ * server, so nothing is live). Both are gone; the caption below is what makes the
+ * invented numbers defensible. Do not let this markup reach Store screenshots or a
+ * listing — capture the real packaged app for those.
+ */
 function ProductMock() {
   return (
     <div className="relative overflow-hidden rounded-3xl border border-[var(--elevated-border)] bg-surface-container-lowest shadow-float">
-      {/* Browser chrome */}
+      {/* Illustration chrome — deliberately generic, no URL, no "live" state. */}
       <div className="flex items-center gap-2 border-b border-outline-variant/50 bg-surface-container-low px-4 py-3">
         <span className="h-2.5 w-2.5 rounded-full bg-chart-5/60" aria-hidden="true" />
         <span className="h-2.5 w-2.5 rounded-full bg-chart-4/60" aria-hidden="true" />
         <span className="h-2.5 w-2.5 rounded-full bg-chart-6/60" aria-hidden="true" />
         <span className="ml-3 hidden rounded-full bg-surface-container-high px-3 py-1 text-[10px] font-medium text-on-surface-variant sm:block">
-          app.pathomitra.app/dashboard
-        </span>
-        <span className="ml-auto flex items-center gap-1.5">
-          <span
-            className="animate-soft-pulse h-1.5 w-1.5 rounded-full bg-success"
-            aria-hidden="true"
-          />
-          <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-on-surface-variant">
-            Live
-          </span>
+          Illustration · sample data
         </span>
       </div>
 

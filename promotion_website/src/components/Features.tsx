@@ -1,19 +1,28 @@
 import { Link } from 'react-router-dom';
+import { motion } from 'motion/react';
 import {
   ArrowRight,
+  Archive,
   PieChart,
   ShieldCheck,
   Smartphone,
   Stethoscope,
   Users,
+  Wallet,
   type LucideIcon,
 } from 'lucide-react';
 import { Card, StatusPill } from './ui';
+import { Eyebrow, Reveal } from './ui/motion';
 import { cn } from '../lib/utils';
 
 function IconTile({ icon: Icon, className }: { icon: LucideIcon; className?: string }) {
   return (
-    <span className={cn('mb-5 flex h-12 w-12 items-center justify-center rounded-2xl', className)}>
+    <span
+      className={cn(
+        'mb-5 flex h-12 w-12 items-center justify-center rounded-2xl transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:-rotate-6 group-hover:scale-110',
+        className,
+      )}
+    >
       <Icon className="h-6 w-6" aria-hidden="true" />
     </span>
   );
@@ -24,10 +33,14 @@ function BarsMock({ bar, className }: { bar: string; className?: string }) {
   return (
     <div className={cn('flex h-24 items-end gap-1.5', className)} aria-hidden="true">
       {bars.map((h, i) => (
-        <span
+        <motion.span
           key={i}
-          className={cn('flex-1 rounded-t-md', bar, i === 5 ? 'opacity-100' : 'opacity-50')}
+          className={cn('flex-1 origin-bottom rounded-t-md', bar, i === 5 ? 'opacity-100' : 'opacity-50')}
           style={{ height: `${h}%` }}
+          initial={{ scaleY: 0 }}
+          whileInView={{ scaleY: 1 }}
+          viewport={{ once: true, margin: '-40px' }}
+          transition={{ delay: 0.15 + i * 0.06, duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
         />
       ))}
     </div>
@@ -39,21 +52,19 @@ export default function Features() {
     <section className="bg-surface-container-low px-6 py-24 sm:py-28">
       <div className="mx-auto max-w-7xl">
         <div className="mb-14 max-w-2xl">
-          <span className="text-[12px] font-semibold uppercase tracking-[0.12em] text-accent">
-            The platform
-          </span>
+          <Eyebrow>The platform</Eyebrow>
           <h2 className="mt-3 text-3xl font-bold tracking-[-0.03em] text-on-surface sm:text-4xl">
             Everything the bench needs. Nothing it doesn’t.
           </h2>
           <p className="mt-4 text-lg leading-relaxed text-on-surface-variant">
-            One console for intake, results, sign-off, analytics and delivery — shaped by
-            pathologists and lab technicians in three reference laboratories.
+            One console for intake, results, report issuing, billing and analytics — shaped around
+            the day-to-day workflow of a pathology bench.
           </p>
         </div>
 
         <div className="grid grid-cols-1 gap-4 sm:gap-5 lg:grid-cols-6">
           {/* Signed reports — wide */}
-          <div className="lg:col-span-4">
+          <Reveal className="lg:col-span-4" y={20}>
             <Card
               interactive
               pad="lg"
@@ -65,10 +76,10 @@ export default function Features() {
                   Reports stored on the lab's device
                 </h3>
                 <p className="mt-2.5 text-[15px] leading-relaxed text-on-surface-variant">
-                  Each report records the operator who issued it and is written to a SQLCipher
-                  database on the lab's own device. Amending a released report raises its version
-                  and stores the reason. Nothing is uploaded anywhere — the app has no network
-                  permission.
+                  Each report records the operator who issued it and is written to an encrypted
+                  (SQLCipher AES-256) database on the lab's own device. Amending a released report
+                  raises its version and stores the reason. Nothing is uploaded anywhere — the
+                  Android app does not even hold a network permission.
                 </p>
                 <Link
                   to="/technology"
@@ -107,10 +118,10 @@ export default function Features() {
                 </div>
               </div>
             </Card>
-          </div>
+          </Reveal>
 
           {/* Analytics */}
-          <div className="lg:col-span-2">
+          <Reveal className="lg:col-span-2" y={20} delay={0.06}>
             <Card interactive pad="lg" className="flex h-full flex-col">
               <IconTile icon={PieChart} className="bg-chart-2/12 text-chart-2" />
               <h3 className="text-xl font-bold tracking-[-0.02em] text-on-surface">
@@ -122,11 +133,11 @@ export default function Features() {
               </p>
               <BarsMock bar="bg-chart-2" className="mt-auto pt-6" />
             </Card>
-          </div>
+          </Reveal>
 
           {/* Patient registry — widened to keep the row full now that the
               scan-to-verify card is gone with the QR feature itself. */}
-          <div className="lg:col-span-4">
+          <Reveal className="lg:col-span-4" y={20} delay={0.04}>
             <Card interactive pad="lg" className="flex h-full flex-col">
               <IconTile icon={Users} className="bg-chart-3/12 text-chart-3" />
               <h3 className="text-xl font-bold tracking-[-0.02em] text-on-surface">
@@ -175,10 +186,10 @@ export default function Features() {
                 ))}
               </div>
             </Card>
-          </div>
+          </Reveal>
 
           {/* Doctor directory — solid brand card for rhythm */}
-          <div className="lg:col-span-2">
+          <Reveal className="lg:col-span-2" y={20} delay={0.08}>
             <Card
               pad="lg"
               className="group relative h-full overflow-hidden border-transparent bg-primary text-on-primary"
@@ -199,10 +210,39 @@ export default function Features() {
                 <Stethoscope className="h-40 w-40" strokeWidth={1} />
               </div>
             </Card>
-          </div>
+          </Reveal>
+
+          {/* Billing & invoicing — mirrors the app's Bills page */}
+          <Reveal className="lg:col-span-4" y={20} delay={0.04}>
+            <Card interactive pad="lg" className="flex h-full flex-col">
+              <IconTile icon={Wallet} className="bg-chart-4/12 text-chart-4" />
+              <h3 className="text-xl font-bold tracking-[-0.02em] text-on-surface">
+                Billing & invoicing
+              </h3>
+              <p className="mt-2 text-[15px] leading-relaxed text-on-surface-variant">
+                From test-wise charges to the final invoice — item bills per patient, package and
+                panel pricing, part-payments and dues tracked at the counter, and doctor-wise
+                totals for month-end. Lists export to CSV without leaving the device.
+              </p>
+            </Card>
+          </Reveal>
+
+          {/* Sealed backups */}
+          <Reveal className="lg:col-span-2" y={20} delay={0.08}>
+            <Card interactive pad="lg" className="flex h-full flex-col">
+              <IconTile icon={Archive} className="bg-chart-5/12 text-chart-5" />
+              <h3 className="text-xl font-bold tracking-[-0.02em] text-on-surface">
+                Sealed backups
+              </h3>
+              <p className="mt-2 text-[15px] leading-relaxed text-on-surface-variant">
+                Database snapshots are sealed with a passphrase you choose (AES-256-GCM) before
+                they leave the device — and everything is erasable in one action.
+              </p>
+            </Card>
+          </Reveal>
 
           {/* Offline-ready PWA — full width */}
-          <div className="lg:col-span-6">
+          <Reveal className="lg:col-span-6" y={20} delay={0.04}>
             <Card interactive pad="lg" className="grid items-center gap-8 lg:grid-cols-2">
               <div className="max-w-md">
                 <IconTile icon={Smartphone} className="bg-chart-6/12 text-chart-6" />
@@ -228,10 +268,10 @@ export default function Features() {
                   App shell cached
                 </StatusPill>
                 <StatusPill tone="neutral">No server required</StatusPill>
-                <StatusPill tone="neutral">Installable · Android + browser</StatusPill>
+                <StatusPill tone="neutral">Installable · Android + Windows + browser</StatusPill>
               </div>
             </Card>
-          </div>
+          </Reveal>
         </div>
       </div>
     </section>

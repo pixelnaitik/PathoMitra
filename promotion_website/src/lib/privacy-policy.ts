@@ -23,13 +23,13 @@
  * render a `example.invalid` placeholder the way the in-app build detects one.
  * Keep these in step with the values used in `components/Footer.tsx`.
  */
-export const PRIVACY_CONTACT_EMAIL = 'support@pathomitra.app';
+export const PRIVACY_CONTACT_EMAIL = 'pathomitra@healthcarediagnosticscenter.in';
 
 /** Canonical, publicly reachable location of this policy. */
 export const PRIVACY_POLICY_URL = 'https://pathomitra.pages.dev/privacy';
 
 /** Bump this whenever a section changes, and re-date it at submission. */
-export const PRIVACY_LAST_UPDATED = '11 October 2026';
+export const PRIVACY_LAST_UPDATED = '16 October 2026';
 
 export interface PrivacySection {
   heading: string;
@@ -56,7 +56,10 @@ export const PRIVACY_SECTIONS: PrivacySection[] = [
   {
     heading: '3. Where data is stored, and how it is protected',
     body: [
-      'Every clinical record — patients, referring doctors, reports, notes and invoices — is kept on your own device in a local SQLite database encrypted with SQLCipher (AES-256). The encryption key is randomly generated on first run and stored in the Android keystore, which is backed by hardware. Because the key is held by the device rather than derived from your passcode, the database stays encrypted even when the app is locked.',
+      'Every clinical record — patients, referring doctors, reports, notes and invoices — is kept on your own device in a local SQLite database encrypted with SQLCipher (AES-256). The encryption key is randomly generated on first run, never derived from your passcode, and never leaves the device; because it is held by the platform rather than by you, the database stays encrypted while the app is locked. Where the key physically lives depends on which build you are running, and the difference is real enough that it is stated rather than smoothed over.',
+      'On Android, the key is stored in app-private storage protected by the Android Keystore. On devices whose keystore implementation is hardware-backed that means the master key never leaves a secure element; on devices whose implementation is software-only it does not, and no app can tell which it got.',
+      'On Windows, the key is written to the Windows Credential Locker and sealed by DPAPI to your Windows user account. No other user on the same machine can read it, and Windows does not roam it. DPAPI is weaker than a hardware keystore in one specific way a lab should know: any process running as your user can ask Windows to unseal it. On a shared or compromised PC the control that protects the records is the Windows account itself — screen lock plus a dedicated operator account, not the database.',
+      'In a web browser, records are kept in the browser\u2019s own localStorage, which this app does not encrypt at all. The browser build is a convenience for trying the console, not a place to keep patient data, and the app shows a standing warning whenever it detects it is running that way.',
       'Your lab settings, any custom tests you add, and which alerts you have already read are held in the app\u2019s own private storage area rather than in that encrypted database. They are still unreachable by any other app on an un-rooted device, and they hold no patient results — but they are not AES-256 encrypted, and this policy says so rather than implying that every byte in the app sits inside SQLCipher.',
       'Your unlock credential is stored as a PBKDF2-SHA256 hash with a random per-account salt — never as plaintext. Biometric or screen-lock unlock is performed by the Android operating system; no biometric sample is read by, or transmitted to, this app.',
       'The passcode and biometric unlock gate access to the app\u2019s interface. After five consecutive failed attempts the app enforces a rising lockout delay, and it re-locks automatically after a period of inactivity you can set yourself — the same countdown also runs while the app is in the background, so a console left open on the bench is still covered.',
@@ -88,7 +91,7 @@ export const PRIVACY_SECTIONS: PrivacySection[] = [
       'The app sets no retention period and never deletes records on its own: your data lives on the device until you act. There is no server-side copy that could outlive it.',
       'You can export the data you entered at any time — per-report PDFs, list CSVs, and full database snapshots from Settings → Data → Backup — and restore a snapshot onto a device. A snapshot is sealed with a passphrase you choose (PBKDF2-SHA256 + AES-256-GCM) before it is written, so a copy that leaves this device does not carry readable patient records. There is no recovery: the passphrase is never stored on the device and cannot be reset, and a snapshot you have lost the passphrase for cannot be opened. Backing up unencrypted is still available as an explicit, per-backup choice — the app does not quietly make that decision for you.',
       'To remove everything permanently, use Settings \u2192 Security \u2192 "Erase all data & delete account". It wipes the local clinical database and the account in one action, and cannot be undone. Individual patients, reports and invoices can also be deleted separately.',
-      'Uninstalling the app removes the local database. Because Android backup is disabled, no copy survives in the cloud.',
+      'Uninstalling is not the same as deleting, and the two platforms differ. On Android, uninstalling removes the app\u2019s storage, and because Android backup is disabled no copy survives in the cloud. On Windows the installer deliberately leaves the app data folder (%APPDATA%\\PathoMitra) exactly where it is — encrypted database, exported reports and backup snapshots all stay on the machine — because a lab that updates or reinstalls a version must not lose years of records to a routine maintenance step. Before uninstalling PathoMitra from a Windows machine that has held patient records, use "Erase all data & delete account" first, then delete %APPDATA%\\PathoMitra yourself.',
     ],
   },
   {

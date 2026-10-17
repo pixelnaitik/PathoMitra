@@ -47,6 +47,7 @@ import { captureError } from '../lib/telemetry';
 import {
   currentPermission,
   isSupported,
+  pickBackend,
   requestPermission,
   showBanner,
   type BannerPermission,
@@ -57,6 +58,7 @@ import {
   DEFAULT_NOTIFICATION_PREFS,
   buildNotifications,
   resolvePrefs,
+  safeBannerFor,
   type NotificationItem,
   type NotificationPrefs,
   type NotificationSummary,
@@ -370,7 +372,20 @@ export function useNotifications(): UseNotificationsResult {
       // `showBanner` dedupes by alert key on every backend (the plugin's numeric
       // id on device, `tag` on web), so the same overdue patient replaces its
       // banner instead of stacking a pile of them.
-      void showBanner({ key: item.id, title: item.title, body: item.body });
+      //
+      // `bannerTitle` and `bannerBody`, not `title` and `body`: a banner lands in
+      // the OS notification shade, which is readable on a locked screen. The
+      // in-app centre keeps the name, the amendment reason and the money (the
+      // operator is already authenticated); the shade sees neither.
+      //
+      // Only Android can be told to hide the text until unlock (`visibility: 0`
+      // on the channel). Windows and the browser cannot, so the record
+      // identifier goes as well — see safeBannerFor in notification-engine.ts.
+      const native = pickBackend() === 'native';
+      const banner = native
+        ? { title: item.bannerTitle, body: item.bannerBody }
+        : safeBannerFor(item);
+      void showBanner({ key: item.id, ...banner });
     }
   }, [items, prefs.channels.desktop, bannerPermission]);
 

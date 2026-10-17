@@ -375,6 +375,112 @@ describe('buildDoctorStatements', () => {
   });
 });
 
+describe('buildDoctorStatements — custom day range', () => {
+  // Noon UTC keeps each bill's *local* calendar day stable under any runner
+  // timezone (offsets up to ±14 cannot push a noon stamp across a day edge),
+  // so the range boundaries below are exercised without TZ flake.
+  const at = (day: string) => `${day}T12:00:00.000Z`;
+  const windowInvoices = [
+    withReferral(bill({ seq: '0001', createdAt: at('2026-10-15') }), 50),
+    withReferral(
+      bill({ seq: '0002', patientId: 'p2', patientName: 'Ravi', createdAt: at('2026-10-01') }),
+      50,
+    ),
+    withReferral(
+      bill({ seq: '0003', patientId: 'p3', patientName: 'Suni', createdAt: at('2026-10-25') }),
+      50,
+    ),
+  ];
+
+  it('keeps only bills whose raised date falls inside the inclusive range', () => {
+    const [statement] = buildDoctorStatements(windowInvoices, [], {
+      from: '2026-10-10',
+      to: '2026-10-20',
+      doctors: DOCTORS,
+    });
+    expect(statement.totals.bills).toBe(1);
+    expect(statement.lines.map(l => l.invoiceNo)).toEqual(['IN2610-0001']);
+    expect(statement.totals.commission).toBe(175);
+  });
+
+  it('honours a half-open range (only `from`, or only `to`)', () => {
+    const after = buildDoctorStatements(windowInvoices, [], {
+      from: '2026-10-10',
+      doctors: DOCTORS,
+    });
+    expect(after[0].totals.bills).toBe(2); // 15th and 25th
+    const before = buildDoctorStatements(windowInvoices, [], {
+      to: '2026-10-10',
+      doctors: DOCTORS,
+    });
+    expect(before[0].totals.bills).toBe(1); // 1st
+  });
+
+  it('ANDs a month with a range when both are given', () => {
+    const [statement] = buildDoctorStatements(windowInvoices, [], {
+      month: '2026-10',
+      from: '2026-10-10',
+      to: '2026-10-20',
+      doctors: DOCTORS,
+    });
+    expect(statement.totals.bills).toBe(1);
+    // A range inside October but a November month filter matches nothing.
+    const none = buildDoctorStatements(windowInvoices, [], {
+      month: '2026-11',
+      from: '2026-10-10',
+      to: '2026-10-20',
+      doctors: DOCTORS,
+    });
+    expect(none).toHaveLength(0);
+  });
+
+  it('drops an undated bill when a range is applied', () => {
+    // `toInvoiceDoc` stamps a missing date with "now", so an empty date is
+    // forced at the read boundary — a bill the range can never place.
+    const undated = readInvoice('IN2610-0004', {
+      ...toInvoiceDoc({
+        patientId: 'p4',
+        patientName: 'Undated',
+        items: [
+          {
+            name: 'CBC (COMPLETE BLOOD COUNT)',
+            kind: 'panel',
+            detail: 'Blood',
+            qty: 1,
+            unitPrice: 350,
+            lineTotal: 350,
+            unpriced: false,
+            covers: [],
+          },
+        ],
+        doctorName: 'DR N KUMAR',
+        issuedBy: 'Ashu',
+      }),
+      invoiceNo: 'IN2610-0004',
+      referral: {
+        doctorName: 'DR N KUMAR',
+        doctorKey: 'DR N KUMAR',
+        doctorId: 'd1',
+        percent: 50,
+        commission: 175,
+        unmatched: false,
+      },
+      createdAt: '',
+    });
+    const statements = buildDoctorStatements([undated], [], {
+      from: '2026-10-01',
+      to: '2026-10-31',
+      doctors: DOCTORS,
+    });
+    expect(statements).toHaveLength(0);
+  });
+
+  it('leaves the no-range output unchanged', () => {
+    const all = buildDoctorStatements(windowInvoices, [], { doctors: DOCTORS });
+    expect(all[0].totals.bills).toBe(3);
+  });
+});
+
 describe('statementsSummary', () => {
   it('rolls the register up without double-counting a patient across doctors', () => {
     const invoices = [

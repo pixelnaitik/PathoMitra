@@ -30,6 +30,7 @@ import {
   billLinesFrom,
   billableTests,
   bulkAdjustPrices,
+  clearPrice,
   getPriceList,
   isOrderable,
   loadPriceList,
@@ -45,6 +46,7 @@ import {
   type PriceList,
 } from './price-list';
 import { DEFAULT_PATHOLOGY_TESTS, type PathologyTest } from './pathology-tests';
+import { writeCustomTests } from './settings';
 
 /** The catalogue's real CBC panel — the case that overcharges if pricing is naive. */
 const CBC = 'CBC (COMPLETE BLOOD COUNT)';
@@ -54,6 +56,32 @@ const CBC_MEMBERS = [
   'RBC (RED BLOOD CELLS)',
   'PLATELET COUNT',
 ];
+
+/**
+ * A package the lab made itself, with two components nobody can buy alone.
+ *
+ * Since 2026-10-17 every built-in catalogue entry carries a suggested market
+ * rate, so a *lab-made* panel is the only way to reach the "package with no
+ * price" branch any more — and that branch still has to hold: one flagged line,
+ * never a wall of unpriced components. `findTestInfo` reads the catalogue plus
+ * whatever `readCustomTests()` returns from localStorage, which `beforeEach`
+ * clears, so this has to be seeded inside the test that uses it.
+ */
+const OWN_PANEL = 'MY LAB PANEL';
+const OWN_MEMBER_ONE = 'LAB ASSAY ONE';
+const OWN_MEMBER_TWO = 'LAB ASSAY TWO';
+
+function seedOwnPanel() {
+  writeCustomTests([
+    {
+      id: 'custom_own_panel',
+      name: OWN_PANEL,
+      category: 'CUSTOM',
+      isGroup: true,
+      includedTests: [OWN_MEMBER_ONE, OWN_MEMBER_TWO],
+    },
+  ]);
+}
 
 type EntryInput = number | { price: number; active?: boolean; kind?: 'test' | 'panel' };
 
@@ -149,8 +177,29 @@ describe('sanitizePriceList', () => {
 });
 
 describe('resolvePrice', () => {
-  it('returns null, not 0, when the lab has not set a price', () => {
-    expect(resolvePrice('HB (HAEMOGLOBIN)', list({}))).toBeNull();
+  it('returns null, not 0, when neither the lab nor the catalogue has a rate', () => {
+    expect(resolvePrice(OWN_MEMBER_ONE, list({}))).toBeNull();
+  });
+
+  it('falls back to the catalogue\'s suggested rate for a name the lab never priced', () => {
+    // The bill an unconfigured lab prints used to be ₹0 with "not priced" on
+    // every line. The suggested tariff is what fixed that, so it is asserted.
+    expect(resolvePrice('HB (HAEMOGLOBIN)', list({}))).toBe(80);
+    expect(resolvePrice(CBC, list({}))).toBe(300);
+  });
+
+  it("keeps the lab's own figure over the suggested one", () => {
+    expect(resolvePrice('HB (HAEMOGLOBIN)', list({ 'HB (HAEMOGLOBIN)': 120 }))).toBe(120);
+  });
+
+  it('falls back to the suggested rate once the lab clears its own price', async () => {
+    await upsertPrice({ name: 'HB (HAEMOGLOBIN)', price: 120, actor: 'a' });
+    expect(resolvePrice('HB (HAEMOGLOBIN)')).toBe(120);
+    await clearPrice('HB (HAEMOGLOBIN)', 'a');
+    // The lab's entry is gone, so the bill prints the catalogue suggestion —
+    // clearing a price is not the same as making a test free, and "not priced"
+    // is reserved for a line nothing at all backs.
+    expect(resolvePrice('HB (HAEMOGLOBIN)')).toBe(80);
   });
 
   it('finds the entry through the folded name, not only the exact spelling', () => {
@@ -160,6 +209,18 @@ describe('resolvePrice', () => {
 
   it('treats a set zero as a real price', () => {
     expect(resolvePrice('HB (HAEMOGLOBIN)', list({ 'HB (HAEMOGLOBIN)': 0 }))).toBe(0);
+  });
+
+  it('prices a package, not the sum of its parts', () => {
+    const cbc = DEFAULT_PATHOLOGY_TESTS.find(t => t.name === CBC);
+    const memberSum = (cbc?.includedTests ?? []).reduce(
+      (sum, member) => sum + (resolvePrice(member, list({})) ?? 0),
+      0,
+    );
+    // A panel is sold as one job on one analyser: the rate has to sit under the
+    // components' total, or the "package" line would be the expensive option.
+    expect(memberSum).toBeGreaterThan(0);
+    expect(resolvePrice(CBC, list({}))).toBeLessThan(memberSum);
   });
 });
 
@@ -207,15 +268,27 @@ describe('billLinesFrom — the panel double-count guard', () => {
     expect(lines[0]).toMatchObject({ kind: 'test', unitPrice: 400, lineTotal: 400 });
   });
 
-  it('charges an unpriced package as one flagged line, not as 27 components', () => {
-    // The lab sells CBC, not "ABSOLUTE BASOPHIL COUNT". Itemising an unpriced
-    // package would bury the one useful fact — "CBC has no rate" — under a wall
-    // of component lines the lab cannot act on individually.
-    const lines = billLinesFrom([CBC, ...CBC_MEMBERS], list({ 'HB (HAEMOGLOBIN)': 100 }));
+  it('charges an unpriced package as one flagged line, not as its components', () => {
+    // A lab's own panel is the only unpriced package left in the app now that
+    // every built-in entry carries a suggested rate. The rule is unchanged: the
+    // lab sells the package, not "ABSOLUTE BASOPHIL COUNT", so itemising an
+    // unpriced panel would bury the one useful fact — "this panel has no rate" —
+    // under a wall of lines the lab cannot act on individually.
+    seedOwnPanel();
+    const lines = billLinesFrom(
+      [OWN_PANEL, OWN_MEMBER_ONE, OWN_MEMBER_TWO],
+      list({ [OWN_MEMBER_ONE]: 100 }),
+    );
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatchObject({ name: CBC, kind: 'panel', unpriced: true, lineTotal: 0 });
+    expect(lines[0]).toMatchObject({ name: OWN_PANEL, kind: 'panel', unpriced: true, lineTotal: 0 });
     // Members are absorbed either way, so none of them can be charged twice.
-    expect(lines[0]?.covers).toEqual(expect.arrayContaining(CBC_MEMBERS));
+    expect(lines[0]?.covers).toEqual([OWN_MEMBER_ONE, OWN_MEMBER_TWO]);
+  });
+
+  it('charges the built-in package at its suggested rate when the lab set none', () => {
+    const lines = billLinesFrom([CBC, ...CBC_MEMBERS], list({}));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ name: CBC, kind: 'panel', unpriced: false, lineTotal: 300 });
   });
 
   it('still charges a lone test that belongs to no ordered package', () => {
@@ -259,8 +332,11 @@ describe('billLinesFrom — the panel double-count guard', () => {
     expect(
       unpricedNames([CBC, 'Serum Creatinine'], list({ [CBC]: 350, 'Serum Creatinine': 400 })),
     ).toEqual([]);
-    // Only the unpriced *billable unit* is named — CBC's 27 parts are not units.
-    expect(unpricedNames([CBC, ...CBC_MEMBERS], list({}))).toEqual([CBC]);
+    seedOwnPanel();
+    // Only the unpriced *billable unit* is named — a panel's parts are not units.
+    expect(unpricedNames([OWN_PANEL, OWN_MEMBER_ONE, OWN_MEMBER_TWO], list({}))).toEqual([
+      OWN_PANEL,
+    ]);
     expect(unpricedNames(['Serum Creatinine'], list({}))).toEqual(['Serum Creatinine']);
   });
 });

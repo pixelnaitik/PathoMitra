@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import { AnimatePresence, motion } from 'motion/react';
-import { Link } from 'react-router-dom';
-import { ArrowRight, Menu, Microscope, X } from 'lucide-react';
+import { AnimatePresence, motion, useScroll, useSpring } from 'motion/react';
+import { Link, useLocation } from 'react-router-dom';
+import { ArrowRight, Github, Menu, Microscope, X } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { mailto } from '../lib/contact';
+import { mailto, GITHUB_URL } from '../lib/contact';
 import { Button } from './ui';
 
 // The built-in brand mark shipped in public/. The app's runtime custom-logo
@@ -14,6 +14,8 @@ const BRAND_LOGO_SRC = './brand-p.png';
 const NAV_LINKS = [
   { label: 'Technology', to: '/technology' },
   { label: 'Solutions', to: '/solutions' },
+  { label: 'Download', to: '/download' },
+  { label: 'Privacy', to: '/privacy' },
 ];
 
 /** Logo tile + wordmark. */
@@ -53,6 +55,7 @@ function Brand({ onNavigate }: { onNavigate?: () => void }) {
 export default function Header() {
   const [open, setOpen] = useState(false);
   const close = () => setOpen(false);
+  const { pathname } = useLocation();
 
   // Header gains a soft shadow once the page scrolls — subtle depth cue
   const [scrolled, setScrolled] = useState(false);
@@ -62,6 +65,10 @@ export default function Header() {
     window.addEventListener('scroll', onScroll, { passive: true });
     return () => window.removeEventListener('scroll', onScroll);
   }, []);
+
+  // Reading-progress hairline: spring-smoothed scaleX pinned to page scroll
+  const { scrollYProgress } = useScroll();
+  const progress = useSpring(scrollYProgress, { stiffness: 140, damping: 26, mass: 0.4 });
 
   return (
     <header
@@ -78,7 +85,11 @@ export default function Header() {
               <Link
                 key={link.to}
                 to={link.to}
-                className="nav-underline rounded-full px-3 py-1.5 text-sm font-medium text-on-surface-variant transition-colors hover:text-on-surface"
+                data-active={pathname === link.to || undefined}
+                className={cn(
+                  'nav-underline rounded-full px-3 py-1.5 text-sm font-medium transition-colors hover:text-on-surface',
+                  pathname === link.to ? 'text-on-surface' : 'text-on-surface-variant',
+                )}
               >
                 {link.label}
               </Link>
@@ -87,9 +98,23 @@ export default function Header() {
         </div>
 
         <div className="hidden shrink-0 items-center gap-2 md:flex">
-          <a href={mailto('Get started with PathoMitra')}>
+          <a
+            href={GITHUB_URL}
+            target="_blank"
+            rel="noreferrer"
+            aria-label="PathoMitra on GitHub (open source, MIT)"
+            className="group flex h-9 w-9 items-center justify-center rounded-full text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface"
+          >
+            <Github className="icon-pop h-[18px] w-[18px]" aria-hidden="true" />
+          </a>
+          <Link to="/download">
+            <Button variant="neutral" size="sm">
+              Download
+            </Button>
+          </Link>
+          <a href={mailto('Contact PathoMitra')}>
             <Button variant="brand" size="sm" shine>
-              Get started
+              Contact
               <ArrowRight className="h-3.5 w-3.5 icon-slide" aria-hidden="true" />
             </Button>
           </a>
@@ -109,6 +134,13 @@ export default function Header() {
           )}
         </button>
       </nav>
+
+      {/* Reading-progress hairline along the header's bottom edge */}
+      <motion.div
+        aria-hidden="true"
+        style={{ scaleX: progress }}
+        className="absolute inset-x-0 bottom-[-1px] z-10 h-[2px] origin-left bg-gradient-to-r from-primary via-accent to-secondary"
+      />
 
       {/* Mobile dropdown panel */}
       <AnimatePresence initial={false}>
@@ -131,19 +163,38 @@ export default function Header() {
                   <Link
                     to={link.to}
                     onClick={close}
-                    className="group flex items-center justify-between border-b border-outline-variant/50 py-3.5 text-[15px] font-medium text-on-surface"
+                    className={cn(
+                      'group flex items-center justify-between border-b border-outline-variant/50 py-3.5 text-[15px] font-medium',
+                      pathname === link.to ? 'text-accent' : 'text-on-surface',
+                    )}
                   >
                     {link.label}
                     <ArrowRight className="h-4 w-4 text-outline icon-slide" aria-hidden="true" />
                   </Link>
                 </motion.div>
               ))}
-              <div className="mt-4">
-                <a href={mailto('Get started with PathoMitra')} onClick={close}>
+              <div className="mt-4 flex gap-2.5">
+                <Link to="/download" onClick={close} className="min-w-0 flex-1">
+                  <Button variant="neutral" fullWidth>
+                    Download
+                  </Button>
+                </Link>
+                <a href={mailto('Contact PathoMitra')} onClick={close} className="min-w-0 flex-1">
                   <Button variant="brand" fullWidth shine>
-                    Get started
+                    Contact
                     <ArrowRight className="h-3.5 w-3.5 icon-slide" aria-hidden="true" />
                   </Button>
+                </a>
+              </div>
+              <div className="mt-3 flex items-center justify-center">
+                <a
+                  href={GITHUB_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-2 rounded-full px-3 py-2 text-[13px] font-medium text-on-surface-variant transition-colors hover:text-on-surface"
+                >
+                  <Github className="h-4 w-4" aria-hidden="true" />
+                  View on GitHub
                 </a>
               </div>
             </div>

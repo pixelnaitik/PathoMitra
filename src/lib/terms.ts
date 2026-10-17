@@ -15,8 +15,8 @@
  */
 import { PRIVACY_CONTACT_EMAIL, PRIVACY_POLICY_URL } from './privacy-policy';
 
-export const TERMS_VERSION = '1.0';
-export const TERMS_LAST_UPDATED = '10 October 2026';
+export const TERMS_VERSION = '1.1';
+export const TERMS_LAST_UPDATED = '16 October 2026';
 
 export interface TermsSection {
   heading: string;
@@ -56,7 +56,13 @@ export const TERMS_SECTIONS: TermsSection[] = [
     heading: '5. Security you must maintain',
     body: [
       'Choose a passcode appropriate to the sensitivity of your records and keep the device screen lock enabled. Do not disable the automatic lock except where your workflow genuinely requires it. Do not use this software on a rooted or jailbroken device, or one shared with unrelated users.',
-      'Backups are plaintext JSON by design so that you can always recover your laboratory. Keep them somewhere you control. Exporting to shared storage, printing, and handing files to other apps are all your decisions and your risk.',
+      // This paragraph used to say backups were plaintext JSON "by design". They are
+      // not: since 2026-10-11 a snapshot is sealed with the operator's passphrase
+      // (PBKDF2-SHA256 + AES-256-GCM) unless they deliberately clear the option, so
+      // the old sentence told the truth about an older build. Terms that misdescribe
+      // how patient data is protected are worse than no terms — keep this in step
+      // with lib/backup.ts and the privacy policy at lib/privacy-policy.ts.
+      'Backups are sealed by default: a snapshot is encrypted with a passphrase you choose, so a copy that leaves the device does not carry readable patient records. There is no recovery — the passphrase is never stored and cannot be reset, and a sealed file you cannot open is a laboratory you cannot restore. An unencrypted backup remains available as an explicit per-backup choice; if you take it, the file is yours to protect. Exporting to shared storage, printing, and handing files to other apps are all your decisions and your risk.',
     ],
   },
   {

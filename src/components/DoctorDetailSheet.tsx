@@ -15,13 +15,33 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { motion } from 'motion/react';
 import { collection, db, onSnapshot, orderBy, query, where } from '../data/fs';
 import { handleFirestoreError, OperationType } from '../lib/firestore-errors';
-import { readReports, ageAsNumber, type PatientRecord, type ReportRecord } from '../lib/models';
+import {
+  readInvoices,
+  readReports,
+  ageAsNumber,
+  type DoctorRecord,
+  type InvoiceRecord,
+  type PatientRecord,
+  type ReportRecord,
+} from '../lib/models';
+import { buildDoctorStatements, statementForDoctor } from '../lib/referrals';
+import { formatMoney } from '../lib/price-list';
 import { resolveValueStatus, collapseToProfiles } from '../lib/pathology-tests';
-import { createdAtRangeFilters } from '../lib/date-range';
+import { createdAtRangeFilters, localDayStartIso } from '../lib/date-range';
 import { cn } from '../lib/utils';
 import { PatientDetailSheet } from './PatientDetailSheet';
-import { Activity, CalendarRange, FileText, Stethoscope, Users, FlaskConical } from 'lucide-react';
 import {
+  Activity,
+  BadgePercent,
+  CalendarRange,
+  FileText,
+  Stethoscope,
+  Users,
+  FlaskConical,
+  Wallet,
+} from 'lucide-react';
+import {
+  Button,
   CalendarRangePicker,
   Card,
   EmptyState,
@@ -47,6 +67,25 @@ function monthKey(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
+/**
+ * `₹1,200` → `₹1.2k`, `₹3,40,000` → `₹3.4L`.
+ *
+ * The figure above each bar has roughly fifty pixels of a phone screen to live
+ * in; the full `formatMoney` string ("₹1,20,000") wraps to a second line and
+ * pushes the bars out of alignment. The caption under the chart keeps the exact
+ * amount, so nothing is rounded away — only the label is compacted.
+ */
+function shortMoney(value: number): string {
+  if (value >= 100000) return `₹${oneDecimal(Math.round(value / 10000) / 10)}L`;
+  if (value >= 1000) return `₹${oneDecimal(Math.round(value / 100) / 10)}k`;
+  return `₹${Math.round(value)}`;
+}
+
+/** `1` → `1`, `1.5` → `1.5` — a money label never carries a dead zero. */
+function oneDecimal(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
 function matchesDoctor(a?: string, b?: string): boolean {
   if (!a || !b) return false;
   return a.trim().toLowerCase() === b.trim().toLowerCase();
@@ -64,19 +103,24 @@ function inPeriod(iso: string | undefined, from: string, to: string): boolean {
 export function DoctorDetailSheet({
   doctor,
   patients,
+  doctors = [],
   initialFrom = '',
   initialTo = '',
+  onRequestStatement,
   onClose,
 }: {
   doctor: DoctorDetailTarget | null;
   patients: PatientRecord[];
+  doctors?: DoctorRecord[];
   initialFrom?: string;
   initialTo?: string;
+  onRequestStatement?: (from: string, to: string) => void;
   onClose: () => void;
 }) {
   const [fromDate, setFromDate] = useState(initialFrom);
   const [toDate, setToDate] = useState(initialTo);
   const [reports, setReports] = useState<ReportRecord[]>([]);
+  const [invoices, setInvoices] = useState<InvoiceRecord[]>([]);
   // The parent keys this sheet by doctor id, so a new selection remounts it
   // with a clean slate; the picker's onChange handler flips `loading` (an event
   // callback), keeping the effect body free of synchronous setState.
@@ -107,6 +151,43 @@ export function DoctorDetailSheet({
     );
     return () => unsubscribe();
   }, [doctor, fromDate, toDate]);
+
+  /**
+   * Oldest day the trend chart reaches back to, as a `YYYY-MM-DD`.
+   *
+   * Fixed at mount on purpose: the parent keys this sheet by doctor id, so
+   * reopening it re-reads the window, and a bound recomputed every render would
+   * change identity and tear the bill subscription down in a loop.
+   */
+  const trendFloorDay = useMemo(() => {
+    const now = new Date();
+    return toIsoDay(new Date(now.getFullYear(), now.getMonth() - (TREND_MONTHS - 1), 1));
+  }, []);
+
+  // Bills for the same window, streamed the way reports are — this is what the
+  // commission figures are computed from, scoped to the picker like everything
+  // else on the sheet. The read is widened down to `trendFloorDay`, though: the
+  // six-month chart below is *not* scoped to the picker, so a bill from May has
+  // to survive a "this week" selection or five of its six bars would go to zero
+  // without anything having changed in the lab. The statement itself is still
+  // filtered to the picker inside `buildDoctorStatements`.
+  useEffect(() => {
+    if (!doctor) return;
+    const path = 'invoices';
+    const { since: pickerSince, until } = createdAtRangeFilters(fromDate, toDate);
+    const trendSince = localDayStartIso(trendFloorDay);
+    const since =
+      pickerSince && trendSince ? (pickerSince < trendSince ? pickerSince : trendSince) : pickerSince ?? trendSince;
+    const constraints = [orderBy('createdAt', 'desc')];
+    if (since) constraints.unshift(where('createdAt', '>=', since));
+    if (until) constraints.unshift(where('createdAt', '<=', until));
+    const unsubscribe = onSnapshot(
+      query(collection(db, path), ...constraints),
+      snapshot => setInvoices(readInvoices(snapshot.docs)),
+      error => handleFirestoreError(error, OperationType.GET, path),
+    );
+    return () => unsubscribe();
+  }, [doctor, fromDate, toDate, trendFloorDay]);
 
   // Every patient this doctor has ever referred — used to attribute reports,
   // since a report in the window may belong to a patient registered earlier.
@@ -155,11 +236,52 @@ export function DoctorDetailSheet({
 
   const maxTop = topTests[0]?.[1] ?? 1;
 
+  // The doctor's referral statement for the visible window — the same engine the
+  // month-end print uses, so the numbers on this sheet and the printed document
+  // cannot disagree. Undefined when the doctor has no bills in range.
+  const periodStatement = useMemo(
+    () =>
+      doctor
+        ? statementForDoctor(
+            buildDoctorStatements(invoices, patients, {
+              from: fromDate,
+              to: toDate,
+              doctors,
+            }),
+            doctor.name,
+          )
+        : undefined,
+    [invoices, patients, fromDate, toDate, doctors, doctor],
+  );
+
+  // Commission earned per referred patient in the window, for the inline list.
+  const commissionByPatient = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const line of periodStatement?.lines ?? []) {
+      map.set(line.patientId, (map.get(line.patientId) ?? 0) + line.commission);
+    }
+    return map;
+  }, [periodStatement]);
+
+  // Rate to headline: the statement's own (only meaningful when uniform) first,
+  // else the register's live rate for this doctor.
+  const registerRate = doctors.find(d => matchesDoctor(d.name, doctor?.name))?.referralPercent ?? 0;
+  const displayRate = periodStatement?.percent ?? registerRate;
+
   /**
-   * Referrals per calendar month, oldest → newest. Deliberately scoped to the
-   * doctor and *not* to the date picker: a trend that reshapes itself because
-   * you narrowed the window below it isn't a trend, it's a restatement of the
-   * number already shown in the Patients tile.
+   * Referral amount per calendar month, oldest → newest.
+   *
+   * This bar chart used to count the patients a doctor had *registered* in each
+   * month. The owner asked for the money instead: "3 referrals" and "₹350 of
+   * business" are two different conversations, and only the second one lines up
+   * with the commission tile on this same sheet. Amounts come from the same
+   * statement engine the printed statement uses — bill-level referral stamp,
+   * voided bills excluded, folded-name matching — so the chart and the paper
+   * cannot disagree.
+   *
+   * Deliberately scoped to the doctor and *not* to the date picker: a trend that
+   * reshapes itself because you narrowed the window below it isn't a trend, it's
+   * a restatement of the number already shown in the Patients tile.
    */
   const referralTrend = useMemo(() => {
     const now = new Date();
@@ -168,29 +290,32 @@ export function DoctorDetailSheet({
       return {
         key: monthKey(d),
         label: d.toLocaleDateString('en-IN', { month: 'short' }),
-        count: 0,
+        amount: 0,
       };
     });
     const byKey = new Map(buckets.map(b => [b.key, b]));
-    for (const patient of referredPatients) {
-      if (!patient.createdAt) continue;
-      const d = new Date(patient.createdAt);
-      if (Number.isNaN(d.getTime())) continue;
-      const bucket = byKey.get(monthKey(d));
-      if (bucket) bucket.count += 1;
+    // No `month` / `from` / `to` → the whole book for this doctor; the buckets
+    // above do the scoping, so a narrow picker window cannot starve the chart.
+    const allTime = doctor
+      ? statementForDoctor(buildDoctorStatements(invoices, patients, { doctors }), doctor.name)
+      : undefined;
+    for (const line of allTime?.lines ?? []) {
+      const bucket = byKey.get(line.month);
+      if (bucket) bucket.amount += line.billAmount;
     }
-    const current = buckets[buckets.length - 1].count;
-    const previous = buckets[buckets.length - 2]?.count ?? 0;
+    for (const bucket of buckets) bucket.amount = Math.round(bucket.amount * 100) / 100;
+    const current = buckets[buckets.length - 1].amount;
+    const previous = buckets[buckets.length - 2]?.amount ?? 0;
     return {
       buckets,
       current,
       previous,
-      delta: current - previous,
+      delta: Math.round((current - previous) * 100) / 100,
       previousLabel: buckets[buckets.length - 2]?.label ?? 'last month',
     };
-  }, [referredPatients]);
+  }, [invoices, patients, doctors, doctor]);
 
-  const maxTrend = Math.max(1, ...referralTrend.buckets.map(b => b.count));
+  const maxTrend = Math.max(1, ...referralTrend.buckets.map(b => b.amount));
 
   return (
     <Sheet
@@ -214,7 +339,7 @@ export function DoctorDetailSheet({
           />
 
           {/* Aggregate stats for the selected period */}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             <Stat
               icon={<Users className="h-4 w-4" />}
               label="Patients"
@@ -227,6 +352,17 @@ export function DoctorDetailSheet({
             />
             <Stat icon={<FlaskConical className="h-4 w-4" />} label="Tests" value={testCount} />
             <Stat
+              icon={<Wallet className="h-4 w-4" />}
+              label="Commission"
+              value={formatMoney(periodStatement?.totals.commission ?? 0)}
+              tone={periodStatement && periodStatement.totals.commission > 0 ? 'accent' : 'neutral'}
+            />
+            <Stat
+              icon={<BadgePercent className="h-4 w-4" />}
+              label="Referral rate"
+              value={`${displayRate}%`}
+            />
+            <Stat
               icon={<Activity className="h-4 w-4" />}
               label="Out of range"
               value={abnormalCount}
@@ -234,13 +370,31 @@ export function DoctorDetailSheet({
             />
           </div>
 
-          {/* Referral trend — answers "is this doctor sending more or less than
-              last month?" without leaving the sheet. Bars are relative to the
-              busiest month in view, so the shape reads before the numbers do. */}
+          {periodStatement && periodStatement.totals.commissionPending > 0 && (
+            <p className="rounded-xl bg-warning-container/40 px-3 py-2 text-xs text-on-surface-variant">
+              {formatMoney(periodStatement.totals.commissionPending)} of that commission is on bills
+              still uncollected — pay it when the money comes in.
+            </p>
+          )}
+
+          {onRequestStatement && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onRequestStatement(fromDate, toDate)}
+            >
+              <FileText className="h-4 w-4" aria-hidden="true" />
+              Print / export statement
+            </Button>
+          )}
+
+          {/* Referral amount trend — answers "is this doctor sending more or less
+              business than last month?" without leaving the sheet. Bars are relative
+              to the biggest month in view, so the shape reads before the numbers do. */}
           <Card pad="sm" className="space-y-3">
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-[11px] font-semibold uppercase tracking-[0.06em] text-on-surface-variant">
-                Referrals · last {TREND_MONTHS} months
+                Referral amount · last {TREND_MONTHS} months
               </h3>
               <StatusPill
                 tone={
@@ -253,16 +407,16 @@ export function DoctorDetailSheet({
                 dot
               >
                 {referralTrend.delta > 0
-                  ? `+${referralTrend.delta} vs last month`
+                  ? `+${formatMoney(referralTrend.delta)} vs last month`
                   : referralTrend.delta < 0
-                    ? `${referralTrend.delta} vs last month`
+                    ? `-${formatMoney(Math.abs(referralTrend.delta))} vs last month`
                     : 'Same as last month'}
               </StatusPill>
             </div>
             <div
               role="img"
-              aria-label={`Patients referred per month: ${referralTrend.buckets
-                .map(b => `${b.label} ${b.count}`)
+              aria-label={`Referral amount per month: ${referralTrend.buckets
+                .map(b => `${b.label} ${formatMoney(b.amount)}`)
                 .join(', ')}`}
               className="flex items-end gap-2"
             >
@@ -270,16 +424,14 @@ export function DoctorDetailSheet({
                 const isCurrentMonth = index === referralTrend.buckets.length - 1;
                 // A zero month still gets a stub so the axis reads as six months,
                 // not as a chart that stopped early.
-                const height = bucket.count
-                  ? Math.max(16, Math.round((bucket.count / maxTrend) * 100))
-                  : 4;
+                const height = bucket.amount ? Math.max(16, Math.round((bucket.amount / maxTrend) * 100)) : 4;
                 return (
                   <div
                     key={bucket.key}
                     className="flex min-w-0 flex-1 flex-col items-center gap-1.5"
                   >
-                    <span className="h-3 text-[10px] font-semibold tabular-nums text-on-surface-variant">
-                      {bucket.count > 0 ? bucket.count : ''}
+                    <span className="h-3 text-[0.6875rem] font-semibold tabular-nums text-on-surface-variant">
+                      {bucket.amount > 0 ? shortMoney(bucket.amount) : ''}
                     </span>
                     <div className="flex h-16 w-full items-end">
                       <motion.div
@@ -298,7 +450,7 @@ export function DoctorDetailSheet({
                     </div>
                     <span
                       className={cn(
-                        'text-[10px] font-medium',
+                        'text-[0.6875rem] font-medium',
                         isCurrentMonth ? 'text-on-surface' : 'text-on-surface-variant',
                       )}
                     >
@@ -309,8 +461,8 @@ export function DoctorDetailSheet({
               })}
             </div>
             <p className="text-[11px] leading-relaxed text-on-surface-variant">
-              {referralTrend.current} referred this month, {referralTrend.previous} in{' '}
-              {referralTrend.previousLabel}.
+              {formatMoney(referralTrend.current)} billed this month,{' '}
+              {formatMoney(referralTrend.previous)} in {referralTrend.previousLabel}.
             </p>
           </Card>
 
@@ -369,6 +521,7 @@ export function DoctorDetailSheet({
               <ListGroup>
                 {patientsInPeriod.map(patient => {
                   const visits = reportsInPeriod.filter(r => r.patientId === patient.id).length;
+                  const earned = commissionByPatient.get(patient.id) ?? 0;
                   return (
                     <ListRow
                       key={patient.id}
@@ -383,7 +536,7 @@ export function DoctorDetailSheet({
                         patient.createdAt
                           ? new Date(patient.createdAt).toLocaleDateString('en-IN')
                           : '—'
-                      }`}
+                      }${earned > 0 ? ` · ${formatMoney(earned)} commission` : ''}`}
                       trailing={
                         <StatusPill tone={visits > 0 ? 'accent' : 'neutral'}>
                           {visits} report{visits === 1 ? '' : 's'}
@@ -417,19 +570,25 @@ function Stat({
 }: {
   icon: ReactNode;
   label: string;
-  value: number;
-  tone?: 'neutral' | 'warning';
+  value: number | string;
+  tone?: 'neutral' | 'warning' | 'accent';
 }) {
+  const warning = tone === 'warning' && typeof value === 'number' && value > 0;
   return (
     <Card
       pad="sm"
-      className={tone === 'warning' && value > 0 ? 'bg-warning-container/40' : undefined}
+      className={cn(warning && 'bg-warning-container/40', tone === 'accent' && 'bg-accent/8')}
     >
       <div className="flex items-center gap-2 text-on-surface-variant">
         {icon}
         <span className="text-[11px] font-semibold uppercase tracking-[0.06em]">{label}</span>
       </div>
-      <p className="mt-1.5 text-2xl font-bold tabular-nums tracking-[-0.02em] text-on-surface">
+      <p
+        className={cn(
+          'mt-1.5 text-2xl font-bold tabular-nums tracking-[-0.02em]',
+          tone === 'accent' ? 'text-accent' : 'text-on-surface',
+        )}
+      >
         {value}
       </p>
     </Card>

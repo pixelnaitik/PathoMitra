@@ -16,9 +16,10 @@ if (process.platform === 'win32') {
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  // Relative base so the built folder can be hosted from any path (subfolder,
-  // object storage, or opened straight from disk) without absolute-URL rewrites.
-  base: './',
+  // Absolute base: the site is BrowserRouter-routed and served at the domain root
+  // on Cloudflare Pages, so every deep link (e.g. /privacy) must resolve assets
+  // from /assets, not from a path relative to the current route.
+  base: '/',
   build: {
     outDir: 'dist',
     emptyOutDir: true,

@@ -104,6 +104,37 @@ function orderSignature(names: readonly string[]): string {
   return [...new Set(names.map(name => name.trim()).filter(Boolean))].sort().join('\u0000');
 }
 
+/** Uppercase group label for one block of the registration form (desktop columns). */
+function FormHeading({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-on-surface-variant">
+      {children}
+    </p>
+  );
+}
+
+/**
+ * A bill line the lab has not set a tariff for, marked where it was ordered.
+ *
+ * The mark lives on the chip and in the charge summary rather than in a sentence
+ * under them: an unpriced order is routine while a tariff sheet is being typed
+ * out, and the thing worth being loud about is the ₹0 that reaches paper without
+ * a label. It never does — `billLinesFrom` flags the line and `invoice-pdf`
+ * prints "not priced" in the rate column (billing rule 6).
+ */
+function NotPricedTag({ className }: { className?: string }) {
+  return (
+    <span
+      className={cn(
+        'shrink-0 rounded-full bg-warning-container px-1.5 py-px text-[9px] font-bold uppercase tracking-[0.04em] text-on-warning-container',
+        className,
+      )}
+    >
+      not priced
+    </span>
+  );
+}
+
 export default function PatientsPage({
   initialAction,
   clearAction,
@@ -246,6 +277,9 @@ export default function PatientsPage({
     };
   }, [formData.testSelection, priceList]);
 
+  /** Bill lines with no rate, keyed by name so a chip can flag itself. */
+  const unpricedSet = useMemo(() => new Set(orderPreview.unpriced), [orderPreview]);
+
   const testChips = useMemo(() => {
     const catalogue = getPathologyTests();
     const selected = formData.testSelection;
@@ -264,6 +298,9 @@ export default function PatientsPage({
       singles: selected.filter(t => !memberOf.has(t) && !groups.some(g => g.name === t)),
     };
   }, [formData.testSelection]);
+
+  /** One chip per thing the counter added (a profile folds its own members). */
+  const chipCount = testChips.groups.length + testChips.singles.length;
 
   // Registration range is evaluated by Firestore, so the page window already
   // holds what the filter asks for instead of filtering whatever was loaded.
@@ -939,7 +976,15 @@ export default function PatientsPage({
         </p>
       )}
 
-      {/* Register / edit patient sheet */}
+      {/*
+       * Register / edit patient sheet. On a PC this is a two-column work surface
+       * — who the patient is on the left, what they are being tested for on the
+       * right — because the counter types a registration on the desktop and a
+       * single 448 px column turned it into a long scroll with the order picker
+       * off-screen. Below `fold` the same markup collapses back to the stacked
+       * bottom sheet, and the reading order is unchanged either way: identity →
+       * tests → address.
+       */}
       <Sheet
         open={isModalOpen}
         onClose={() => {
@@ -947,13 +992,20 @@ export default function PatientsPage({
           resetForm();
         }}
         title={editingPatient ? 'Edit patient' : 'Register patient'}
-        width="md"
+        description={
+          editingPatient
+            ? 'Correct the record. The tests listed here are what the next bill is raised from.'
+            : 'Who the patient is, who referred them, and what the lab has been asked to do.'
+        }
+        width="xl"
+        className="sm:max-w-[min(1120px,94vw)]"
         footer={
-          <div className="flex gap-3">
+          <div className="flex gap-3 fold:justify-end">
             <Button
               variant="primary"
               size="lg"
               fullWidth
+              className="fold:w-auto fold:px-8"
               onClick={() => {
                 setIsModalOpen(false);
                 resetForm();
@@ -961,118 +1013,140 @@ export default function PatientsPage({
             >
               Cancel
             </Button>
-            <Button type="submit" form="patient-form" variant="brand" size="lg" fullWidth>
+            <Button
+              type="submit"
+              form="patient-form"
+              variant="brand"
+              size="lg"
+              fullWidth
+              className="fold:w-auto fold:px-8"
+            >
               {editingPatient ? 'Save Changes' : 'Register'}
             </Button>
           </div>
         }
       >
-        <form id="patient-form" onSubmit={handleSubmit} className="space-y-4 py-1">
+        <form
+          id="patient-form"
+          onSubmit={handleSubmit}
+          className="grid grid-cols-1 gap-4 py-1 fold:grid-cols-2 fold:gap-x-6 fold:gap-y-5"
+        >
           {formError && (
             <div
               role="alert"
-              className="rounded-xl bg-error-container px-4 py-3 text-sm font-semibold text-on-error-container"
+              className="rounded-xl bg-error-container px-4 py-3 text-sm font-semibold text-on-error-container fold:col-span-2"
             >
               {formError}
             </div>
           )}
-          <Field label="Full Name" required>
-            <TextInput
-              type="text"
-              value={formData.name}
-              onChange={e => setFormData({ ...formData, name: e.target.value })}
-              placeholder="Patient Name"
-            />
-          </Field>
-          <div className="grid grid-cols-2 gap-4">
-            <Field label="Age" required>
+
+          {/* ---------- Left: the patient ---------- */}
+          <div className="min-w-0 space-y-4">
+            <FormHeading>Patient details</FormHeading>
+            <Field label="Full Name" required>
               <TextInput
-                type="number"
-                inputMode="numeric"
-                value={formData.age}
-                onChange={e => setFormData({ ...formData, age: e.target.value })}
-                placeholder="Age"
+                type="text"
+                value={formData.name}
+                onChange={e => setFormData({ ...formData, name: e.target.value })}
+                placeholder="Patient Name"
+                autoComplete="off"
               />
             </Field>
-            <Field label="Gender">
-              <Select
-                value={formData.gender}
-                onChange={e => setFormData({ ...formData, gender: e.target.value })}
-              >
-                <option value="male">Male</option>
-                <option value="female">Female</option>
-                <option value="other">Other</option>
-              </Select>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Age" required>
+                <TextInput
+                  type="number"
+                  inputMode="numeric"
+                  value={formData.age}
+                  onChange={e => setFormData({ ...formData, age: e.target.value })}
+                  placeholder="Age"
+                />
+              </Field>
+              <Field label="Gender">
+                <Select
+                  value={formData.gender}
+                  onChange={e => setFormData({ ...formData, gender: e.target.value })}
+                >
+                  <option value="male">Male</option>
+                  <option value="female">Female</option>
+                  <option value="other">Other</option>
+                </Select>
+              </Field>
+            </div>
+
+            <Field label="Referred By (Doctor Name)">
+              <div className="relative">
+                <Search className="absolute left-3.5 top-1/2 z-10 h-4 w-4 -translate-y-1/2 text-on-surface-variant" />
+                <TextInput
+                  type="text"
+                  value={formData.doctorName}
+                  onChange={e => {
+                    setFormData({ ...formData, doctorName: e.target.value });
+                    setIsDoctorDropdownOpen(true);
+                  }}
+                  onFocus={() => setIsDoctorDropdownOpen(true)}
+                  onBlur={() => setTimeout(() => setIsDoctorDropdownOpen(false), 200)}
+                  className="pl-10"
+                  placeholder="Search or add doctor (e.g. Dr. Rahul Pande)"
+                />
+
+                {isDoctorDropdownOpen && (
+                  <div className="absolute z-50 w-full mt-1 bg-surface-container-lowest border border-[var(--elevated-border)] rounded-2xl shadow-float max-h-48 overflow-y-auto top-full left-0">
+                    {filteredDoctorsDropdown.length > 0
+                      ? filteredDoctorsDropdown.map(docItem => (
+                          <button
+                            key={docItem.id}
+                            type="button"
+                            onMouseDown={e => {
+                              e.preventDefault();
+                              setFormData({ ...formData, doctorName: docItem.name });
+                              setIsDoctorDropdownOpen(false);
+                            }}
+                            className="w-full text-left px-4 py-3 text-sm font-medium text-on-surface hover:bg-surface-container-low transition-colors border-b border-outline-variant/40 last:border-0"
+                          >
+                            {docItem.name}
+                          </button>
+                        ))
+                      : !showAddDoctorButton && (
+                          <div className="px-4 py-3 text-sm text-on-surface-variant text-center border-b border-outline-variant/40 last:border-0">
+                            No matching doctors found.
+                          </div>
+                        )}
+
+                    {showAddDoctorButton && (
+                      <button
+                        type="button"
+                        onMouseDown={e => {
+                          e.preventDefault();
+                          addNewDoctor(formData.doctorName);
+                        }}
+                        disabled={isAddingDoctor}
+                        className="w-full text-left px-4 py-3 text-sm font-bold text-accent hover:bg-accent/12 transition-colors flex items-center gap-2"
+                      >
+                        <Plus className="w-4 h-4" />
+                        {isAddingDoctor
+                          ? 'Adding...'
+                          : `Add "${formData.doctorName}" as new doctor`}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
             </Field>
           </div>
 
-          <Field label="Referred By (Doctor Name)">
-            <div className="relative">
-              <Search className="absolute left-3.5 top-1/2 z-10 h-4 w-4 -translate-y-1/2 text-on-surface-variant" />
-              <TextInput
-                type="text"
-                value={formData.doctorName}
-                onChange={e => {
-                  setFormData({ ...formData, doctorName: e.target.value });
-                  setIsDoctorDropdownOpen(true);
-                }}
-                onFocus={() => setIsDoctorDropdownOpen(true)}
-                onBlur={() => setTimeout(() => setIsDoctorDropdownOpen(false), 200)}
-                className="pl-10"
-                placeholder="Search or add doctor (e.g. Dr. Rahul Pande)"
-              />
-
-              {isDoctorDropdownOpen && (
-                <div className="absolute z-50 w-full mt-1 bg-surface-container-lowest border border-[var(--elevated-border)] rounded-2xl shadow-float max-h-48 overflow-y-auto top-full left-0">
-                  {filteredDoctorsDropdown.length > 0
-                    ? filteredDoctorsDropdown.map(docItem => (
-                        <button
-                          key={docItem.id}
-                          type="button"
-                          onMouseDown={e => {
-                            e.preventDefault();
-                            setFormData({ ...formData, doctorName: docItem.name });
-                            setIsDoctorDropdownOpen(false);
-                          }}
-                          className="w-full text-left px-4 py-3 text-sm font-medium text-on-surface hover:bg-surface-container-low transition-colors border-b border-outline-variant/40 last:border-0"
-                        >
-                          {docItem.name}
-                        </button>
-                      ))
-                    : !showAddDoctorButton && (
-                        <div className="px-4 py-3 text-sm text-on-surface-variant text-center border-b border-outline-variant/40 last:border-0">
-                          No matching doctors found.
-                        </div>
-                      )}
-
-                  {showAddDoctorButton && (
-                    <button
-                      type="button"
-                      onMouseDown={e => {
-                        e.preventDefault();
-                        addNewDoctor(formData.doctorName);
-                      }}
-                      disabled={isAddingDoctor}
-                      className="w-full text-left px-4 py-3 text-sm font-bold text-accent hover:bg-accent/12 transition-colors flex items-center gap-2"
-                    >
-                      <Plus className="w-4 h-4" />
-                      {isAddingDoctor ? 'Adding...' : `Add "${formData.doctorName}" as new doctor`}
-                    </button>
-                  )}
-                </div>
+          {/* ---------- Right: the order ---------- */}
+          <div className="min-w-0 rounded-3xl border border-outline-variant/40 bg-surface-container/40 p-4 sm:p-5 fold:col-start-2 fold:row-start-1 fold:row-span-2">
+            <div className="flex items-center justify-between gap-3">
+              <FormHeading>Test Selection</FormHeading>
+              {chipCount > 0 && (
+                <span className="shrink-0 text-[11px] font-semibold tabular-nums text-on-surface-variant">
+                  {chipCount} added
+                </span>
               )}
             </div>
-          </Field>
-          <Field label="Address">
-            <TextArea
-              value={formData.address}
-              onChange={e => setFormData({ ...formData, address: e.target.value })}
-              placeholder="Patient Address"
-            />
-          </Field>
-          <Field label="Test Selection">
             <div className="space-y-2">
-              {formData.testSelection.length > 0 && (
+              {formData.testSelection.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-1.5">
                   {testChips.groups.map(group => {
                     const open = expandedGroups.includes(group.name);
@@ -1101,6 +1175,7 @@ export default function PatientsPage({
                               <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
                             )}
                           </button>
+                          {unpricedSet.has(group.name) && <NotPricedTag className="mr-0.5" />}
                           <button
                             type="button"
                             onClick={() => removeTest(group.name)}
@@ -1136,6 +1211,7 @@ export default function PatientsPage({
                       className="flex items-center gap-1 rounded-full bg-accent/12 px-2.5 py-0.5 text-[11px] font-medium text-accent"
                     >
                       {test}
+                      {unpricedSet.has(test) && <NotPricedTag />}
                       <button
                         type="button"
                         onClick={() => removeTest(test)}
@@ -1147,6 +1223,10 @@ export default function PatientsPage({
                     </span>
                   ))}
                 </div>
+              ) : (
+                <p className="rounded-2xl border border-dashed border-outline-variant/60 px-3 py-4 text-center text-[11px] text-on-surface-variant">
+                  Nothing on the order yet — search below to add a test or a profile.
+                </p>
               )}
 
               <div className="relative">
@@ -1180,7 +1260,7 @@ export default function PatientsPage({
                     id="patient-test-listbox"
                     role="listbox"
                     aria-label="Available tests"
-                    className="absolute z-50 w-full mt-1 bg-surface-container-lowest border border-[var(--elevated-border)] rounded-2xl shadow-float max-h-48 overflow-y-auto top-full left-0"
+                    className="absolute z-50 w-full mt-1 bg-surface-container-lowest border border-[var(--elevated-border)] rounded-2xl shadow-float max-h-48 fold:max-h-72 overflow-y-auto top-full left-0"
                   >
                     {filteredAvailableTests.length > 0 ? (
                       filteredAvailableTests.map((test, idx) => (
@@ -1214,30 +1294,39 @@ export default function PatientsPage({
                 )}
               </div>
 
-              {/* Running total, on the same arithmetic the bill uses. */}
+              {/* Running total, on the same arithmetic the bill uses. A line with
+                  no tariff is counted here, not explained in a sentence above it:
+                  the bill prints those lines "not priced", never a silent ₹0. */}
               {formData.testSelection.length > 0 && (
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-surface-container-low px-3 py-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-surface px-3 py-2 ring-1 ring-outline-variant/40">
                   <span className="text-xs font-semibold uppercase tracking-[0.06em] text-on-surface-variant">
                     {orderPreview.items.length} charge{orderPreview.items.length === 1 ? '' : 's'}
                     {orderPreview.items.some(item => item.kind === 'panel')
                       ? ' · profiles billed as one line'
                       : ''}
                   </span>
-                  <span className="text-sm font-bold tabular-nums text-on-surface">
-                    {formatMoney(orderPreview.total)}
+                  <span className="flex items-center gap-2">
+                    {orderPreview.unpriced.length > 0 && (
+                      <StatusPill tone="warning">
+                        {orderPreview.unpriced.length} not priced
+                      </StatusPill>
+                    )}
+                    <span className="text-sm font-bold tabular-nums text-on-surface">
+                      {formatMoney(orderPreview.total)}
+                    </span>
                   </span>
                 </div>
               )}
-              {orderPreview.unpriced.length > 0 && (
-                <p className="rounded-xl bg-error-container/50 px-3 py-2 text-[11px] text-error">
-                  No price yet for {orderPreview.unpriced.slice(0, 4).join(', ')}
-                  {orderPreview.unpriced.length > 4
-                    ? ` and ${orderPreview.unpriced.length - 4} more`
-                    : ''}
-                  . The bill will mark these lines "not priced" instead of charging ₹0.
-                </p>
-              )}
             </div>
+          </div>
+
+          {/* ---------- Address, after the order ---------- */}
+          <Field label="Address" className="min-w-0 fold:col-start-1 fold:row-start-2">
+            <TextArea
+              value={formData.address}
+              onChange={e => setFormData({ ...formData, address: e.target.value })}
+              placeholder="Patient Address"
+            />
           </Field>
         </form>
       </Sheet>

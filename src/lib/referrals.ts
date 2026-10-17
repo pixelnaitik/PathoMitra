@@ -35,6 +35,7 @@
  * device.
  */
 import { doctorNameKey, groupByDoctorName } from './doctor-registry';
+import { localDayEndIso, localDayStartIso } from './date-range';
 import {
   isInvoiceSettled,
   roundMoney,
@@ -188,6 +189,16 @@ export interface DoctorStatement {
 export interface StatementOptions {
   /** `YYYY-MM`. Omit for all months. */
   month?: string;
+  /**
+   * Inclusive custom day range, `YYYY-MM-DD` calendar days — the same convention
+   * the on-screen pickers use. Bounds are taken at the *local* day's first and
+   * last millisecond (see `date-range.ts`), because `createdAt` is a UTC ISO
+   * string and a naive string compare against `YYYY-MM-DD` silently drops the
+   * edge days. A bill with no date never matches a ranged statement. When both
+   * `month` and a range are given, a bill must satisfy both (they AND).
+   */
+  from?: string;
+  to?: string;
   /** Group bills by the referrer stored on them (preferred) or by live matching. */
   doctors?: readonly DoctorRecord[];
   /**
@@ -212,7 +223,11 @@ export function buildDoctorStatements(
   patients: readonly { id: string; name: string; doctorName?: string }[] = [],
   options: StatementOptions = {},
 ): DoctorStatement[] {
-  const { month, doctors = [], basis = 'billed' } = options;
+  const { month, from, to, doctors = [], basis = 'billed' } = options;
+  // Computed once, outside the loop — a bill's date is compared against fixed
+  // ISO instants, not re-parsed per row.
+  const rangeFromIso = localDayStartIso(from);
+  const rangeToIso = localDayEndIso(to);
   const rateByKey = new Map<string, number>();
   for (const doctor of doctors) {
     const key = doctorNameKey(doctor.name);
@@ -227,6 +242,9 @@ export function buildDoctorStatements(
     const billedAt = invoice.createdAt || '';
     const bucket = monthKey(billedAt);
     if (month && bucket !== month) continue;
+    if ((rangeFromIso || rangeToIso) && !billedAt) continue;
+    if (rangeFromIso && billedAt < rangeFromIso) continue;
+    if (rangeToIso && billedAt > rangeToIso) continue;
 
     // The stamp is the authority; a bill predating this feature falls back to the
     // patient's live referrer so old records are not invisible to a new statement.

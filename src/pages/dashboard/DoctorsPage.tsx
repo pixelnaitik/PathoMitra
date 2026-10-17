@@ -27,7 +27,12 @@ import {
 import { DoctorDetailSheet, type DoctorDetailTarget } from '../../components/DoctorDetailSheet';
 import { PrintDialog, type PrintJob } from '../../components/PrintDialog';
 import { useAuth } from '../../contexts/AuthContext';
-import { buildDoctorStatements, currentMonthKey, statementsSummary } from '../../lib/referrals';
+import {
+  buildDoctorStatements,
+  currentMonthKey,
+  monthLabel,
+  statementsSummary,
+} from '../../lib/referrals';
 import type { DoctorStatement } from '../../lib/referrals';
 import { doctorNameKey } from '../../lib/doctor-registry';
 import { formatMoney } from '../../lib/price-list';
@@ -46,6 +51,7 @@ import {
   ListRow,
   EmptyState,
   CalendarRangePicker,
+  SegmentedControl,
   StatusPill,
   useToast,
   toIsoDay,
@@ -53,6 +59,15 @@ import {
 
 /** A row in the register: a Firestore doctor, or a seeded default that has no record. */
 type DoctorListItem = DoctorRecord & { isDefault?: boolean };
+
+/** The subset of a doctor the statement flow needs (a register row or a tapped detail target). */
+type StatementTarget = {
+  id: string;
+  name: string;
+  phone?: string;
+  clinic?: string;
+  isDefault?: boolean;
+};
 
 export default function DoctorsPage() {
   const { role } = useAuth();
@@ -65,6 +80,13 @@ export default function DoctorsPage() {
   const [editingDoctor, setEditingDoctor] = useState<DoctorRecord | null>(null);
   const [doctorToDelete, setDoctorToDelete] = useState<DoctorListItem | null>(null);
   const [selectedDoctor, setSelectedDoctor] = useState<DoctorDetailTarget | null>(null);
+  /**
+   * Quick commission-rate editor, opened by long-pressing a doctor row. Only the
+   * referral rate is touched here — the full edit sheet still owns the rest.
+   */
+  const [commissionDoctor, setCommissionDoctor] = useState<DoctorListItem | null>(null);
+  const [commissionValue, setCommissionValue] = useState('');
+  const [commissionSaving, setCommissionSaving] = useState(false);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -74,7 +96,11 @@ export default function DoctorsPage() {
   });
   /** `YYYY-MM` for the statement sheet, defaulted to the running month. */
   const [statementMonth, setStatementMonth] = useState(() => currentMonthKey());
-  const [statementDoctor, setStatementDoctor] = useState<DoctorRecord | null>(null);
+  /** How the open statement is scoped: one calendar month, or a custom day range. */
+  const [statementMode, setStatementMode] = useState<'month' | 'range'>('month');
+  const [statementFrom, setStatementFrom] = useState('');
+  const [statementTo, setStatementTo] = useState('');
+  const [statementDoctor, setStatementDoctor] = useState<StatementTarget | null>(null);
   const [statement, setStatement] = useState<DoctorStatement | null>(null);
   /**
    * Which `doctor:month` request the displayed statement answers. Loading is
@@ -170,6 +196,54 @@ export default function DoctorsPage() {
     setIsModalOpen(true);
   };
 
+  /** Open the quick commission-rate editor for a row (long-press / right-click). */
+  const openCommission = (doctor: DoctorListItem) => {
+    setCommissionDoctor(doctor);
+    // A rate the lab never set reads as an empty box, not a planted "0".
+    setCommissionValue(doctor.referralPercent ? String(doctor.referralPercent) : '');
+  };
+
+  /**
+   * Save just the commission rate.
+   *
+   * The clamp mirrors `handleSubmit`: a blank box means "no rate agreed" (0), and
+   * a stray out-of-range value must never reach a payout. For a seeded default
+   * name there is no record to patch, so saving a rate registers the doctor with
+   * that name and rate — the only way a commission can attach to them.
+   */
+  const saveCommission = async () => {
+    if (!commissionDoctor) return;
+    const name = commissionDoctor.name.trim();
+    const raw = commissionValue.trim();
+    const referralPercent = raw === '' ? 0 : Math.min(100, Math.max(0, Number(raw) || 0));
+    const path = 'doctors';
+    setCommissionSaving(true);
+    try {
+      if (commissionDoctor.isDefault) {
+        await addDoc(collection(db, path), {
+          name,
+          phone: commissionDoctor.phone || '',
+          clinic: '',
+          referralPercent,
+          active: true,
+          createdAt: new Date().toISOString(),
+        });
+      } else {
+        await updateDoc(doc(db, path, commissionDoctor.id), { referralPercent });
+      }
+      setCommissionDoctor(null);
+      toast.success(
+        referralPercent > 0
+          ? `${name}: ${referralPercent}% commission saved.`
+          : `${name}: commission cleared.`,
+      );
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, path);
+    } finally {
+      setCommissionSaving(false);
+    }
+  };
+
   const allDoctors = useMemo<DoctorListItem[]>(() => {
     const uniqueDynamic = doctors.filter(
       d => !DEFAULT_DOCTORS.some(defaultName => defaultName.toLowerCase() === d.name.toLowerCase()),
@@ -231,14 +305,52 @@ export default function DoctorsPage() {
    * and a stale preview that prints differently from what it showed is worse
    * than no preview.
    */
-  const openStatement = (doctor: DoctorListItem) => {
-    if (doctor.isDefault) return;
-    setStatementMonth(currentMonthKey());
+  const openStatement = (doctor: StatementTarget, seed?: { from: string; to: string }) => {
+    if (seed) {
+      // Opened from the doctor detail sheet — honour the window it shows as a
+      // custom range, and allow it even for a seeded/default doctor (matched by name).
+      setStatementMode('range');
+      setStatementFrom(seed.from);
+      setStatementTo(seed.to);
+    } else {
+      if (doctor.isDefault) return;
+      setStatementMode('month');
+      setStatementMonth(currentMonthKey());
+    }
     setStatementDoctor(doctor);
   };
 
-  const statementKey = statementDoctor ? `${statementDoctor.id}:${statementMonth}` : '';
+  const statementKey = statementDoctor
+    ? `${statementDoctor.id}:${statementMode}:${
+        statementMode === 'month' ? statementMonth : `${statementFrom}..${statementTo}`
+      }`
+    : '';
   const statementLoading = !!statementDoctor && settledKey !== statementKey;
+
+  /** The active period, in the shape `buildDoctorStatements` expects. */
+  const statementPeriod =
+    statementMode === 'month'
+      ? { month: statementMonth }
+      : { from: statementFrom, to: statementTo };
+
+  /** A human label for the sheet heading, the PDF heading and the filename. */
+  const statementPeriodLabel = useMemo(() => {
+    if (statementMode === 'month') return monthLabel(statementMonth);
+    const fmt = (day: string) =>
+      /^\d{4}-\d{2}-\d{2}$/.test(day)
+        ? new Date(`${day}T00:00:00`).toLocaleDateString('en-IN', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+          })
+        : '';
+    const a = fmt(statementFrom);
+    const b = fmt(statementTo);
+    if (a && b) return `${a} - ${b}`;
+    if (a) return `from ${a}`;
+    if (b) return `up to ${b}`;
+    return 'All dates';
+  }, [statementMode, statementMonth, statementFrom, statementTo]);
 
   useEffect(() => {
     if (!statementDoctor) {
@@ -252,7 +364,7 @@ export default function DoctorsPage() {
         const snap = await getDocs(query(collection(db, 'invoices'), orderBy('createdAt', 'desc')));
         const bills = readInvoices(snap.docs);
         const statements = buildDoctorStatements(bills, patients, {
-          month: statementMonth,
+          ...statementPeriod,
           doctors,
         });
         const key = doctorNameKey(statementDoctor.name);
@@ -283,10 +395,10 @@ export default function DoctorsPage() {
     }
     setPrinting(true);
     try {
-      const doc = await buildStatementPdf(statement, readSettings(), statementMonth);
+      const doc = await buildStatementPdf(statement, readSettings(), statementPeriodLabel);
       const { printJob, message } = await outputInvoicePdf(
         doc,
-        `Referral statement ${statementDoctor.name} ${statementMonth}.pdf`,
+        `Referral statement ${statementDoctor.name} ${statementPeriodLabel}.pdf`,
         mode,
         `Referral statement ${statementDoctor.name}`,
       );
@@ -429,6 +541,15 @@ export default function DoctorsPage() {
                             phone: docItem.phone,
                           })
                         }
+                        onContextMenu={
+                          role !== 'guest'
+                            ? e => {
+                                // Right-click on desktop mirrors the mobile long-press.
+                                e.preventDefault();
+                                openCommission(docItem);
+                              }
+                            : undefined
+                        }
                       >
                         <td className="px-6 py-4">
                           <div className="flex items-center gap-3">
@@ -542,6 +663,7 @@ export default function DoctorsPage() {
                           phone: docItem.phone,
                         })
                       }
+                      onLongPress={role !== 'guest' ? () => openCommission(docItem) : undefined}
                       trailing={
                         role !== 'guest' && !docItem.isDefault ? (
                           <>
@@ -662,6 +784,73 @@ export default function DoctorsPage() {
         </form>
       </Sheet>
 
+      {/* Quick commission editor — long-press (mobile) or right-click (desktop)
+          a doctor row to set just the referral rate. */}
+      <Sheet
+        open={!!commissionDoctor}
+        onClose={() => setCommissionDoctor(null)}
+        title={commissionDoctor ? `Commission — ${commissionDoctor.name}` : 'Commission'}
+        width="sm"
+        footer={
+          <div className="flex gap-3">
+            <Button
+              variant="outline"
+              size="lg"
+              fullWidth
+              onClick={() => setCommissionDoctor(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="brand"
+              size="lg"
+              fullWidth
+              loading={commissionSaving}
+              onClick={saveCommission}
+            >
+              Save rate
+            </Button>
+          </div>
+        }
+      >
+        <div className="space-y-4 py-1">
+          <Field
+            label="Referral commission (%)"
+            hint="Share of each referred patient's discounted bill credited to this doctor. Leave blank for none."
+          >
+            <TextInput
+              type="number"
+              min={0}
+              max={100}
+              step={0.5}
+              value={commissionValue}
+              onChange={e => setCommissionValue(e.target.value)}
+              placeholder="0"
+              inputMode="decimal"
+              autoFocus
+            />
+          </Field>
+          <div className="flex flex-wrap gap-2">
+            {[0, 10, 20, 30, 50].map(preset => (
+              <Button
+                key={preset}
+                type="button"
+                variant={commissionValue === String(preset) ? 'brand' : 'outline'}
+                size="sm"
+                onClick={() => setCommissionValue(preset === 0 ? '' : String(preset))}
+              >
+                {preset}%
+              </Button>
+            ))}
+          </div>
+          <p className="text-xs text-on-surface-variant">
+            {commissionDoctor?.isDefault
+              ? 'This practitioner is a suggested name, not yet in the register. Saving a rate adds them to the register.'
+              : 'Only the commission rate changes here — the rest of the doctor\u2019s details are untouched.'}
+          </p>
+        </div>
+      </Sheet>
+
       <ConfirmSheet
         open={!!doctorToDelete}
         onClose={() => setDoctorToDelete(null)}
@@ -721,24 +910,54 @@ export default function DoctorsPage() {
         }
       >
         <div className="space-y-4">
-          <Field label="Period" hint="Bills are counted in the month they were raised.">
-            <input
-              type="month"
-              value={statementMonth}
-              onChange={e => setStatementMonth(e.target.value)}
-              className="h-11 w-full rounded-xl border border-outline-variant/30 bg-surface-container px-3 text-sm text-on-surface focus:border-accent focus:outline-none"
+          <Field
+            label="Period"
+            hint={
+              statementMode === 'month'
+                ? 'Bills are counted in the month they were raised.'
+                : 'Bills are counted by the day they were raised, within the range.'
+            }
+          >
+            <SegmentedControl
+              id="statement-period-mode"
+              aria-label="Statement period mode"
+              size="sm"
+              className="mb-2"
+              value={statementMode}
+              onChange={value => setStatementMode(value as 'month' | 'range')}
+              items={[
+                { value: 'month', label: 'Month' },
+                { value: 'range', label: 'Custom range' },
+              ]}
             />
+            {statementMode === 'month' ? (
+              <input
+                type="month"
+                value={statementMonth}
+                onChange={e => setStatementMonth(e.target.value)}
+                className="h-11 w-full rounded-xl border border-outline-variant/30 bg-surface-container px-3 text-sm text-on-surface focus:border-accent focus:outline-none"
+              />
+            ) : (
+              <CalendarRangePicker
+                fromDate={statementFrom}
+                toDate={statementTo}
+                onChange={({ fromDate: from, toDate: to }) => {
+                  setStatementFrom(from);
+                  setStatementTo(to);
+                }}
+              />
+            )}
           </Field>
 
           {statementLoading ? (
             <div className="flex items-center gap-2 py-8 text-sm text-on-surface-variant">
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              Reading this month's bills…
+              Reading bills for this period…
             </div>
           ) : !statement || statement.lines.length === 0 ? (
             <EmptyState
               icon={<FileText className="h-7 w-7" aria-hidden="true" />}
-              title="No referred bills this month"
+              title="No referred bills in this period"
               description="Nothing was billed to patients carrying this doctor's name in the selected period."
             />
           ) : (
@@ -807,10 +1026,10 @@ export default function DoctorsPage() {
                 </table>
               </div>
               <p className="text-[11px] text-on-surface-variant">
-                Across the whole register,{' '}
+                Across the whole register in this period,{' '}
                 {(() => {
                   const all = statementsSummary(
-                    buildDoctorStatements(allInvoices, patients, { doctors }),
+                    buildDoctorStatements(allInvoices, patients, { ...statementPeriod, doctors }),
                   );
                   return `${formatMoney(all.commission)} owed to ${all.doctors} practitioner${all.doctors === 1 ? '' : 's'} on ${all.bills} bills`;
                 })()}
@@ -834,9 +1053,13 @@ export default function DoctorsPage() {
         key={selectedDoctor?.id ?? 'none'}
         doctor={selectedDoctor}
         patients={patients}
+        doctors={doctors}
         initialFrom={fromDate}
         initialTo={toDate}
         onClose={() => setSelectedDoctor(null)}
+        onRequestStatement={(from, to) => {
+          if (selectedDoctor) openStatement(selectedDoctor, { from, to });
+        }}
       />
     </div>
   );

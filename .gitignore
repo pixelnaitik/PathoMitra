@@ -21,3 +21,9 @@ release-desktop/
 # Collected build artifacts (APK / MSIX handed to the owner) — never committed
 buildoutput/
 
+# Cloudflare and static site generated build outputs
+.wrangler/
+privacy-site/
+
+# Local testing and capture artifacts
+screenshots/

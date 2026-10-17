@@ -371,7 +371,7 @@ export function CommandSearch({
               ) : (
                 /* Both gates have to hold: a keyboard must be plausible, and the row
                    must be wide enough to spare the chip next to the placeholder. */
-                <kbd className="hidden shrink-0 rounded-md border border-outline-variant px-1.5 py-0.5 text-[10px] font-bold text-on-surface-variant sm:keyboard-only:block">
+                <kbd className="hidden shrink-0 rounded-md border border-outline-variant px-1.5 py-0.5 text-[0.6875rem] font-bold text-on-surface-variant sm:keyboard-only:block">
                   ESC
                 </kbd>
               )}
@@ -457,7 +457,7 @@ export function CommandSearch({
                           {result.subtitle}
                         </p>
                       </div>
-                      <span className="shrink-0 rounded-md bg-surface-container-high px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-on-surface-variant">
+                      <span className="shrink-0 rounded-md bg-surface-container-high px-1.5 py-0.5 text-[0.6875rem] font-bold uppercase tracking-wide text-on-surface-variant">
                         {TYPE_LABELS[result.type]}
                       </span>
                       {/* The "press Enter" slot is always present on a keyboard —
@@ -480,13 +480,13 @@ export function CommandSearch({
                 a physical keyboard; on touch the row keeps the result count alone. */}
             <div className="flex shrink-0 items-center gap-4 border-t border-outline-variant/60 px-5 py-2.5">
               <span className="hidden keyboard-only:flex items-center gap-1.5 text-[11px] text-on-surface-variant">
-                <kbd className="rounded border border-outline-variant px-1 py-0.5 text-[9px] font-bold">
+                <kbd className="rounded border border-outline-variant px-1 py-0.5 text-[0.6875rem] font-bold">
                   ↑↓
                 </kbd>{' '}
                 navigate
               </span>
               <span className="hidden keyboard-only:flex items-center gap-1.5 text-[11px] text-on-surface-variant">
-                <kbd className="rounded border border-outline-variant px-1 py-0.5 text-[9px] font-bold">
+                <kbd className="rounded border border-outline-variant px-1 py-0.5 text-[0.6875rem] font-bold">
                   ↵
                 </kbd>{' '}
                 open

@@ -38,6 +38,14 @@ export default defineConfig({
         'src/lib/date-range.ts',
         'src/lib/telemetry.ts',
         'src/lib/report-compliance.ts',
+        // The document the laboratory hands over. It used to live inside a
+        // 2,843-line page component and had no test at all, while the module
+        // that merely parses the print dialog's page ranges did: a wrong
+        // printout is the failure this gate exists to catch.
+        'src/lib/report-pdf.ts',
+        'src/lib/report-layout.ts',
+        'src/lib/print-contrast.ts',
+        'src/lib/pdf-text.ts',
         'src/lib/settings.ts',
         'src/lib/notification-engine.ts',
         'src/lib/notification-state.ts',

@@ -1,5 +1,13 @@
 # Pathology catalogue — 2026-10 audit & implementation report
 
+> **Context (2026-10-16).** This is the durable reference for the population model, the 163-entry
+> catalogue, the 72 `requires-lab-verification` bands, and the two known name-collision findings
+> (`Albumin`, `HAEMATOLOGY` / `HEMOTOLOGY`). None of it has changed since 2026-10-11. The
+> `unverifiedForPatient` flag *is* still computed at the model level; the lab removed every
+> rendering of it on 2026-10-11 — see `PROJECT_MEMORY.md` §Pathology catalogue + §Report compliance
+> copy. Round 3 (2.7.2, `dd0bf88`) fixed `expandTestSelection` to skip catalogue section headings
+> when reached as a panel member — see `docs/feature-audit-2026-10.md` §13 AM-2.
+
 Scope: the "Enhance Existing Pathology Database for Indian Laboratories" brief, executed against
 `src/lib/pathology-tests.ts` and its consumers. Verified 2026-10-11 by `npx vitest run`
 (251 passed), `npm run lint:ci` (0 errors, 20 warnings — all pre-existing), `npm run build`.
