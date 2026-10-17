@@ -1,0 +1,26 @@
+# PathoMitra Documentation Directory
+
+Welcome to the internal and external documentation for **PathoMitra**. The documentation is organized into clear domains:
+
+## Directory Structure
+
+```
+docs/
+├── design/
+│   └── design.md                            # UI design system tokens, typography, and palettes
+├── audits/
+│   ├── catalogue-audit-2026-10.md           # Pathology test catalogue & reference range audits
+│   ├── feature-audit-2026-10.md             # Functional capability and quality audit
+│   ├── store-compliance-audit-2026-10.md    # Multi-store compliance review
+│   ├── play-audit-2026-10-16.md             # Google Play Store compliance audit (round 1)
+│   └── play-audit-2026-10-17.md             # Google Play Store compliance audit (round 2)
+└── store/
+    ├── play/
+    │   ├── play-listing.md                  # Google Play listing descriptions and copy
+    │   └── play-console-submission.md       # Google Play Console declarations checklist
+    └── ms-store/
+        ├── ms-store-listing-and-cert-notes-2026-10-17.md  # Microsoft Store listing and cert notes
+        ├── ms-store-remediation-plan-2026-10-17.md        # Desktop Windows store remediation plan
+        ├── ms-store-review-2026-10-16.md                  # Microsoft Store review (round 1)
+        └── ms-store-review-2026-10-17.md                  # Microsoft Store review (round 2)
+```

@@ -98,8 +98,10 @@ licence text prints only if the laboratory enters and attests to it in Settings.
 │       └── android.yml          # tag / manual → AAB + APK artifacts
 ├── android/                     # Capacitor native project (Gradle wrapper, signing via ignored files)
 ├── docs/
-│   ├── design.md                # UI design system (tokens, typography, palettes)
-│   └── play-listing.md          # Google Play listing copy
+│   ├── README.md                # Documentation index
+│   ├── design/                  # UI design system tokens, typography, palettes
+│   ├── audits/                  # Pathology catalogue, feature, and compliance audits
+│   └── store/                   # Play Store and Microsoft Store listing and cert packs
 ├── patches/                     # patch-package fixes (e.g. @capgo/capacitor-printer)
 ├── public/                      # Static web assets (manifest, robots, sitemap, _headers)
 ├── scripts/                     # Build guards + privacy-policy site generator
@@ -322,8 +324,12 @@ with [standard-version](https://github.com/conventional-changelog/standard-versi
 
 ## Documentation
 
-- [`docs/design.md`](docs/design.md) — UI design system: tokens, typography, palettes.
-- [`docs/play-listing.md`](docs/play-listing.md) — Google Play listing copy.
+- [`docs/README.md`](docs/README.md) — Documentation index and guide.
+- [`docs/design/design.md`](docs/design/design.md) — UI design system: tokens, typography, palettes.
+- [`docs/store/play/play-listing.md`](docs/store/play/play-listing.md) — Google Play listing copy.
+- [`docs/store/play/play-console-submission.md`](docs/store/play/play-console-submission.md) — Google Play submission checklist.
+- [`docs/store/ms-store/`](docs/store/ms-store/) — Microsoft Store review, listing, and remediation notes.
+- [`docs/audits/`](docs/audits/) — Pathology catalogue audits and compliance evaluations.
 - [`SECURITY.md`](SECURITY.md) — vulnerability reporting and the offline threat model.
 
 ---
