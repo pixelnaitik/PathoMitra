@@ -49,6 +49,9 @@ import {
   summarise,
   balanceOf,
   billsWithUnpricedLines,
+  outstandingForPatient,
+  planMissingBills,
+  generateMissingBills,
   type InvoiceDraft,
 } from './invoices';
 import {
@@ -59,6 +62,7 @@ import {
   roundMoney,
   toInvoiceDoc,
   toInvoicePaymentDoc,
+  type DoctorRecord,
   type InvoiceItem,
 } from './models';
 import { allocateInvoiceNo, byBillNumber, invoiceSequenceOf } from './invoice-registry';
@@ -530,5 +534,131 @@ describe('price list key stability', () => {
     });
     expect(draft.items[0]).toMatchObject({ lineTotal: 900, unpriced: false });
     expect(store.documents.has(`meta/${priceKey('HDL')}`)).toBe(false);
+  });
+});
+
+/* ---------------------------- bulk generation ---------------------------- */
+
+/** Seed the store the way the screens do. */
+function seedPatient(
+  id: string,
+  name: string,
+  testSelection: string[],
+  createdAt: string,
+  doctorName = '',
+): void {
+  store.documents.set(`patients/${id}`, {
+    id,
+    name,
+    age: 30,
+    gender: 'male',
+    createdAt,
+    testSelection,
+    ...(doctorName ? { doctorName } : {}),
+  });
+}
+
+function seedInvoice(no: string, patientId: string, patch: Record<string, unknown> = {}): void {
+  store.documents.set(`invoices/${no}`, {
+    invoiceNo: no,
+    patientId,
+    patientName: 'Seeded',
+    amount: 100,
+    paidAmount: 0,
+    status: 'pending',
+    createdAt: '2026-10-06T09:00:00.000Z',
+    items: [],
+    ...patch,
+  });
+}
+
+const invoiceKeys = (): string[] =>
+  [...store.documents.keys()].filter(key => key.startsWith('invoices/'));
+
+describe('planMissingBills', () => {
+  it('plans the patients with an order and no bill, and names the reason for the rest', async () => {
+    seedPatient('p1', 'Needs A Bill', [CBC, ...CBC_MEMBERS], '2026-10-01T09:00:00.000Z');
+    seedPatient('p2', 'Empty Order', [], '2026-10-02T09:00:00.000Z');
+    seedPatient('p3', 'Already Billed', [CBC, ...CBC_MEMBERS], '2026-10-03T09:00:00.000Z');
+    seedInvoice('IN2610-0001', 'p3');
+
+    const plan = await planMissingBills();
+    expect(plan.billable.map(p => p.id)).toEqual(['p1']);
+    expect(plan.skipped).toEqual([
+      { patientId: 'p2', name: 'Empty Order', reason: 'no tests in the order' },
+      { patientId: 'p3', name: 'Already Billed', reason: 'already has a bill' },
+    ]);
+  });
+
+  it('counts a void bill as no bill, so the patient can be billed again', async () => {
+    seedPatient('p1', 'Withdrawn Bill', [CBC, ...CBC_MEMBERS], '2026-10-01T09:00:00.000Z');
+    seedInvoice('IN2610-0002', 'p1', { status: 'void' });
+    expect((await planMissingBills()).billable.map(p => p.id)).toEqual(['p1']);
+  });
+
+  it('orders the plan by registration, not by whatever the store yielded', async () => {
+    seedPatient('p-late', 'Late', [CBC], '2026-10-09T09:00:00.000Z');
+    seedPatient('p-early', 'Early', [CBC], '2026-10-01T09:00:00.000Z');
+    expect((await planMissingBills()).billable.map(p => p.name)).toEqual(['Early', 'Late']);
+  });
+});
+
+describe('generateMissingBills', () => {
+  it('raises every planned bill once, and a second run raises none', async () => {
+    seedPatient('p1', 'First', [CBC, ...CBC_MEMBERS], '2026-10-01T09:00:00.000Z');
+    seedPatient('p2', 'Second', [CBC, ...CBC_MEMBERS], '2026-10-02T09:00:00.000Z');
+
+    const first = await generateMissingBills({ issuedBy: 'Dr Naitik Raj' });
+    expect(first.attempted).toBe(2);
+    expect(first.raised).toHaveLength(2);
+    expect(new Set(first.raised.map(i => i.invoiceNo)).size).toBe(2);
+
+    const again = await generateMissingBills({ issuedBy: 'Dr Naitik Raj' });
+    expect(again.attempted).toBe(0);
+    expect(again.raised).toHaveLength(0);
+    expect(invoiceKeys()).toHaveLength(2);
+  });
+
+  it('stamps the referring doctor commission exactly as a hand-raised bill would', async () => {
+    seedPatient('p1', 'Referred', [CBC, ...CBC_MEMBERS], '2026-10-01T09:00:00.000Z', 'DR N KUMAR');
+    const doctors = [{ id: 'd1', name: 'DR N KUMAR', referralPercent: 50 }] as DoctorRecord[];
+
+    const run = await generateMissingBills({ doctors, issuedBy: 'admin' });
+    const bill = run.raised[0];
+    expect(bill.referral?.percent).toBe(50);
+    expect(bill.referral?.commission).toBe(roundMoney(bill.taxableBase * 0.5));
+    expect(run.commission).toBe(bill.referral?.commission);
+    expect(run.billed).toBe(bill.amount);
+  });
+
+  it('still bills an unpriced test rather than dropping the patient quietly', async () => {
+    // The register already warns about a bill with an unpriced line; hiding the
+    // patient from the bulk run would bury that warning instead of surfacing it.
+    seedPatient(
+      'p1',
+      'Part Unpriced',
+      PART_UNPRICED_PATIENT.testSelection,
+      '2026-10-01T09:00:00.000Z',
+    );
+    const run = await generateMissingBills({ issuedBy: 'admin' });
+    expect(run.raised).toHaveLength(1);
+    expect(run.raised[0].items.some(i => i.unpriced)).toBe(true);
+  });
+});
+
+describe('outstandingForPatient', () => {
+  it('sums unpaid and part-paid balances and ignores void bills', () => {
+    expect(
+      outstandingForPatient([
+        { amount: 500, paidAmount: 0, status: 'pending' },
+        { amount: 400, paidAmount: 150, status: 'partial' },
+        { amount: 300, paidAmount: 300, status: 'paid' },
+        { amount: 900, paidAmount: 0, status: 'void' },
+      ]),
+    ).toBe(750);
+  });
+
+  it('is zero for a patient with no bills', () => {
+    expect(outstandingForPatient([])).toBe(0);
   });
 });

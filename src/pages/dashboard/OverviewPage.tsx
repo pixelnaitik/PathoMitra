@@ -15,7 +15,9 @@ import {
 import { deletePatientCascade, deleteReportCascade } from '../../lib/cascades';
 import { readReports, readPatients } from '../../lib/models';
 import { handleFirestoreError, OperationType } from '../../lib/firestore-errors';
-import { Users, FileText, Plus, Trash2, UserPlus } from 'lucide-react';
+import { Users, FileText, Plus, Trash2, UserPlus, IndianRupee, ChevronRight } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import { getBillingPrefs } from '../../lib/price-list';
 import { cn } from '../../lib/utils';
 import { listStaggerProps } from '../../lib/motion';
 import { reportStatusView } from '../../lib/report-status';
@@ -46,6 +48,25 @@ import {
 function orderedSummary(testSelection: string[] | undefined): string {
   const units = collapseToProfiles(testSelection);
   return units.length > 0 ? units.join(', ') : 'No test selected';
+}
+
+/**
+ * One dashboard KPI tile.
+ *
+ * `to` turns the whole tile into a control that jumps to that tab — the money
+ * figure is only useful if the operator can get to the register it came from in
+ * one tap.
+ */
+interface StatCard {
+  label: string;
+  value: number;
+  icon: LucideIcon;
+  tint: string;
+  meta: string;
+  /** Currency symbol in front of the figure, when the number is money. */
+  prefix?: string;
+  /** Tab to open when the tile is activated. */
+  to?: string;
 }
 
 export default function OverviewPage({
@@ -155,7 +176,7 @@ export default function OverviewPage({
       .slice(0, 5);
   }, [recentReports, recentPatients]);
 
-  const cards = [
+  const cards: StatCard[] = [
     {
       label: 'Total Patients',
       value: stats.patients,
@@ -174,6 +195,19 @@ export default function OverviewPage({
       icon: FileText,
       tint: 'bg-chart-2/12 text-chart-2',
       meta: 'Given to the patient or referring doctor',
+    },
+    {
+      // The third tile the lab asked for. It is the money that has actually come
+      // in — paid bills only, the same figure the Bills page calls COLLECTED —
+      // rather than everything ever billed, because a dashboard number is read as
+      // cash in the drawer. Tapping it opens Bills, where the figure is made.
+      label: 'Total Revenue',
+      value: stats.revenue,
+      icon: IndianRupee,
+      tint: 'bg-chart-3/12 text-chart-3',
+      meta: 'Collected from paid bills',
+      prefix: getBillingPrefs().currency,
+      to: 'bills',
     },
   ];
 
@@ -214,50 +248,86 @@ export default function OverviewPage({
           </Card>
         )}
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 fold:grid-cols-2 gap-4 md:gap-6">
-        {cards.map((card, idx) => (
-          <motion.div
-            key={card.label}
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{
-              delay: Math.min(idx * 0.08, 0.32),
-              type: 'spring',
-              stiffness: 260,
-              damping: 24,
-            }}
-          >
-            <Card interactive className="group relative overflow-hidden">
-              <div className="flex items-center gap-4">
-                <div
-                  className={cn(
-                    'flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl transition-transform duration-300 group-hover:scale-110',
-                    card.tint,
-                  )}
-                >
-                  <card.icon className="w-6 h-6" aria-hidden="true" />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-on-surface-variant">
-                    {card.label}
+      {/* Stats Cards. Three tiles: two across on a folded phone, three across
+          from lg up, so the money tile never sits alone on a wide screen. */}
+      <div className="grid grid-cols-1 fold:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
+        {cards.map((card, idx) => {
+          // A tile is only a control when it names a tab *and* the shell can
+          // actually switch tabs — otherwise it would advertise itself as
+          // clickable and do nothing when pressed.
+          const target = card.to && setActiveTab ? card.to : undefined;
+          return (
+            <motion.div
+              key={card.label}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{
+                delay: Math.min(idx * 0.08, 0.32),
+                type: 'spring',
+                stiffness: 260,
+                damping: 24,
+              }}
+            >
+              <Card
+                interactive
+                className="group relative overflow-hidden"
+                {...(target
+                  ? {
+                      role: 'button' as const,
+                      tabIndex: 0,
+                      'aria-label': `${card.label}: ${card.prefix ?? ''}${card.value.toLocaleString('en-IN')} \u2014 open ${target}`,
+                      onClick: () => setActiveTab?.(target),
+                      onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => {
+                        if (event.key !== 'Enter' && event.key !== ' ') return;
+                        // Space would otherwise scroll the page instead of
+                        // activating the card, like any real button.
+                        event.preventDefault();
+                        setActiveTab?.(target);
+                      },
+                    }
+                  : {})}
+              >
+                <div className="flex items-center gap-4">
+                  <div
+                    className={cn(
+                      'flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl transition-transform duration-300 group-hover:scale-110',
+                      card.tint,
+                    )}
+                  >
+                    <card.icon className="w-6 h-6" aria-hidden="true" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-on-surface-variant">
+                      {card.label}
+                    </p>
+                    <h4 className="text-[28px] font-bold leading-tight tracking-[-0.03em] text-on-surface tabular-nums">
+                      {card.prefix && (
+                        <span aria-hidden="true" className="mr-0.5">
+                          {card.prefix}
+                        </span>
+                      )}
+                      <CountUp value={Number(card.value)} />
+                    </h4>
+                  </div>
+                  <p className="ml-auto hidden shrink-0 text-[11px] font-medium text-outline sm:block">
+                    {card.meta}
                   </p>
-                  <h4 className="text-[28px] font-bold leading-tight tracking-[-0.03em] text-on-surface tabular-nums">
-                    <CountUp value={Number(card.value)} />
-                  </h4>
+                  {target && (
+                    <ChevronRight
+                      className="hidden h-4 w-4 shrink-0 text-outline transition-transform duration-300 group-hover:translate-x-0.5 sm:block"
+                      aria-hidden="true"
+                    />
+                  )}
                 </div>
-                <p className="ml-auto hidden shrink-0 text-[11px] font-medium text-outline sm:block">
-                  {card.meta}
-                </p>
-              </div>
-            </Card>
-          </motion.div>
-        ))}
+              </Card>
+            </motion.div>
+          );
+        })}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Patients Registry */}
-        <Card pad="lg" className="flex md:min-h-[400px] flex-col">
+        <Card pad="lg" className="flex md:min-h-[min(400px,60vh)] flex-col">
           <SectionTitle
             title="Recent patients"
             subtitle="Newest registrations in the lab"
@@ -407,7 +477,7 @@ export default function OverviewPage({
         </Card>
 
         {/* Reports Registry */}
-        <Card pad="lg" className="flex md:min-h-[400px] flex-col">
+        <Card pad="lg" className="flex md:min-h-[min(400px,60vh)] flex-col">
           <SectionTitle
             title="Reports desk"
             subtitle="Latest diagnostics and pending outputs"

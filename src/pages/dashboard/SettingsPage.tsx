@@ -1305,11 +1305,11 @@ export default function SettingsPage({
               <div className="@container space-y-4">
                 {/* Action bar — the only place save/undo/redo/reset live */}
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-3">
+                  <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
                     <SegmentedControl
                       id="report-template-tab"
                       aria-label="Report template type"
-                      className="w-40 shrink-0 sm:w-60"
+                      className="w-40 shrink-0 fold:w-60"
                       size="sm"
                       value={activeTemplateTab}
                       onChange={v => setActiveTemplateTab(v)}
@@ -1325,7 +1325,12 @@ export default function SettingsPage({
                       {isDirty ? '● Unsaved changes' : 'All changes saved'}
                     </span>
                   </div>
-                  <div className="flex items-center gap-2">
+                  {/* `flex-wrap` + `min-w-0`: a flex item's default `min-width:
+                      auto` is its min-content width, and these five controls are
+                      ~420px of it — more than any phone's content column. The row
+                      refused to shrink, so it pushed the whole page sideways and
+                      the Save button came off the right edge of the screen. */}
+                  <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
                     <IconButton
                       label="Undo"
                       size="sm"

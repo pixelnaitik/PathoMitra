@@ -5,6 +5,8 @@ import {
   readInvoice,
   readUser,
   ageAsNumber,
+  dueOf,
+  toPatientDueDoc,
   toReportDoc,
   toReportUpdateDoc,
 } from './models';
@@ -213,5 +215,81 @@ describe('readUser', () => {
     });
     expect(user.role).toBe('guest');
     expect(captureError).toHaveBeenCalled();
+  });
+});
+
+/* --------------------------------- dues ---------------------------------- */
+
+describe('toPatientDueDoc', () => {
+  it('refuses a due with no 10-digit phone to confirm the identity', () => {
+    expect(() =>
+      toPatientDueDoc({ amount: 500, phone: '987', actor: 'admin' }, { phone: '' }),
+    ).toThrow(/10-digit/);
+  });
+
+  it('refuses a phone that contradicts the record', () => {
+    // Two patients can share a name; the number is what stops a debt landing on
+    // the wrong one.
+    expect(() =>
+      toPatientDueDoc(
+        { amount: 500, phone: '9999999999', actor: 'admin' },
+        { phone: '98765 43210' },
+      ),
+    ).toThrow(/does not match/);
+  });
+
+  it('accepts a formatted match, rounds to paise and stamps the operator', () => {
+    const patch = toPatientDueDoc(
+      {
+        amount: '1250.756',
+        note: '  advance against home collection  ',
+        phone: '98765-43210',
+        actor: 'Dr Naitik Raj',
+        at: '2026-10-17T10:00:00.000Z',
+      },
+      { phone: '9876543210' },
+    );
+    expect(patch).toEqual({
+      dueAmount: 1250.76,
+      dueNote: 'advance against home collection',
+      dueUpdatedAt: '2026-10-17T10:00:00.000Z',
+      dueRecordedBy: 'Dr Naitik Raj',
+    });
+  });
+
+  it('gains the phone when the record had none, rather than refusing the due', () => {
+    const patch = toPatientDueDoc(
+      { amount: 200, phone: '98765 43210', actor: 'admin' },
+      { phone: '' },
+    );
+    expect(patch.phone).toBe('98765 43210');
+  });
+
+  it('treats 0 as a cleared due, not an error', () => {
+    expect(
+      toPatientDueDoc({ amount: '0', phone: '9876543210', actor: 'admin' }, { phone: '9876543210' })
+        .dueAmount,
+    ).toBe(0);
+  });
+
+  it('rejects a negative, blank or unparseable amount', () => {
+    const bad = ['-5', '', 'abc', String(1e9)];
+    for (const amount of bad) {
+      expect(() =>
+        toPatientDueDoc({ amount, phone: '9876543210', actor: 'admin' }, { phone: '9876543210' }),
+      ).toThrow(/rupee amount/i);
+    }
+  });
+});
+
+describe('dueOf', () => {
+  it('reads a missing, negative or hostile due as zero', () => {
+    expect(dueOf({})).toBe(0);
+    expect(dueOf({ dueAmount: -20 })).toBe(0);
+    expect(dueOf({ dueAmount: 'not-a-number' as unknown as number })).toBe(0);
+  });
+
+  it('keeps a rupee-and-paise due', () => {
+    expect(dueOf({ dueAmount: 350.5 })).toBe(350.5);
   });
 });

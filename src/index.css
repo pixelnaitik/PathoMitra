@@ -402,14 +402,69 @@
    Pixel Fold ~766) and every one of them used to fall between `sm` (640) and
    `md` (768) or below both, so the whole tablet-sized inner screen rendered
    the phone shell: drawer nav, floating bottom tab pill, single column cards.
+
    600px is Android's own sw600dp "this is not a phone" line, and it is safe
    because no portrait phone is anywhere near it — the widest are ~430-440px.
    Anything that switches the *interface structure* uses `fold:`; padding and
    type sizes stay on `md:` because they are comfort, not structure, and the
    content column is `viewport − rail` wide, not `viewport` wide.
-   ========================================================================== */
-@theme {
-  --breakpoint-fold: 600px;
+
+   The height clause is what keeps a *landscape* phone on the phone shell. A
+   landscape handset is 740-900 CSS px wide and only ~360-420 tall, so a
+   width-only test handed it the tablet rail over a 360px-tall content column,
+   while Android still classified the same device as sw360dp phone. 480px sits
+   above every landscape phone and below the desktop window's own
+   `minHeight: 640` (electron/main.ts), so it cannot misfire there.
+   Mirrored by SHELL_RAIL_MQ in DashboardLayout.tsx — the two must not drift.
+   Declared as a variant rather than `@theme --breakpoint-fold` because a
+   breakpoint entry cannot carry a second axis. */
+@custom-variant fold {
+  @media (min-width: 600px) and (min-height: 480px) {
+    @slot;
+  }
+}
+
+/* Viewport-height fallbacks. The shell's height used to be a bare `h-dvh`, and
+   nothing in this file sizes html / body / #root — so `dvh` was the only thing
+   holding the layout up. `dvh` needs Chromium 108+, while minSdk is 28
+   (Android 9, factory WebView ~Chrome 66) and Tailwind v4's own floor is
+   Chrome 111; nothing in the build lowers a unit it cannot lower. On an
+   un-updated WebView the declaration was dropped, the shell collapsed to
+   content height, the internal scroller disappeared, and the fixed header and
+   tab bar floated over the middle of the page.
+
+   Written as `@supports` rather than the usual two-declaration `vh` then `dvh`
+   chain on purpose: Lightning CSS dedupes same-property declarations inside one
+   rule and keeps only the last, so the `100vh` line was silently deleted from
+   the shipped bundle (verified against `dist/assets/*.css`). Two rules cannot
+   be merged that way. */
+.shell-h {
+  height: 100vh;
+}
+.page-min-h {
+  min-height: 100vh;
+}
+@supports (height: 100dvh) {
+  .shell-h {
+    height: 100dvh;
+  }
+  .page-min-h {
+    min-height: 100dvh;
+  }
+}
+
+/* A dialog's height ceiling, same fallback pair. `max-h-[80dvh]` on its own is
+   dropped on a WebView predating the unit, which let the search palette grow
+   past the bottom of the screen and put its last results out of reach. The
+   percentage is set per call site with `[--dvh-max:80]`, so one rule covers
+   every ceiling in the app instead of one pair each. */
+.overlay-max-h {
+  max-height: calc(var(--dvh-max, 92) * 1vh);
+}
+@supports (height: 100dvh) {
+  .overlay-max-h {
+    max-height: calc(var(--dvh-max, 92) * 1dvh);
+  }
 }
 
 @layer base {
@@ -995,6 +1050,25 @@
   --safe-right: max(env(safe-area-inset-right, 0px), var(--safe-area-inset-right, 0px));
   --safe-bottom: max(env(safe-area-inset-bottom, 0px), var(--safe-area-inset-bottom, 0px));
   --safe-left: max(env(safe-area-inset-left, 0px), var(--safe-area-inset-left, 0px));
+
+  /* The floating tab bar's own footprint, in one place. The bar occupies from
+     `--safe-bottom + gap` up to `--safe-bottom + gap + h`, and the content
+     column has to clear exactly that; when the clearance was a bare `pb-28`
+     (112px) it fell short on every device whose bottom inset is over 36px
+     (3-button nav is 48dp), so the last row of every page sat under the bar.
+     Both sides now read these tokens, so they cannot drift apart again. */
+  --tab-bar-h: 4rem;
+  --tab-bar-gap: 0.75rem;
+
+  /* The two gutters `#main-content` picks between. The tab bar and the
+     quick-action FAB are viewport-fixed and live outside the scroller, so the
+     scroller can never measure them — the arithmetic has to be declared here,
+     next to the numbers it is built from. `--content-gutter-fab` reaches the
+     top of the FAB (`--fab-offset` below `--safe-bottom`, plus its own height). */
+  --fab-h: 3.5rem;
+  --fab-offset: 5.5rem;
+  --content-gutter: calc(var(--safe-bottom) + var(--tab-bar-h) + var(--tab-bar-gap) + 1.75rem);
+  --content-gutter-fab: calc(var(--safe-bottom) + var(--fab-offset) + var(--fab-h) + 0.5rem);
 }
 .pb-safe {
   padding-bottom: var(--safe-bottom);

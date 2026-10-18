@@ -21,21 +21,32 @@ const config: CapacitorConfig = {
   },
   plugins: {
     SystemBars: {
-      // index.html ships `viewport-fit=cover`, so the WebView goes edge-to-edge
+      // index.html ships `viewport-fit=cover`, so the WebView can go edge-to-edge
       // and the header has to pad itself clear of the status bar. Declaring the
       // expected value up-front stops the bar from jumping into place once the
       // native side reads the meta tag after page commit.
+      //
+      // Which of the two paths a handset takes is decided by the *Android System
+      // WebView* major version, not by this app (SystemBars.java:194): at 140+ the
+      // insets pass through and `env(safe-area-inset-*)` is real; below that the
+      // native side pads the decor view and hands CSS zeros. src/index.css takes
+      // `max(env(), var(--safe-area-inset-*))`, which is correct on both — and it
+      // is why the same APK laid out differently on two handsets before the
+      // content clearance started composing `--safe-bottom` as well.
       initialViewportFitValueHint: 'cover',
       // `css` (the default) additionally mirrors the insets into the
       // --safe-area-inset-* custom properties that src/index.css falls back to.
       insetsHandling: 'css',
     },
     Keyboard: {
-      // Edge-to-edge is why this is needed: on Android 15+ a fullscreen WebView
-      // no longer resizes for `windowSoftInputMode="adjustResize"`, so forms in
-      // the patient / report sheets get covered by the keyboard. The plugin's
-      // workaround re-measures the content child when the IME appears.
-      resizeOnFullScreen: true,
+      // No `resizeOnFullScreen` here, deliberately. Keyboard.java returns from its
+      // own resize workaround the moment `com.getcapacitor.plugin.SystemBars` is
+      // on the classpath — and in Capacitor 8 that class ships inside core — so
+      // the flag has no effect on this app, while SystemBars logs an explicit
+      // warning against combining it with `insetsHandling: 'css'`. The IME is
+      // already handled: SystemBars pads the decor view by `imeInsets.bottom`.
+      // (Nothing in src/ imports @capacitor/keyboard either — no `show()` /
+      // `setResizeMode()` call to preserve.)
     },
     CapacitorSQLite: {
       // Enables SQLCipher encryption of the on-device clinical database. The

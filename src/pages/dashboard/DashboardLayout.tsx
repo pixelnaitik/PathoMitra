@@ -73,20 +73,33 @@ const bottomNavItems: NavItem[] = [
 /**
  * Shell breakpoints, kept in one place so JS and CSS cannot drift.
  *
- * `SHELL_RAIL_MQ` is the mirror of the `fold:` variant (--breakpoint-fold: 600px
- * in src/index.css): from there the nav is a persistent rail instead of a drawer
- * with a bottom tab pill. Every foldable unfolded sits in 600-770px, i.e. under
- * the old 768px `md` edge, which is why the inner screen used to render the phone
- * shell. 600 is also Android's sw600dp tablet line, and no portrait phone reaches
- * it (the widest are ~430-440px), so phones keep the drawer + pill untouched.
+ * `SHELL_RAIL_MQ` is the mirror of the `fold:` variant in src/index.css: from
+ * there the nav is a persistent rail instead of a drawer with a bottom tab pill.
+ * Every foldable unfolded sits in 600-770px, i.e. under the old 768px `md` edge,
+ * which is why the inner screen used to render the phone shell. 600 is also
+ * Android's sw600dp tablet line, and no portrait phone reaches it (the widest are
+ * ~430-440px), so phones keep the drawer + pill untouched.
+ *
+ * The `min-height` half of the query is what keeps a *landscape* phone on the
+ * phone shell: a handset on its side is 740-900 CSS px wide but only ~360-420
+ * tall, and a width-only test gave it the tablet rail over a 360px-tall content
+ * column while Android still called it sw360dp. The desktop window cannot hit
+ * this (electron/main.ts sets `minHeight: 640`).
  *
  * `RAIL_COMPACT_MQ` is the 600-767px band: the rail is persistent, but the
  * content column is only ~400-500px behind an expanded 272px sidebar, so the
  * rail starts collapsed (84px icons) and the person reading the screen chooses
  * to open it.
  */
-const SHELL_RAIL_MQ = '(min-width: 600px)';
-const RAIL_COMPACT_MQ = '(min-width: 600px) and (max-width: 767px)';
+const SHELL_RAIL_MQ = '(min-width: 600px) and (min-height: 480px)';
+const RAIL_COMPACT_MQ = '(min-width: 600px) and (min-height: 480px) and (max-width: 767px)';
+
+// One MediaQueryList per query for the whole session, not one per render: the
+// initial `isMobile` / `sidebarOpen` state used to call `window.matchMedia` on
+// every render of the shell, allocating a live object that nothing ever disposed
+// of (only the listener inside the mount effect was ever cleaned up).
+const shellRailQuery = window.matchMedia(SHELL_RAIL_MQ);
+const railCompactQuery = window.matchMedia(RAIL_COMPACT_MQ);
 
 export default function DashboardLayout({
   children,
@@ -156,12 +169,12 @@ export default function DashboardLayout({
   }, [role, user?.uid]);
   // Use matchMedia instead of window.innerWidth to avoid forced reflow on mount.
   // Queried as min-width so JS and the `fold:` CSS variant share one exact edge
-  // (680px in index.css) — a max-width query would leave a fractional-pixel band
-  // where the drawer nav and the bottom tab pill are both visible mid-unfold.
-  const mql = window.matchMedia(SHELL_RAIL_MQ);
-  const [isMobile, setIsMobile] = useState(!mql.matches);
+  // (600px, plus the 480px height floor) — a max-width query would leave a
+  // fractional-pixel band where the drawer nav and the bottom tab pill are both
+  // visible mid-unfold.
+  const [isMobile, setIsMobile] = useState(!shellRailQuery.matches);
   const [sidebarOpen, setSidebarOpen] = useState(
-    () => mql.matches && !window.matchMedia(RAIL_COMPACT_MQ).matches,
+    () => shellRailQuery.matches && !railCompactQuery.matches,
   );
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [avatarSeed, setAvatarSeed] = useState(user?.photoURL || 'default');
@@ -320,8 +333,38 @@ export default function DashboardLayout({
     toast.success('Refreshed');
   };
 
+  /**
+   * The quick-action FAB's band, and the scroll gutter that has to clear it.
+   *
+   * Both the tab bar and the FAB are viewport-fixed and live *outside*
+   * `#main-content`, so the scroller can never measure them — the clearance is
+   * declared in src/index.css from the same tokens that position the bar, and
+   * this only picks which of the two applies. Written as whole literal class
+   * names because Tailwind can only generate what it can see in the source.
+   */
+  const fabVisible = !!onRegisterPatient && activeTab !== 'patients' && !mobileMenuOpen;
+
+  /**
+   * `overflow-x-clip`, not a bare `overflow-y-auto`. Per CSS, an `overflow-x:
+   * visible` next to a scrolling `overflow-y` computes to `auto`, so the page
+   * scroller was silently a *horizontal* scrollport too: any descendant whose
+   * min-content width exceeded the column (the Settings action bar, a wide
+   * table) let the whole page pan sideways — and because the header and the tab
+   * bar are fixed outside that scrollport, the content detached from them and
+   * both looked misaligned. `clip` keeps the axis non-scrollable, which also
+   * stops `scrollIntoView` from panning the page while it centres a nav chip.
+   */
+  const contentPadBottom = fabVisible
+    ? 'pb-[var(--content-gutter-fab)]'
+    : 'pb-[var(--content-gutter)]';
+
   return (
-    <div className="relative flex h-dvh overflow-hidden bg-background">
+    // `shell-h` (src/index.css) is the `100vh` → `100dvh` fallback chain. A bare
+    // `h-dvh` was the only thing giving this shell a height — nothing sizes
+    // html/body/#root — so on a WebView predating the unit the declaration was
+    // dropped, the shell collapsed, the inner scroller vanished, and the fixed
+    // header and tab bar floated over the middle of the page.
+    <div className="relative flex shell-h overflow-hidden bg-background">
       {/* Mobile Sidebar Overlay */}
       {mobileMenuOpen && (
         <div
@@ -496,11 +539,18 @@ export default function DashboardLayout({
               className="hidden fold:flex !static !py-1 !px-3"
               onClick={activeTab === 'settings' ? () => setActiveTab('dashboard') : undefined}
             />
-            <h2 className="truncate text-[17px] font-bold tracking-[-0.02em] text-on-surface capitalize hidden sm:block">
+            {/* `sm:` (640px) hid the section name on every portrait phone, which
+                is why the bar read as a lone hamburger at the left with the tool
+                cluster stranded at the right edge. `fold:` puts it on the same
+                edge the shell itself switches on. */}
+            <h2 className="truncate text-[17px] font-bold tracking-[-0.02em] text-on-surface capitalize hidden fold:block">
               {navItems.find(n => n.id === activeTab)?.label ?? activeTab}
             </h2>
           </div>
-          <div className="flex items-center gap-2 md:gap-4">
+          {/* `shrink-0`: flex items default to `min-width: auto`, so on a 320px
+              handset the four 40px tools were the only thing the header could
+              squeeze, and they collapsed to their icons' min-content. */}
+          <div className="flex shrink-0 items-center gap-2 md:gap-4">
             <button
               onClick={() => setSearchOpen(true)}
               aria-label="Search (Ctrl+K)"
@@ -574,7 +624,13 @@ export default function DashboardLayout({
           onTouchStart={handlePullTouchStart}
           onTouchMove={handlePullTouchMove}
           onTouchEnd={handlePullTouchEnd}
-          className="flex-1 overflow-y-auto p-4 md:p-8 pb-28 fold:pb-8 scrollbar-hide overscroll-contain"
+          className={cn(
+            'flex-1 overflow-y-auto overflow-x-clip p-4 md:p-8 scrollbar-hide overscroll-contain',
+            contentPadBottom,
+            // Rail mode has neither the pill nor the FAB over the content, but
+            // the gesture bar still crosses the bottom edge on the APK.
+            'fold:pb-[calc(2rem_+_var(--safe-bottom))]',
+          )}
         >
           {/* Pull-to-refresh indicator */}
           <div
@@ -619,7 +675,7 @@ export default function DashboardLayout({
 
         {/* Floating quick action — register a patient from anywhere (mobile only) */}
         <AnimatePresence>
-          {onRegisterPatient && activeTab !== 'patients' && !mobileMenuOpen && (
+          {fabVisible && (
             <motion.button
               initial={{ scale: 0, rotate: -120, opacity: 0 }}
               animate={{ scale: 1, rotate: 0, opacity: 1 }}
@@ -629,7 +685,7 @@ export default function DashboardLayout({
               transition={{ type: 'spring', stiffness: 380, damping: 20 }}
               onClick={onRegisterPatient}
               aria-label="Register patient"
-              className="fold:hidden fixed right-[calc(1rem_+_var(--safe-right))] bottom-[calc(var(--safe-bottom)_+_5.5rem)] z-40 flex h-14 w-14 items-center justify-center rounded-full bg-primary text-on-primary shadow-float"
+              className="fold:hidden fixed right-[calc(1rem_+_var(--safe-right))] bottom-[calc(var(--safe-bottom)_+_var(--fab-offset))] z-40 flex h-[var(--fab-h)] w-[var(--fab-h)] items-center justify-center rounded-full bg-primary text-on-primary shadow-float active:scale-95"
             >
               <UserPlus className="w-6 h-6" aria-hidden="true" />
             </motion.button>
@@ -640,13 +696,15 @@ export default function DashboardLayout({
         <nav
           aria-label="Primary"
           className={cn(
-            'fold:hidden fixed bottom-[calc(var(--safe-bottom)_+_0.75rem)] left-[calc(0.75rem_+_var(--safe-left))] right-[calc(0.75rem_+_var(--safe-right))] z-40 bg-surface-container-lowest border border-outline-variant/40 rounded-3xl shadow-float overflow-hidden',
+            // The offsets are built from the same --tab-bar-* tokens the content
+            // gutter above reads, so bar and clearance cannot drift again.
+            'fold:hidden fixed bottom-[calc(var(--safe-bottom)_+_var(--tab-bar-gap))] left-[calc(var(--tab-bar-gap)_+_var(--safe-left))] right-[calc(var(--tab-bar-gap)_+_var(--safe-right))] z-40 bg-surface-container-lowest border border-outline-variant/40 rounded-3xl shadow-float overflow-hidden',
             // The drawer carries the same destinations and paints over the bar —
             // leaving it up just collides with the sign-out row.
             mobileMenuOpen && 'hidden',
           )}
         >
-          <div className="grid grid-cols-4 h-16 px-1.5">
+          <div className="grid grid-cols-4 h-[var(--tab-bar-h)] px-1.5">
             {bottomNavItems.map(item => (
               <button
                 key={item.id}

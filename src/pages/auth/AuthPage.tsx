@@ -213,7 +213,7 @@ function FeaturePanel() {
  */
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="relative flex min-h-dvh flex-col bg-background font-sans">
+    <div className="relative flex page-min-h flex-col bg-background font-sans">
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 bg-cover bg-center"
@@ -778,7 +778,7 @@ export default function AuthPage() {
 
   if (status === 'loading') {
     return (
-      <div className="flex min-h-dvh items-center justify-center bg-background">
+      <div className="flex page-min-h items-center justify-center bg-background">
         <Loader2 className="h-10 w-10 animate-spin text-accent" aria-label="Loading" />
       </div>
     );

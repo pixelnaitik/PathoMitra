@@ -603,7 +603,7 @@ describe('pad template prints results only', () => {
     expect(text).toMatch(/\d+\.?\d* \u2013 \d+\.?\d*/);
   });
 
-  it('starts a continuation sheet near the top edge', async () => {
+  it('starts a continuation sheet at the height sheet 1 starts at', async () => {
     resetDrawn();
     await buildReportDocument({
       report: twoPanelReport(),
@@ -613,10 +613,93 @@ describe('pad template prints results only', () => {
     });
     const onPage2 = drawnSink.texts.filter(t => t.page === 2);
     expect(onPage2.length).toBeGreaterThan(0);
-    // autoTable restarts at `margin.top`; it used to inherit page 1's startY,
-    // which on 50 mm pad geometry pushed the second sheet's first line to ~97 mm
-    // — half the sheet empty above it.
-    expect(Math.min(...onPage2.map(t => t.y))).toBeLessThan(25);
+    const firstPerSheet = Array.from(new Set(drawnSink.texts.map(t => t.page))).map(page =>
+      Math.min(...drawnSink.texts.filter(t => t.page === page).map(t => t.y)),
+    );
+    const [top1, top2] = firstPerSheet;
+    // Sheet 1's first line is the one the owner approved: it clears the printed
+    // masthead and the REPORT badge hanging below the ribbon. A pad is a stack of
+    // identical forms, so no later sheet may print its first line ABOVE that —
+    // the cursor starts at sheet 1's height, and the category band's own padding
+    // then sets its text a little lower still.
+    expect(top2).toBeGreaterThanOrEqual(top1 - 0.5);
+    // …without drifting so far down that the top of the sheet goes to waste.
+    expect(top2).toBeLessThan(top1 + 8);
+    // Two regressions sit either side of that: the 2.8.1 build restarted at 12 mm
+    // and printed on top of the address banner, and the 2.7.x build restarted at
+    // page 1's table Y (~75 mm with the patient box and column titles paid) and
+    // left the top half of the sheet empty.
+    expect(top2).toBeGreaterThan(PAD_LAYOUT_PRESET.reportMarginTop - 5);
+    expect(top2).toBeLessThan(PAD_LAYOUT_PRESET.reportMarginTop + 15);
+  });
+
+  it('keeps every sheet of a pad report clear of the artwork band', async () => {
+    resetDrawn();
+    // The owner's real sheet: a package plus the small tests after it, so the
+    // report spans more than one pad form.
+    const mixed = report({
+      testSelection: [
+        'CBC (COMPLETE BLOOD COUNT)',
+        ...CBC_MEMBERS,
+        'URINE ROUTINE',
+        'PROTEIN',
+        'SUGAR',
+        'PUS CELLS',
+        'EPITHELIAL CELLS',
+        'S. Para Typhi "A(H)"',
+        'ABO Typing',
+      ],
+      resultData: {
+        ...cbcResults,
+        PROTEIN: 'TRACE',
+        SUGAR: 'NEGATIVE',
+        'PUS CELLS': '4-6',
+        'EPITHELIAL CELLS': '2-3',
+        'S. Para Typhi "A(H)"': 'NEGATIVE',
+        'ABO Typing': 'O',
+      },
+    });
+    const built = await buildReportDocument({
+      report: mixed,
+      patient: urinePatient,
+      settings: padSettings(),
+      legal: legal(),
+    });
+    expect(built.pageCount).toBeGreaterThanOrEqual(2);
+    // Nothing the generator draws may sit in the zone the lab's name, address
+    // banner and contact line occupy — on any sheet, not only the first.
+    const clear = PAD_LAYOUT_PRESET.reportMarginTop;
+    const offenders = drawnSink.texts.filter(t => t.y < clear - 0.5);
+    expect(offenders.map(o => `sheet ${o.page} y=${o.y.toFixed(1)} "${o.s}"`)).toEqual([]);
+    // And no sheet's first line may sit closer to the paper edge than sheet 1's,
+    // which is what keeps the hanging REPORT badge clear on all of them.
+    const firstPerSheet = Array.from(new Set(drawnSink.texts.map(t => t.page))).map(page =>
+      Math.min(...drawnSink.texts.filter(t => t.page === page).map(t => t.y)),
+    );
+    expect(firstPerSheet.length).toBeGreaterThanOrEqual(2);
+    firstPerSheet.forEach((top, i) => {
+      expect(top, `sheet ${i + 1}`).toBeGreaterThanOrEqual(firstPerSheet[0] - 0.5);
+      expect(top, `sheet ${i + 1}`).toBeLessThan(firstPerSheet[0] + 8);
+    });
+  });
+
+  it('prints no reference interval for a qualitative row that has none', async () => {
+    resetDrawn();
+    const widal = report({
+      testSelection: ["S. typhi 'O'", 'Impression'],
+      resultData: { "S. typhi 'O'": 'Negative', Impression: 'Negative' },
+    });
+    await buildReportDocument({
+      report: widal,
+      patient: urinePatient,
+      settings: padSettings(),
+      legal: legal(),
+    });
+    // `Impression` carries `{ text: '' }` — a conclusion, not a measurement. It
+    // used to render "0 – 0", an interval of zero to zero, beside it.
+    const text = allText();
+    expect(text).toContain('Impression');
+    expect(text).not.toMatch(/0\.?0? \u2013 0\.?0?/);
   });
 });
 
@@ -734,5 +817,46 @@ describe('page units', () => {
     expect(built.pageCount).toBe(1);
     expect(pageOf('S. Para Typhi "A(H)"')).toBe(1);
     expect(pageOf('S. creatinine')).toBe(1);
+  });
+
+  it('leads with the package and collects every small test onto the sheet after it', async () => {
+    resetDrawn();
+    // Ordered so a small test sits on each side of the CBC. Grouping the smalls by
+    // "the run between two packages" read the CBC as a wall and gave each half its
+    // own sheet — three sheets for 27 rows of results (owner report, 2026-10-17).
+    const straddled = report({
+      testSelection: [
+        'S. creatinine',
+        'CBC (COMPLETE BLOOD COUNT)',
+        ...CBC_MEMBERS,
+        'S. Para Typhi "A(H)"',
+      ],
+      resultData: {
+        ...cbcResults,
+        'S. creatinine': '0.9',
+        'S. Para Typhi "A(H)"': 'NEGATIVE',
+      },
+    });
+    const built = await buildReportDocument({
+      report: straddled,
+      patient: urinePatient,
+      settings: DEFAULT_SETTINGS,
+      legal: legal(),
+    });
+    expect(built.sections).toBe(3);
+    expect(built.pageCount).toBe(2);
+    // The package comes first even though the creatinine was ordered before it...
+    expect(pageOf('WHITE CELL COUNT(TC)')).toBe(1);
+    // ...and both smalls land on the one sheet after it, flowing rather than each
+    // being forced onto a fresh page of its own.
+    expect(pageOf('S. creatinine')).toBe(2);
+    expect(pageOf('S. Para Typhi "A(H)"')).toBe(2);
+    expect(pageOf('BIO CHEMISTRY')).toBe(2);
+    expect(pageOf('SEROLOGY')).toBe(2);
+    // Nothing separates the two small sections but the band itself: no page break
+    // is inserted between them, so the serology row sits under the biochemistry row.
+    const creatinine = drawnSink.texts.find(t => t.s === 'S. creatinine');
+    const typhi = drawnSink.texts.find(t => t.s === 'S. Para Typhi "A(H)"');
+    expect(creatinine!.y).toBeLessThan(typhi!.y);
   });
 });

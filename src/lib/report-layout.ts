@@ -402,8 +402,10 @@ export const RUNNING_HEADER_MM = 12;
  * A section with at least this many rows is a *test package* — a CBC (26 rows), a
  * full urine analysis — and the report generator gives it a sheet to itself: the
  * break falls before it and after it, so a panel is never split across two sheets
- * and whatever follows starts clean. Everything smaller keeps sharing one sheet,
- * so two blood sugars do not cost two sheets. (Owner decision, 2026-10-17.)
+ * and whatever follows starts clean. Everything smaller is collected onto ONE
+ * trailing sheet and flows from row to row, so three small tests never become
+ * three sheets, however the lab ordered them around a package. (Owner decision,
+ * 2026-10-17.)
  *
  * The number lives here rather than in `report-pdf` because the composer's
  * "prints as about N page(s)" hint has to apply the same rule to be honest.
@@ -415,24 +417,18 @@ export const isBigPanel = (rows: number): boolean => safeNum(rows, 0) >= BIG_PAN
 
 /**
  * How many sheets a report needs once the big-package rule is applied: each big
- * section is alone on its sheet, and every run of small sections between them
- * shares one sheet. Takes the per-section row counts in print order.
+ * section is alone on its sheet, and all the small sections together need one
+ * more (they flow, so that sheet only becomes two when they outrun the page).
+ * Takes the per-section row counts in print order.
  */
 export function countPageUnits(sectionRowCounts: number[]): number {
-  let units = 0;
-  let smallRunOpen = false;
+  let bigs = 0;
+  let hasSmall = false;
   sectionRowCounts.forEach(rows => {
-    if (isBigPanel(rows)) {
-      units += 1;
-      smallRunOpen = false;
-      return;
-    }
-    if (!smallRunOpen) {
-      units += 1;
-      smallRunOpen = true;
-    }
+    if (isBigPanel(rows)) bigs += 1;
+    else hasSmall = true;
   });
-  return units;
+  return bigs + (hasSmall ? 1 : 0);
 }
 
 /**

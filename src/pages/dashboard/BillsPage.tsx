@@ -28,6 +28,7 @@ import {
   Loader2,
   XCircle,
   BadgeIndianRupee,
+  Layers,
 } from 'lucide-react';
 import {
   Button,
@@ -54,11 +55,15 @@ import {
   balanceOf,
   buildInvoiceDraft,
   deleteInvoice,
+  generateMissingBills,
+  planMissingBills,
   raiseInvoice,
   recordPayment,
   voidInvoice,
   summarise,
   type InvoiceDraft,
+  type MissingBillPlan,
+  type MissingBillsResult,
 } from '../../lib/invoices';
 import {
   isInvoiceOutstanding,
@@ -126,6 +131,17 @@ export default function BillsPage() {
   const [voidReason, setVoidReason] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<InvoiceRecord | null>(null);
   const [detailTarget, setDetailTarget] = useState<InvoiceRecord | null>(null);
+
+  /**
+   * Bulk run. The plan is read from the store *before* the sheet opens, so the
+   * operator confirms against a count they have seen rather than against the word
+   * "generate" — and the result stays on screen afterwards with every patient that
+   * was skipped and why, because a silent partial run is how a lab ends up with
+   * unbilled patients it believes were done.
+   */
+  const [bulkPlan, setBulkPlan] = useState<MissingBillPlan | null>(null);
+  const [bulkResult, setBulkResult] = useState<MissingBillsResult | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   // Prices can change from the Settings screen while this page is open. The
   // first read is async so the encrypted store (not just the mirror) has a say
@@ -289,6 +305,57 @@ export default function BillsPage() {
     setPaidAmount('');
   };
 
+  /** Read the bulk plan from the store, then ask before writing anything. */
+  const openBulkRun = async () => {
+    setBulkBusy(true);
+    try {
+      const plan = await planMissingBills();
+      if (plan.billable.length === 0) {
+        setBulkPlan(null);
+        toast.info(
+          plan.skipped.length === 0
+            ? 'No patients are registered yet — nothing to bill.'
+            : 'Every patient with an order already has a bill of their own.',
+        );
+        return;
+      }
+      setBulkResult(null);
+      setBulkPlan(plan);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not read the patients to bill.');
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const runBulk = async () => {
+    if (!bulkPlan) return;
+    setBulkBusy(true);
+    try {
+      const result = await generateMissingBills({
+        doctors: doctors.items,
+        issuedBy: actor,
+        priceList,
+      });
+      setBulkPlan(null);
+      setBulkResult(result);
+      if (result.raised.length === 0) {
+        toast.warning(`No bills were raised — ${result.skipped.length} patient(s) were skipped.`);
+      } else {
+        toast.success(
+          `${result.raised.length} bill${result.raised.length === 1 ? '' : 's'} raised — ${formatMoney(result.billed)}` +
+            (result.commission > 0
+              ? `, ${formatMoney(result.commission)} commission stamped.`
+              : '.'),
+        );
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'The bills were not generated.');
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   const applyPayment = async () => {
     if (!payTarget) return;
     setBusyId(payTarget.id);
@@ -361,6 +428,20 @@ export default function BillsPage() {
             Export CSV
           </Button>
           <Button
+            variant="outline"
+            size="lg"
+            onClick={() => void openBulkRun()}
+            disabled={bulkBusy}
+            title="Raise a bill for every registered patient who does not have one yet"
+          >
+            {bulkBusy ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <Layers className="h-4 w-4" aria-hidden="true" />
+            )}
+            Generate pending bills
+          </Button>
+          <Button
             variant="brand"
             size="lg"
             shine
@@ -374,6 +455,50 @@ export default function BillsPage() {
           </Button>
         </div>
       </div>
+
+      {/* What the last bulk run did — kept on screen until dismissed, because the
+          skipped list is the part that needs a human afterwards. */}
+      {bulkResult && (
+        <Card pad="md" className="animate-rise-in">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-bold text-on-surface">
+                {bulkResult.raised.length} of {bulkResult.attempted} pending patients billed —{' '}
+                {formatMoney(bulkResult.billed)} raised
+                {bulkResult.commission > 0
+                  ? `, ${formatMoney(bulkResult.commission)} commission stamped`
+                  : ''}
+                .
+              </p>
+              {bulkResult.skipped.length > 0 && (
+                <>
+                  <p className="mt-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-on-surface-variant">
+                    Skipped, not billed
+                  </p>
+                  <ul className="mt-1 space-y-1 text-[13px] text-on-surface-variant">
+                    {bulkResult.skipped.slice(0, 8).map(row => (
+                      <li key={row.patientId}>
+                        {row.name} — {row.reason}
+                      </li>
+                    ))}
+                    {bulkResult.skipped.length > 8 && (
+                      <li>… and {bulkResult.skipped.length - 8} more</li>
+                    )}
+                  </ul>
+                </>
+              )}
+            </div>
+            <IconButton
+              label="Dismiss the bill-generation summary"
+              size="sm"
+              className="shrink-0 text-on-surface-variant"
+              onClick={() => setBulkResult(null)}
+            >
+              <XCircle className="h-4 w-4" aria-hidden="true" />
+            </IconButton>
+          </div>
+        </Card>
+      )}
 
       {/* Money strip */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -555,6 +680,36 @@ export default function BillsPage() {
           )}
         </>
       )}
+
+      {/* --------------------------- bulk generation --------------------------- */}
+      <ConfirmSheet
+        open={!!bulkPlan}
+        onClose={() => setBulkPlan(null)}
+        onConfirm={() => void runBulk()}
+        loading={bulkBusy}
+        title="Generate pending bills"
+        confirmLabel={`Raise ${bulkPlan?.billable.length ?? 0} bill${bulkPlan?.billable.length === 1 ? '' : 's'}`}
+        message={
+          <div className="space-y-2">
+            <p>
+              {bulkPlan?.billable.length ?? 0} registered patient
+              {bulkPlan?.billable.length === 1 ? '' : 's'} have an order and no bill. A bill will be
+              raised for each at the prices saved in Settings today, with the referring doctor’s
+              commission stamped on it.
+            </p>
+            <p className="text-on-surface-variant">
+              Bills already raised are never touched, and a patient with no tests on the order is
+              skipped and listed afterwards. A test the tariff has no price for still becomes a
+              bill, flagged by the warning below the money strip as it always has been.
+            </p>
+            <ul className="max-h-40 space-y-1 overflow-y-auto text-[13px] text-on-surface-variant">
+              {(bulkPlan?.billable ?? []).map(patient => (
+                <li key={patient.id}>{patient.name}</li>
+              ))}
+            </ul>
+          </div>
+        }
+      />
 
       {/* ------------------------------ new bill ------------------------------ */}
       <Sheet

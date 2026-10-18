@@ -58,7 +58,7 @@ export function KeyboardShortcutsDialog({ open, onClose }: { open: boolean; onCl
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.96, y: 8 }}
             transition={SPRING.sheet}
-            className="relative max-h-[88dvh] w-full max-w-sm overflow-y-auto rounded-3xl border border-[var(--elevated-border)] bg-surface p-6 shadow-float"
+            className="relative overlay-max-h [--dvh-max:88] w-full max-w-sm overflow-y-auto rounded-3xl border border-[var(--elevated-border)] bg-surface p-6 shadow-float"
           >
             <div className="mb-4 flex items-center gap-2.5">
               <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent/12 text-accent">

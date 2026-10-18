@@ -29,6 +29,9 @@ import {
   toPatientDoc,
   toPatientUpdateDoc,
   operatorStamp,
+  dueOf,
+  toPatientDueDoc,
+  type PatientDueInput,
   type PatientRecord,
   type DoctorRecord,
 } from '../../lib/models';
@@ -37,6 +40,7 @@ import { downloadCsv, toCsv, type CsvColumn } from '../../lib/export-csv';
 import { handleFirestoreError, OperationType } from '../../lib/firestore-errors';
 import {
   Search,
+  Wallet,
   Plus,
   UserPlus,
   FileSpreadsheet,
@@ -146,6 +150,8 @@ export default function PatientsPage({
   const toast = useToast();
   const [doctors, setDoctors] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
+  /** "Only the ones who owe us" — the counter's view of the same list. */
+  const [duesOnly, setDuesOnly] = useState(false);
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -493,10 +499,14 @@ export default function PatientsPage({
   // Searching only the name is what made a staff member read a patient number out
   // to a colleague instead of looking it up.
   const deferredSearch = useDeferredValue(searchTerm.trim().toLowerCase());
+  const dueCount = useMemo(() => patients.filter(p => dueOf(p) > 0).length, [patients]);
   const filteredPatients = useMemo(() => {
-    if (!deferredSearch) return patients;
+    // Dues first: the search then narrows whatever is left, so "sharma" inside
+    // "with dues" finds the owing Sharmas rather than every Sharma.
+    const owing = duesOnly ? patients.filter(p => dueOf(p) > 0) : patients;
+    if (!deferredSearch) return owing;
     const terms = deferredSearch.split(/\s+/).filter(Boolean);
-    return patients.filter(p => {
+    return owing.filter(p => {
       const haystack = [
         p.name,
         p.id,
@@ -510,7 +520,7 @@ export default function PatientsPage({
         .toLowerCase();
       return terms.every(term => haystack.includes(term));
     });
-  }, [patients, deferredSearch]);
+  }, [patients, deferredSearch, duesOnly]);
 
   const searching = deferredSearch.length > 0 && filteredPatients.length === 0;
   // The old 250-record walk ceiling is gone on purpose: the local store already
@@ -524,6 +534,34 @@ export default function PatientsPage({
     void patientsList.loadMore();
   }, [scanning, patientsList]);
 
+  /**
+   * Record (or clear, with 0) the due on a patient.
+   *
+   * The amount is typed and the phone is typed, and `toPatientDueDoc` refuses the
+   * pair when the number does not agree with the record — two patients can share a
+   * name, and a debt written on the wrong one is very hard to see later. Resolves to
+   * the failure message instead of throwing, so the sheet can keep the half-typed
+   * form open and say what it objected to.
+   */
+  const saveDue = async (
+    patient: PatientRecord,
+    input: Omit<PatientDueInput, 'actor'>,
+  ): Promise<string | null> => {
+    try {
+      const patch = toPatientDueDoc({ ...input, actor: operatorStamp(user) }, patient);
+      await updateDoc(doc(db, 'patients', patient.id), patch);
+      const amount = Number(patch.dueAmount ?? 0);
+      toast.success(
+        amount > 0
+          ? `${patient.name}: due recorded as ${formatMoney(amount)}.`
+          : `${patient.name}: due cleared.`,
+      );
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : 'The due was not saved.';
+    }
+  };
+
   const CSV_COLUMNS: CsvColumn<PatientRecord>[] = [
     { label: 'Patient ID', value: p => p.id },
     { label: 'Name', value: p => p.name },
@@ -532,6 +570,8 @@ export default function PatientsPage({
     { label: 'Phone', value: p => p.phone || '' },
     { label: 'Doctor', value: p => p.doctorName || '' },
     { label: 'Registered', value: p => p.createdAt },
+    { label: 'Due', value: p => (dueOf(p) > 0 ? dueOf(p) : '') },
+    { label: 'Due note', value: p => (dueOf(p) > 0 ? (p.dueNote ?? '') : '') },
   ];
 
   const exportFilteredCsv = async () => {
@@ -706,6 +746,16 @@ export default function PatientsPage({
           />
         </div>
         <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+          <Button
+            variant={duesOnly ? 'brand' : 'outline'}
+            size="sm"
+            aria-pressed={duesOnly}
+            onClick={() => setDuesOnly(value => !value)}
+            title="Show only the patients carrying a recorded due"
+          >
+            <Wallet className="mr-2 h-4 w-4" aria-hidden="true" />
+            With dues{dueCount > 0 ? ` (${dueCount})` : ''}
+          </Button>
           <Button variant="outline" size="sm" onClick={exportFilteredCsv}>
             <FileSpreadsheet className="mr-2 h-4 w-4" aria-hidden="true" />
             Export CSV
@@ -809,6 +859,9 @@ export default function PatientsPage({
                             {patient.name[0]}
                           </div>
                           <span className="font-semibold text-on-surface">{patient.name}</span>
+                          {dueOf(patient) > 0 && (
+                            <StatusPill tone="error">Due {formatMoney(dueOf(patient))}</StatusPill>
+                          )}
                         </div>
                       </td>
                       <td className="px-6 py-4">
@@ -898,7 +951,16 @@ export default function PatientsPage({
                       </span>
                     }
                     title={patient.name}
-                    subtitle={`${patient.age}y · ${patient.gender} · ${new Date(patient.createdAt).toLocaleDateString('en-IN')}`}
+                    subtitle={
+                      <>
+                        {`${patient.age}y · ${patient.gender} · ${new Date(patient.createdAt).toLocaleDateString('en-IN')}`}
+                        {dueOf(patient) > 0 && (
+                          <span className="mt-1 block text-[12px] font-bold text-error">
+                            Due {formatMoney(dueOf(patient))}
+                          </span>
+                        )}
+                      </>
+                    }
                     primaryLabel={`View ${patient.name}'s history`}
                     onClick={() => setSelectedPatient(patient)}
                     trailing={
@@ -1393,6 +1455,7 @@ export default function PatientsPage({
         onClose={() => setSelectedPatient(null)}
         onEdit={role !== 'guest' ? openEditForm : undefined}
         onPrintBill={role !== 'guest' ? patient => void printBill(patient) : undefined}
+        onSaveDue={role !== 'guest' ? saveDue : undefined}
       />
 
       {/* The Windows print sheet — desktop only; renders nothing on other shells,

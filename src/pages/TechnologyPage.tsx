@@ -5,7 +5,7 @@ import { Zap, WifiOff, Fingerprint, Lock } from 'lucide-react';
 
 export default function TechnologyPage() {
   return (
-    <div className="min-h-dvh bg-background selection:bg-secondary-container selection:text-on-secondary-container">
+    <div className="page-min-h bg-background selection:bg-secondary-container selection:text-on-secondary-container">
       <Header />
       <main className="pt-24 pb-16">
         <div className="max-w-7xl mx-auto px-6">

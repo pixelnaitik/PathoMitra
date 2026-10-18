@@ -116,6 +116,18 @@ describe('getReferenceRangeLabel', () => {
     expect(getReferenceRangeLabel({})).toBe('');
   });
 
+  it('prints no interval for a band with neither text nor bounds', () => {
+    // The Widal `Impression` entry is `{ general: { text: '' } }` — a conclusion,
+    // not a measurement. Falling through to the numeric branch made both missing
+    // sides `0`, so the report printed "0 – 0" in REF. RANGE beside it (owner's
+    // sheet, 2026-10-17).
+    expect(getReferenceRangeLabel({ general: { text: '' } }, 30, 'male')).toBe('');
+    expect(resolveReferenceRange({ general: { text: '' } }, 30, 'male').label).toBe('');
+    expect(resolveReferenceRange({ general: { text: '' } }, 30, 'male').values).toBeNull();
+    // A one-sided band keeps the side it has; only a wholly empty band goes silent.
+    expect(getReferenceRangeLabel({ general: { max: 140 } }, 30, 'male')).toBe('0 - 140.0');
+  });
+
   it('tolerates a missing range map (callers pass test.ranges, which is optional)', () => {
     expect(getReferenceRangeLabel(undefined)).toBe('');
     expect(getReferenceRangeLabel(null as never)).toBe('');

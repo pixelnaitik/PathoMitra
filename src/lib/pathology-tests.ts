@@ -2145,9 +2145,21 @@ export interface ResolvedRange {
   reason?: string;
 }
 
-/** `text` wins; otherwise the numeric bounds are formatted the way they always were. */
-const formatBand = (band: RangeBand): string =>
-  band.text || `${band.min?.toFixed(1) || 0} - ${band.max?.toFixed(1) || 0}`;
+/**
+ * `text` wins; otherwise the numeric bounds are formatted the way they always were.
+ *
+ * A band carrying neither text nor bounds prints nothing. It used to fall through
+ * to the numeric branch, where two absent sides each became `0` — so a qualitative
+ * row like the Widal `Impression` (whose band is `{ text: '' }`, because an
+ * impression is a conclusion and not a measurement) arrived on paper with a
+ * reference interval of "0 – 0", which a reader can only take as a target of zero
+ * (owner's sheet, 2026-10-17).
+ */
+const formatBand = (band: RangeBand): string => {
+  if (band.text) return band.text;
+  if (band.min === undefined && band.max === undefined) return '';
+  return `${band.min?.toFixed(1) || 0} - ${band.max?.toFixed(1) || 0}`;
+};
 
 /** Numeric bounds of a band, read from `min`/`max` or parsed out of its text. */
 const bandBounds = (band: RangeBand): { min?: number; max?: number } | null => {

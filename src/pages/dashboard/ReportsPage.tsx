@@ -276,10 +276,10 @@ export default function ReportsPage({
     if (!isModalOpen || composerTotal === 0) return 1;
     const layout = resolveReportLayout(readSettings());
     const groupRows = newReport.testSelection.filter(name => findTestInfo(name)?.isGroup).length;
-    // Rows per category in the order they were ordered — that is what decides the
-    // sheet breaks, because a big package (a CBC, a full urine analysis) takes a
-    // sheet to itself. Without this the hint promises one page for a CBC plus a
-    // urine analysis that prints on two.
+    // Rows per category — that is what decides the sheet breaks, because a big
+    // package (a CBC, a full urine analysis) takes a sheet to itself and every
+    // smaller section shares the one sheet after the packages. Without this the
+    // hint promises one page for a CBC plus a urine analysis that prints on two.
     const rowsByCategory = new Map<string, number>();
     newReport.testSelection.forEach(name => {
       const info = findTestInfo(name);

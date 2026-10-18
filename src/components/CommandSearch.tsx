@@ -304,7 +304,9 @@ export function CommandSearch({
         // The 15vh inset is a desktop nicety; on a short viewport (landscape phone,
         // a foldable propped half-open, the APK with the IME raised) it pushed the
         // panel off the bottom edge, so the inset is capped and the panel is bounded
-        // by 80dvh with the results list taking the slack.
+        // by 80% of the viewport height with the results list taking the slack
+        // (`overlay-max-h` in src/index.css, which keeps a `vh` fallback for a
+        // WebView that has no `dvh`).
         <motion.div
           className="fixed inset-0 z-[9998] flex items-start justify-center pt-[min(15vh,9rem)] px-4"
           initial={{ opacity: 0 }}
@@ -326,7 +328,7 @@ export function CommandSearch({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -10, scale: 0.97 }}
             transition={SPRING.sheet}
-            className="relative flex max-h-[80dvh] w-full max-w-lg flex-col overflow-hidden rounded-3xl border border-[var(--elevated-border)] bg-surface shadow-float"
+            className="relative flex overlay-max-h [--dvh-max:80] w-full max-w-lg flex-col overflow-hidden rounded-3xl border border-[var(--elevated-border)] bg-surface shadow-float"
           >
             {/* Search input. The app-wide `input:focus` glow + `:focus-visible`
                 outline are designed for bordered form fields; here they render as

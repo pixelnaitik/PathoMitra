@@ -71,6 +71,45 @@ const RESULTS: Record<string, string> = {
   // em dash, not as nothing, so a non-resulted test is not read as a printer fault.
 };
 
+/**
+ * The owner's real three-form sheet: a CBC package, a full urine analysis
+ * (big enough to be a package itself), then the Widal and blood-grouping rows.
+ * It is here for the pad artwork clearance — every sheet of a pre-printed pad
+ * carries the masthead, so nothing of ours may print above the top margin.
+ */
+const URINE_MEMBERS = [
+  'PHYSICAL EXAMINATION',
+  'Quantity',
+  'Colour',
+  'Consistency',
+  'Sediments',
+  'Specific Gravity',
+  'CHEMICAL EXAMINATION',
+  'Reaction',
+  'Sugar',
+  'Albumin',
+  'Phosphate',
+  'Bile Salt',
+  'Bile Pigment',
+  'Acetone',
+  'Urobilinogen',
+  'Chyle Test',
+  'MICROSCOPICAL EXAMINATION',
+  'Erythrocytes',
+  'Pus Cells',
+  'Epithelial Cells',
+  'Casts',
+  'Crystals',
+];
+
+const WIDAL_MEMBERS = [
+  "S. typhi 'O'",
+  "S. typhi 'H'",
+  'S. Para Typhi "A(H)"',
+  'S. para Typhi "B(H)"',
+  'Impression',
+];
+
 const patient = {
   id: 'demo-patient-0001',
   name: 'Asha Ramesh Sharma',
@@ -202,7 +241,7 @@ const cases: Array<{
   },
   {
     file: '11-pad-template-two-sheets.pdf',
-    why: 'Pad template, CBC + urine: the package takes sheet 1 and the rest sheet 2 — sheet 2 starts at the top edge with no strip, no page counter and no row rules',
+    why: 'Pad template, CBC + urine: the package takes sheet 1 and the rest sheet 2 — sheet 2 starts below the pre-printed masthead (same top clearance as sheet 1), with no strip, no page counter and no row rules',
     settings: { ...settings, ...PAD_LAYOUT_PRESET, reportTemplate: 'blank' },
     report: {
       ...baseReport,
@@ -240,6 +279,61 @@ const cases: Array<{
       },
     },
   },
+  {
+    file: '13-package-first-smalls-together.pdf',
+    why: 'A small test ordered on each side of the CBC: sheet 1 is the package alone, sheet 2 carries BOTH small sections one under the other — they must not be split into two sheets by the CBC sitting between them',
+    settings: { ...settings, ...PAD_LAYOUT_PRESET, reportTemplate: 'blank' },
+    report: {
+      ...baseReport,
+      testSelection: [
+        'Blood Sugar Random',
+        'CBC (COMPLETE BLOOD COUNT)',
+        ...CBC_MEMBERS,
+        'S. Para Typhi "A(H)"',
+      ],
+      resultData: {
+        ...RESULTS,
+        'Blood Sugar Random': '96',
+        'S. Para Typhi "A(H)"': 'NEGATIVE',
+      },
+    },
+  },
+  {
+    file: '14-pad-three-forms-clearance.pdf',
+    why: 'The owner’s three-form pad report (CBC / urine analysis / Widal + ABO): no line of ours may land in the artwork band at the top of ANY sheet, and the Widal Impression row must carry no reference interval',
+    settings: { ...settings, ...PAD_LAYOUT_PRESET, reportTemplate: 'blank' },
+    report: {
+      ...baseReport,
+      testSelection: [
+        'CBC (COMPLETE BLOOD COUNT)',
+        ...CBC_MEMBERS,
+        'URINE ANALYSIS',
+        ...URINE_MEMBERS,
+        'WIDAL REACTION',
+        ...WIDAL_MEMBERS,
+        'A.B.O',
+        'ABO Typing',
+        'RH Typing',
+      ],
+      resultData: {
+        ...RESULTS,
+        'Specific Gravity': '1.015',
+        Reaction: 'Acidic',
+        Sugar: 'NEGATIVE',
+        Albumin: 'TRACE',
+        Urobilinogen: '0.2',
+        Erythrocytes: '0-2',
+        'Pus Cells': '4-6',
+        "S. typhi 'O'": 'Negative',
+        "S. typhi 'H'": 'Negative',
+        'S. Para Typhi "A(H)"': 'Negative',
+        'S. para Typhi "B(H)"': 'Negative',
+        Impression: 'Negative',
+        'ABO Typing': 'B',
+        'RH Typing': 'Positive',
+      },
+    },
+  },
 ];
 
 let failures = 0;
@@ -263,6 +357,12 @@ for (const testCase of cases) {
     );
     if (/01-cbc/.test(testCase.file) && built.pageCount !== 1) {
       console.error('  ^^ EXPECTED ONE PAGE');
+      failures += 1;
+    }
+    if (/14-pad-three-forms/.test(testCase.file) && built.pageCount < 3) {
+      console.error(
+        `  ^^ EXPECTED AT LEAST THREE SHEETS (CBC / urine / the small tests) — got ${built.pageCount}`,
+      );
       failures += 1;
     }
   } catch (err) {

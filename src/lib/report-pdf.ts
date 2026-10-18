@@ -33,11 +33,15 @@
  * Pagination. The full header (masthead + patient box + column titles) was
  * redrawn on every page, and every category block was forced onto a fresh sheet
  * (`if (!isFirstBlock) doc.addPage()`), so CBC + urine was two pages minimum
- * even when both fit. Now: the sections flow as page units — a *test package*
- * (`BIG_PANEL_ROWS` in `report-layout`: a CBC, a full urine analysis) gets a sheet
- * to itself, everything smaller shares one sheet until it runs out — with a 12 mm
- * running strip on continuation pages and `rowPageBreak: 'avoid'` so a row is
- * never sliced in half between sheets.
+ * even when both fit. Now sections group into page units by *size*: a *test
+ * package* (`BIG_PANEL_ROWS` in `report-layout`: a CBC, a full urine analysis)
+ * prints first and claims a sheet to itself, and every smaller section is
+ * collected into one trailing unit that runs straight on under the previous row —
+ * Blood Sugar, then Widal, then whatever else — breaking only where the content
+ * hits the bottom margin. A 12 mm running strip heads the continuation pages and
+ * `rowPageBreak: 'avoid'` keeps a row from being sliced in half between sheets.
+ * (Owner decision, 2026-10-17, same day as the package rule: the smalls were
+ * being split across sheets by whichever big panel happened to sit between them.)
  *
  * Result typography (owner review of real sheets, 2026-10-17). Values are
  * left-aligned under RESULT, an out-of-range value is bold with its arrow drawn
@@ -51,10 +55,13 @@
  * footer band (identity or page counter) on any page, and no rule under each
  * test row. It also stops inheriting page 1's clearance: autoTable parks the
  * cursor at `margin.top` after every `addPage()`, which was set to page 1's
- * `startY`, so a second sheet began ~85 mm below the strip drawn above it.
- * Plain-paper templates keep the strip, the footer band and the row rules —
- * there the document *is* the artwork, and `Page 2 of 3` is the only thing that
- * tells a lab a sheet went missing in the tray.
+ * `startY`, so a second sheet began ~85 mm below the strip drawn above it. The
+ * other end of that over-correction is recorded in `continuationTopMm`: a pad is
+ * a stack of identical forms, so a continuation sheet keeps the same top
+ * clearance as page 1 rather than starting 12 mm from the paper edge. Plain
+ * paper keeps the strip, the footer band and the row rules — there the document
+ * *is* the artwork, and `Page 2 of 3` is the only thing that tells a lab a sheet
+ * went missing in the tray.
  *
  * What is NOT claimed: jspdf-autotable v5 has no per-cell or per-row `pageBreak`
  * style (verified against the installed `index.d.ts` — only the table-level
@@ -404,6 +411,14 @@ interface PassContext {
   model: ReportModel;
   version: number;
   statusView: ReturnType<typeof reportStatusView>;
+  /**
+   * On the pad template: the Y of the first line sheet 1 actually prints, recorded
+   * while that header was drawn. Continuation sheets start at the same height, so
+   * the artwork's clearance is paid identically on every sheet whatever the margin,
+   * the section gap or the compaction ladder decided this pass. Undefined until
+   * `drawFullHeader` has run, and unused on plain paper.
+   */
+  padContentTopMm?: number;
 }
 
 /** Everything the page foot needs, drawn once per pass. */
@@ -667,6 +682,7 @@ function drawFullHeader(ctx: PassContext): number {
 
   // ---- patient block --------------------------------------------------------
   const startY = y + 4;
+  if (legacy) ctx.padContentTopMm = startY;
   const lh = p.ptLineHeight;
   const nameText = `: ${patient?.name || report.patientName || ''}`;
   const ptNameLines = doc.splitTextToSize(winAnsiSafe(nameText), width * (55 / 180)) as string[];
@@ -861,9 +877,16 @@ function drawRunningHeader(ctx: PassContext): void {
 function continuationTopMm(ctx: PassContext): number {
   const { layout, p } = ctx;
   if (layout.template === 'blank') {
-    // Chromeless: the pad's artwork carries the identity band, so a continuation
-    // sheet starts close to the top edge and never at page 1's artwork clearance.
-    return Math.min(p.mTop, RUNNING_HEADER_MM);
+    // A pre-printed pad is a stack of identical forms: the laboratory's masthead
+    // is on every sheet, not just the first. So a continuation sheet starts at the
+    // height sheet 1's first line starts at — recorded while that header was drawn
+    // — rather than at a number guessed here. Two failures this closes: restarting
+    // at 12 mm printed the category band on top of the artwork (the 2.8.1 sheets),
+    // and restarting at page 1's table Y re-paid the patient box and the column
+    // titles, leaving the top half of the sheet empty (the 2.7.x sheets).
+    // The artwork's own lead-in is the lab's top margin plus its section gap, so
+    // the badge that hangs below the printed ribbon stays clear.
+    return ctx.padContentTopMm ?? p.mTop;
   }
   return RUNNING_HEADER_MM + SPACE.sm;
 }
@@ -1019,26 +1042,26 @@ function groupBandRow(ctx: PassContext, row: SectionRow): any[] {
 }
 
 /**
- * The sections grouped into page units, in print order. A *test package* (see
- * `BIG_PANEL_ROWS` in `report-layout`) is alone in its unit; every run of smaller
- * sections between two of them shares one unit.
+ * The sections grouped into page units. A *test package* (see `BIG_PANEL_ROWS` in
+ * `report-layout`) is alone in its unit and leads the report; every smaller
+ * section — however many of them there are, and wherever the lab ordered them —
+ * is collected into one unit that trails the packages and flows inside it.
+ *
+ * The collection is the point. Grouping smalls by "the run between two packages"
+ * looked equivalent until a report ordered a small test on either side of a CBC:
+ * the CBC split the run in two, and two or three rows of minor tests each got a
+ * sheet of their own.
  */
 function pageUnits(model: ReportModel): Section[][] {
   const units: Section[][] = [];
-  let current: Section[] = [];
-  const flush = () => {
-    if (current.length) units.push(current);
-    current = [];
-  };
+  const smalls: Section[] = [];
   model.sections.forEach(section => {
-    if (!isBigPanel(section.rows.length)) {
-      current.push(section);
-      return;
-    }
-    flush();
-    units.push([section]);
+    if (isBigPanel(section.rows.length)) units.push([section]);
+    else smalls.push(section);
   });
-  flush();
+  if (smalls.length) units.push(smalls);
+  // A report with nothing selected still renders one (empty) unit, so the tail —
+  // notes, signature, legal lines — has a sheet to land on.
   return units.length ? units : [[]];
 }
 
@@ -1304,8 +1327,10 @@ function renderPass(
   const startY = drawFullHeader(ctx);
   ctx.drawnPages.add(doc.internal.getCurrentPageInfo().pageNumber);
   // One autoTable call per page unit: autoTable v5 has no per-row `pageBreak`
-  // (see the file header), so a big panel gets its own table on its own sheet and
-  // whatever follows it starts on a fresh sheet too.
+  // (see the file header), so each package gets its own table on its own sheet and
+  // the collected small tests get one table after them. Within a unit nothing is
+  // forced — autoTable breaks the flow itself when a row would cross the bottom
+  // margin, which is what lets Blood Sugar and Widal sit on one sheet.
   let y = startY;
   pageUnits(model).forEach((unit, index) => {
     if (index > 0) {

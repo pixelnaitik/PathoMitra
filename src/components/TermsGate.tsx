@@ -47,7 +47,7 @@ export function TermsGate() {
       aria-labelledby="terms-gate-title"
       className="fixed inset-0 z-[90] flex items-center justify-center bg-black/55 p-4"
     >
-      <div className="flex max-h-[92dvh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-[var(--elevated-border)] bg-surface shadow-float">
+      <div className="flex overlay-max-h [--dvh-max:92] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-[var(--elevated-border)] bg-surface shadow-float">
         <header className="flex items-center gap-3 border-b border-outline-variant/40 px-5 py-4">
           <ScrollText className="h-5 w-5 shrink-0 text-accent" aria-hidden="true" />
           <div className="min-w-0">

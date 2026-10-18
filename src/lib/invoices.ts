@@ -36,6 +36,8 @@ import {
 import {
   isInvoiceOutstanding,
   readInvoice,
+  readInvoices,
+  readPatients,
   roundMoney,
   toInvoiceDoc,
   toInvoicePaymentDoc,
@@ -383,4 +385,140 @@ export function balanceOf(
 ): number {
   if (invoice.status === 'void') return 0;
   return roundMoney(Math.max(0, invoice.amount - Math.max(0, invoice.paidAmount ?? 0)));
+}
+
+/** What one patient still owes across their own bills (void excluded). */
+export function outstandingForPatient(
+  invoices: readonly Pick<InvoiceRecord, 'amount' | 'paidAmount' | 'status'>[],
+): number {
+  return roundMoney(
+    invoices
+      .filter(invoice => invoice.status !== 'void')
+      .reduce((sum, invoice) => sum + balanceOf(invoice), 0),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Bulk: raise the bills that were never raised
+// ---------------------------------------------------------------------------
+
+/** A patient the bulk run will not bill, with the reason shown to the operator. */
+export interface SkippedPatient {
+  patientId: string;
+  name: string;
+  reason: string;
+}
+
+export interface MissingBillPlan {
+  /** Registered patients with an order and no bill of their own yet. */
+  billable: PatientRecord[];
+  skipped: SkippedPatient[];
+}
+
+/**
+ * Decide a bulk run without writing anything.
+ *
+ * The whole collection is read here rather than taken from the on-screen register:
+ * the Bills list pages at 40 rows, and a patient whose only bill sits past that
+ * window must not be billed a second time because the visible slice missed it.
+ * A void bill does not count as "already billed" — the lab withdrew it, so the
+ * patient legitimately needs a fresh one.
+ */
+export async function planMissingBills(): Promise<MissingBillPlan> {
+  const [patientDocs, invoiceDocs] = await Promise.all([
+    getDocs(collection(db, 'patients')),
+    getDocs(collection(db, 'invoices')),
+  ]);
+  const billed = new Set(
+    readInvoices(invoiceDocs.docs)
+      .filter(invoice => invoice.status !== 'void')
+      .map(invoice => invoice.patientId)
+      .filter(Boolean),
+  );
+
+  const billable: PatientRecord[] = [];
+  const skipped: SkippedPatient[] = [];
+  for (const patient of readPatients(patientDocs.docs)) {
+    if (billed.has(patient.id)) {
+      skipped.push({ patientId: patient.id, name: patient.name, reason: 'already has a bill' });
+      continue;
+    }
+    if ((patient.testSelection ?? []).length === 0) {
+      skipped.push({ patientId: patient.id, name: patient.name, reason: 'no tests in the order' });
+      continue;
+    }
+    billable.push(patient);
+  }
+  // Oldest registration first, so the bill numbers follow the order the lab took
+  // the samples rather than whatever the store happened to yield.
+  billable.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  return { billable, skipped };
+}
+
+export interface MissingBillsResult {
+  /** Patients the run attempted to bill. */
+  attempted: number;
+  raised: InvoiceRecord[];
+  skipped: SkippedPatient[];
+  /** Value of the bills this run raised. */
+  billed: number;
+  /** Commission stamped on them, from each doctor's rate at bill time. */
+  commission: number;
+}
+
+/**
+ * Raise a bill for every patient {@link planMissingBills} finds, in one pass.
+ *
+ * This is the counter's "bill everyone I have not got round to yet", not a
+ * background job — the screen calls it from a button that has already shown the
+ * operator how many bills will appear. Each bill is the ordinary
+ * {@link raiseInvoice}: frozen line prices, the lab tax rate, and the referral
+ * commission stamped from the referring doctor's percentage on the taxable base,
+ * so a bulk run and a hand-raised bill cannot disagree about what a doctor is owed.
+ *
+ * A patient with no tests on the order is skipped by the plan, and a raise that
+ * fails for any other reason is reported in `skipped` with the reason rather than
+ * aborting the run. An order whose tests have no price still becomes a bill — with
+ * `unpriced` lines, exactly as a hand-raised bill would — because the register
+ * already surfaces that as "printed a test with no price"; silently dropping the
+ * patient here would hide it twice.
+ */
+export async function generateMissingBills(input: {
+  doctors?: readonly DoctorRecord[];
+  issuedBy: string;
+  priceList?: PriceList;
+}): Promise<MissingBillsResult> {
+  const plan = await planMissingBills();
+  const raised: InvoiceRecord[] = [];
+  const skipped = [...plan.skipped];
+
+  // Sequential on purpose: bill numbers come from one monthly sequence, so
+  // concurrent raises would race `allocateInvoiceNo` onto the same number.
+  for (const patient of plan.billable) {
+    try {
+      raised.push(
+        await raiseInvoice({
+          patient,
+          doctors: input.doctors,
+          issuedBy: input.issuedBy,
+          ...(input.priceList ? { priceList: input.priceList } : {}),
+        }),
+      );
+    } catch (err) {
+      skipped.push({
+        patientId: patient.id,
+        name: patient.name,
+        reason: err instanceof Error ? err.message : 'the bill could not be raised',
+      });
+    }
+  }
+
+  const summary = summarise(raised);
+  return {
+    attempted: plan.billable.length,
+    raised,
+    skipped,
+    billed: summary.billed,
+    commission: summary.commission,
+  };
 }

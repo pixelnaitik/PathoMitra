@@ -65,8 +65,13 @@ export function SectionTitle({
   className?: string;
 }) {
   return (
-    <div className={cn('mb-3 flex items-end justify-between gap-3', className)}>
-      <div>
+    // `flex-wrap` + a flexible basis on the text column: without them the action
+    // buttons (~150px) were unshrinkable and the heading took whatever was left,
+    // so on a 360px phone the subtitle wrapped to two lines while `items-end`
+    // parked the buttons in the middle of it. Below ~330px of content the buttons
+    // now drop to their own row instead of squeezing the title.
+    <div className={cn('mb-3 flex flex-wrap items-end justify-between gap-3', className)}>
+      <div className="min-w-0 flex-1 basis-40">
         <h2 className="text-[15px] font-semibold tracking-[-0.01em] text-on-surface sm:text-lg">
           {title}
         </h2>

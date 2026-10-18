@@ -59,7 +59,7 @@ function LazyFallback({ fullScreen }: { fullScreen: boolean }) {
 
   return (
     <div
-      className={`animate-fade-in ${fullScreen ? 'min-h-dvh' : 'min-h-[50vh]'} bg-background p-4 md:p-8`}
+      className={`animate-fade-in ${fullScreen ? 'page-min-h' : 'min-h-[50vh]'} bg-background p-4 md:p-8`}
     >
       {/* Skeleton — mirrors the dashboard layout so the page feels instant */}
       <div className="max-w-7xl mx-auto space-y-6" aria-busy="true" aria-label="Loading">
@@ -81,7 +81,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
   if (loading)
     return (
-      <div className="flex min-h-dvh items-center justify-center bg-background">
+      <div className="flex page-min-h items-center justify-center bg-background">
         <Loader2 className="h-10 w-10 animate-spin text-accent" aria-label="Loading" />
       </div>
     );
@@ -299,16 +299,22 @@ function BrandFaviconController() {
 function AnimatedRoutes() {
   const location = useLocation();
   const routeKey = location.pathname.startsWith('/dashboard') ? 'dashboard' : location.pathname;
+  // The dashboard shell carries a fixed header and a fixed tab bar. While this
+  // wrapper holds a transform it *is* their containing block (CSS), so both rode
+  // the 10px rise instead of sitting at the viewport edges — the header and
+  // footer visibly detached during the auth → console handover. The shell fades
+  // in place; every other route keeps the rise.
+  const rises = routeKey !== 'dashboard';
 
   return (
     <AnimatePresence mode="wait" initial={false}>
       <motion.div
         key={routeKey}
-        initial={{ opacity: 0, y: 10 }}
+        initial={{ opacity: 0, y: rises ? 10 : 0 }}
         animate={{ opacity: 1, y: 0 }}
         // Short, near-instant exit — waiting the full entrance duration on the
         // old page makes navigation feel sluggish; the rise-in carries the rest.
-        exit={{ opacity: 0, y: -8, transition: { duration: DURATION.micro } }}
+        exit={{ opacity: 0, y: rises ? -8 : 0, transition: { duration: DURATION.micro } }}
         transition={{ duration: DURATION.base, ease: EASE.out }}
       >
         <Suspense fallback={<LazyFallback fullScreen />}>

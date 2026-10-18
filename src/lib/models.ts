@@ -91,9 +91,27 @@ export const PatientSchema = z.looseObject({
   doctorName: z.string().max(100).optional(),
   address: z.string().max(500).optional(),
   testSelection: z.array(z.string().max(128)).max(200).optional(),
+  /**
+   * Money the counter says this patient still owes, typed in by an operator.
+   *
+   * It is a ledger note on the person, not a bill: raising, discounting or paying
+   * an invoice never touches it (see {@link toPatientDueDoc} for how it is entered
+   * and why a phone number is demanded first). The Patients list shows it as a chip
+   * and filters on it, because "who owes us" is a question asked at the counter
+   * while the patient is standing there, not in the Bills register.
+   */
+  dueAmount: z.coerce.number().min(0).max(10_000_000).optional(),
+  dueNote: z.string().max(200).optional(),
+  dueUpdatedAt: timestampString.optional(),
+  dueRecordedBy: z.string().max(128).optional(),
   createdAt: timestampString.default(''),
 });
 export type PatientRecord = z.infer<typeof PatientSchema> & { id: string };
+
+/** What is owed on this patient's name, never negative. `0` = nothing recorded. */
+export function dueOf(patient: Pick<PatientRecord, 'dueAmount'>): number {
+  return roundMoney(Math.max(0, Number(patient.dueAmount ?? 0) || 0));
+}
 
 /** Numeric age, or `undefined` when the stored value is not a sane number. */
 export function ageAsNumber(patient: Pick<PatientRecord, 'age'>): number | undefined {
@@ -140,6 +158,70 @@ export interface PatientDraftInput {
 
 /** Input for {@link toPatientUpdateDoc} — same fields, no `createdAt`. */
 export type PatientPatchInput = Omit<PatientDraftInput, 'createdAt'>;
+
+/**
+ * What the "record a due" form collects.
+ *
+ * `amount` is the raw form value: the dialog seeds it with the unpaid-bill balance
+ * from `lib/invoices.outstandingForPatient`, and the operator confirms or edits it.
+ * So the derived figure is a default, never an authority — cash taken at the
+ * counter for an old debt, or a debt that predates this app, is the operator's call.
+ */
+export interface PatientDueInput {
+  amount: string | number;
+  note?: string;
+  /** Typed at the counter, not read from the record — see {@link toPatientDueDoc}. */
+  phone: string;
+  /** `operatorStamp(user)`. */
+  actor: string;
+  at?: string;
+}
+
+/** Digits only — the comparison a typed number is normalised to. */
+const phoneDigits = (value: string): string => String(value ?? '').replace(/\D/g, '');
+
+/**
+ * Build the patch that records (or clears, with `0`) a patient due.
+ *
+ * A debt is entered against a person, and two patients can share a name — so the
+ * entry is gated on the phone number: it must be typed, it must be at least 10
+ * digits, and where the record already carries a number it must agree with it. A
+ * patient with no number on file gains the typed one, which is the counter
+ * fixing the record rather than working around the check.
+ *
+ * @throws when the amount or the phone fails — the caller surfaces the message
+ *   verbatim and writes nothing.
+ */
+export function toPatientDueDoc(
+  input: PatientDueInput,
+  patient: Pick<PatientRecord, 'phone'>,
+): Record<string, unknown> {
+  const typed = phoneDigits(input.phone);
+  if (typed.length < 10) {
+    throw new Error('Enter the 10-digit phone number of this patient to record a due.');
+  }
+  const onFile = phoneDigits(patient.phone ?? '');
+  if (onFile && onFile !== typed) {
+    throw new Error(
+      'That phone number does not match the one on this patient record. The due was not saved.',
+    );
+  }
+
+  const raw = typeof input.amount === 'number' ? String(input.amount) : String(input.amount).trim();
+  const amount = Number(raw);
+  if (raw === '' || !Number.isFinite(amount) || amount < 0 || amount > 10_000_000) {
+    throw new Error('Enter the due as a rupee amount above zero (0 clears it).');
+  }
+
+  const patch: Record<string, unknown> = {
+    dueAmount: roundMoney(amount),
+    dueNote: (input.note ?? '').trim().slice(0, 200),
+    dueUpdatedAt: input.at || new Date().toISOString(),
+    dueRecordedBy: input.actor.trim().slice(0, 128),
+  };
+  if (!onFile) patch.phone = String(input.phone).trim().slice(0, 20);
+  return patch;
+}
 
 /** Shared construction for both patient write builders. */
 function patientDocFields(input: PatientDraftInput): Record<string, unknown> {

@@ -183,14 +183,18 @@ describe('the big-package sheet rule', () => {
     expect(isBigPanel(NaN)).toBe(false);
   });
 
-  it('gives each package its own unit and lets the small runs share one', () => {
+  it('gives each package its own unit and collects every small section into one', () => {
     // CBC (26 rows) + urine (6) + biochemistry (2): the package stands alone and
     // the two small sections after it share the next sheet.
     expect(countPageUnits([26, 6, 2])).toBe(2);
     expect(countPageUnits([2, 3])).toBe(1);
     expect(countPageUnits([26, 30])).toBe(2);
-    expect(countPageUnits([26, 2, 30, 4])).toBe(4);
     expect(countPageUnits([])).toBe(0);
+    // The case the owner sent back on 2026-10-17: a small test ordered on either
+    // side of a package. Grouping smalls per run made that four sheets, two of
+    // them holding three rows each; the smalls are one unit wherever they sit.
+    expect(countPageUnits([26, 2, 30, 4])).toBe(3);
+    expect(countPageUnits([2, 26, 3])).toBe(2);
   });
 
   it('raises the page estimate to the floor the package rule imposes', () => {

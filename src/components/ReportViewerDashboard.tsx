@@ -320,8 +320,15 @@ export function ReportViewerDashboard({
             <h4 className="mb-1.5 px-1 text-[11px] font-black uppercase tracking-widest text-on-surface-variant">
               {category}
             </h4>
-            <div className="overflow-hidden rounded-2xl border border-outline-variant/30 bg-surface-container-lowest">
-              <table className="w-full border-separate border-spacing-0 text-left">
+            {/* `overflow-x-auto`, not `overflow-hidden`. For a <table>, `w-full`
+                is a minimum rather than a maximum — the used width is
+                max(100%, min-content) — and this table's four columns need ~351px
+                of content (Parameter / Observed value / Ref. range / a NORMAL
+                chip) against the ~320px a 360px phone leaves inside the sheet's
+                px-5. Clipping cut the Flag column and the card's own right border
+                off; scrolling them keeps every flag reachable by swipe. */}
+            <div className="overflow-x-auto overscroll-x-contain rounded-2xl border border-outline-variant/30 bg-surface-container-lowest">
+              <table className="w-full min-w-[22rem] border-separate border-spacing-0 text-left">
                 <thead>
                   <tr className="bg-surface-container-high/60 text-[10.5px] font-black uppercase tracking-wider text-on-surface-variant sm:text-[11px]">
                     <th scope="col" className="px-3 py-2.5 font-black">

@@ -36,7 +36,7 @@ function Reveal({
 
 export default function LandingPage() {
   return (
-    <div className="min-h-dvh bg-background font-sans text-on-surface selection:bg-accent/20">
+    <div className="page-min-h bg-background font-sans text-on-surface selection:bg-accent/20">
       <Header />
       <main>
         <Hero />

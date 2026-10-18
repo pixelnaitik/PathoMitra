@@ -44,10 +44,10 @@ export interface SheetProps {
 }
 
 const WIDTHS = {
-  sm: 'sm:max-w-sm',
-  md: 'sm:max-w-md',
-  lg: 'sm:max-w-2xl',
-  xl: 'sm:max-w-4xl',
+  sm: 'fold:max-w-sm',
+  md: 'fold:max-w-md',
+  lg: 'fold:max-w-2xl',
+  xl: 'fold:max-w-4xl',
 } as const;
 
 /** Focusable, non-disabled descendants that are actually rendered. */
@@ -119,7 +119,12 @@ export function Sheet({
   const returnFocusTo = useRef<HTMLElement | null>(null);
   const titleId = useId();
   useEffect(() => {
-    const mq = window.matchMedia('(max-width: 639px)');
+    // The shell's own `fold:` edge (src/index.css): 600px wide AND 480px tall.
+    // This used to be `max-width: 639px` while the panel below switched on `sm:`
+    // (640px) — two different answers to one question, so in the 600-639px band
+    // the sheet was a centred dialog that could also be dragged away, and a
+    // landscape phone (wide but ~360px tall) got neither behaviour cleanly.
+    const mq = window.matchMedia('(max-width: 599px), (max-height: 479px)');
     const update = () => setCanDrag(mq.matches);
     update();
     mq.addEventListener('change', update);
@@ -205,7 +210,15 @@ export function Sheet({
     <AnimatePresence>
       {open && (
         <motion.div
-          className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-6"
+          className={cn(
+            'fixed inset-0 z-50 flex items-end justify-center',
+            // The panel is full-bleed to the viewport edge on a phone, so the
+            // display cutout has to be paid for here. Padding the overlay (not
+            // the panel) keeps the scrim full-bleed behind it: an absolutely
+            // positioned `inset-0` child resolves against the padding box.
+            'pl-[var(--safe-left)] pr-[var(--safe-right)]',
+            'fold:items-center fold:py-6 fold:pl-[calc(1.5rem_+_var(--safe-left))] fold:pr-[calc(1.5rem_+_var(--safe-right))]',
+          )}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -230,8 +243,12 @@ export function Sheet({
             exit={PANEL_EXIT}
             transition={SPRING.sheet}
             className={cn(
-              'relative flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-4xl',
-              'border border-[var(--elevated-border)] bg-surface sm:rounded-4xl sm:shadow-float',
+              // `overlay-max-h [--dvh-max:92]` = `92vh` upgraded to `92dvh` only
+              // where the unit parses (src/index.css) — a bare `92dvh` is dropped
+              // on a WebView predating it, which let a long report table grow past
+              // the top of the screen.
+              'relative flex overlay-max-h [--dvh-max:92] w-full flex-col overflow-hidden rounded-t-4xl',
+              'border border-[var(--elevated-border)] bg-surface fold:rounded-4xl fold:shadow-float',
               WIDTHS[width],
               className,
             )}
@@ -248,11 +265,11 @@ export function Sheet({
               style={draggable ? { touchAction: 'none' } : undefined}
               className={draggable ? 'cursor-grab active:cursor-grabbing' : undefined}
             >
-              <div className="flex justify-center pt-2.5 sm:hidden" aria-hidden="true">
+              <div className="flex justify-center pt-2.5 fold:hidden" aria-hidden="true">
                 <span className="h-1.5 w-10 rounded-full bg-outline-variant" />
               </div>
               {(title || description) && (
-                <div className="flex items-start justify-between gap-4 px-5 pb-3 pt-4 sm:pt-5">
+                <div className="flex items-start justify-between gap-4 px-5 pb-3 pt-4 fold:pt-5">
                   <div className="min-w-0">
                     {title && (
                       <h2
@@ -279,7 +296,7 @@ export function Sheet({
                 </div>
               )}
             </motion.div>
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-4">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-x-contain px-5 pb-4">
               {children}
             </div>
             {footer && (

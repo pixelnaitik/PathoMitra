@@ -15,7 +15,17 @@ import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'motion/react';
 import { collection, db, onSnapshot, orderBy, query, where } from '../data/fs';
 import { handleFirestoreError, OperationType } from '../lib/firestore-errors';
-import { readReports, ageAsNumber, type PatientRecord, type ReportRecord } from '../lib/models';
+import {
+  readReports,
+  ageAsNumber,
+  dueOf,
+  type InvoiceRecord,
+  type PatientDueInput,
+  type PatientRecord,
+  type ReportRecord,
+} from '../lib/models';
+import { invoicesForPatient, outstandingForPatient } from '../lib/invoices';
+import { formatMoney } from '../lib/price-list';
 import { resolveValueStatus, collapseToProfiles } from '../lib/pathology-tests';
 import {
   CalendarClock,
@@ -26,8 +36,10 @@ import {
   TrendingDown,
   TrendingUp,
   ReceiptText,
+  BadgeIndianRupee,
+  Loader2,
 } from 'lucide-react';
-import { Button, Card, EmptyState, Sheet, StatusPill, type PillTone } from './ui';
+import { Button, Card, EmptyState, Field, Sheet, StatusPill, TextInput, type PillTone } from './ui';
 
 const STATUS_TONE: Record<'normal' | 'low' | 'high', PillTone> = {
   normal: 'success',
@@ -69,12 +81,23 @@ export function PatientDetailSheet({
   onClose,
   onEdit,
   onPrintBill,
+  onSaveDue,
 }: {
   patient: PatientRecord | null;
   onClose: () => void;
   onEdit?: (patient: PatientRecord) => void;
   /** Raise (or reprint) the bill for this patient's current order. */
   onPrintBill?: (patient: PatientRecord) => void;
+  /**
+   * Record (or clear, with 0) the amount this patient is carrying as a due.
+   * The sheet collects what a human typed; the page stamps who typed it.
+   * Resolves to an error message when the entry was refused — the form stays open
+   * and shows it, because the operator is mid-entry and knows the fix.
+   */
+  onSaveDue?: (
+    patient: PatientRecord,
+    input: Omit<PatientDueInput, 'actor'>,
+  ) => Promise<string | null>;
 }) {
   // The parent keys this sheet by patient id, so switching patients remounts
   // it with a clean slate — no stale timeline flashes and no need to reset
@@ -82,6 +105,26 @@ export function PatientDetailSheet({
   const [reports, setReports] = useState<ReportRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const patientId = patient?.id;
+
+  /** This patient's bills — read once per open, to seed and explain the due. */
+  const [bills, setBills] = useState<InvoiceRecord[]>([]);
+  const [dueOpen, setDueOpen] = useState(false);
+  const [dueAmount, setDueAmount] = useState('');
+  const [dueNote, setDueNote] = useState('');
+  const [duePhone, setDuePhone] = useState('');
+  const [dueError, setDueError] = useState<string | null>(null);
+  const [dueSaving, setDueSaving] = useState(false);
+
+  useEffect(() => {
+    if (!patientId) return;
+    let active = true;
+    void invoicesForPatient(patientId).then(rows => {
+      if (active) setBills(rows);
+    });
+    return () => {
+      active = false;
+    };
+  }, [patientId]);
 
   useEffect(() => {
     if (!patientId) return;
@@ -122,6 +165,36 @@ export function PatientDetailSheet({
 
   const age = patient ? ageAsNumber(patient) : undefined;
   const gender = patient?.gender;
+
+  /** What the bills say is still owed — the seed for the due, not its authority. */
+  const unpaid = useMemo(() => outstandingForPatient(bills), [bills]);
+  const due = dueOf(patient ?? { dueAmount: 0 });
+
+  const openDueForm = () => {
+    setDueAmount(unpaid > 0 ? String(unpaid) : '');
+    setDueNote('');
+    setDuePhone(patient?.phone ?? '');
+    setDueError(null);
+    setDueOpen(true);
+  };
+
+  const saveDue = async () => {
+    if (!patient || !onSaveDue) return;
+    setDueSaving(true);
+    setDueError(null);
+    try {
+      const failure = await onSaveDue(patient, {
+        amount: dueAmount,
+        note: dueNote,
+        phone: duePhone,
+      });
+      if (failure) setDueError(failure);
+      else setDueOpen(false);
+    } finally {
+      setDueSaving(false);
+    }
+  };
+
   const abnormalCount = useMemo(
     () =>
       reports.reduce(
@@ -202,6 +275,120 @@ export function PatientDetailSheet({
                 </StatusPill>
               )}
             </div>
+          </Card>
+
+          {/* Money. Two figures side by side on purpose: what the bills say is
+              unpaid, and what the counter has recorded against the patient. They
+              are allowed to differ — an advance taken in cash, or a debt that
+              predates this app, moves one and not the other — and hiding either
+              figure is how a lab reconciles at midnight instead of at the desk. */}
+          <Card pad="sm" className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <span className="flex h-9 w-9 items-center justify-center rounded-full bg-warning/12 text-warning">
+                  <BadgeIndianRupee className="h-5 w-5" aria-hidden="true" />
+                </span>
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-on-surface-variant">
+                    Due recorded
+                  </p>
+                  <p className="text-sm font-bold text-on-surface tabular-nums">
+                    {formatMoney(due)}
+                    {due > 0 && patient.dueNote ? (
+                      <span className="ml-1 text-[12px] font-medium text-on-surface-variant">
+                        · {patient.dueNote}
+                      </span>
+                    ) : null}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <StatusPill tone={unpaid > 0 ? 'warning' : 'neutral'}>
+                  {formatMoney(unpaid)} unpaid on {bills.length} bill{bills.length === 1 ? '' : 's'}
+                </StatusPill>
+                {onSaveDue && (
+                  <Button variant="outline" size="sm" onClick={openDueForm}>
+                    {due > 0 ? 'Edit due' : 'Record due'}
+                  </Button>
+                )}
+              </div>
+            </div>
+            {due > 0 && patient.dueRecordedBy && (
+              <p className="text-[11px] text-on-surface-variant">
+                Entered by {patient.dueRecordedBy}
+                {patient.dueUpdatedAt ? ` on ${formatDay(patient.dueUpdatedAt)}` : ''} — it stays
+                until someone sets it to 0.
+              </p>
+            )}
+            {dueOpen && (
+              <form
+                className="space-y-3 rounded-2xl bg-surface-container-low p-3.5"
+                onSubmit={event => {
+                  event.preventDefault();
+                  void saveDue();
+                }}
+              >
+                <p className="text-[13px] text-on-surface-variant">
+                  Pre-filled with the {formatMoney(unpaid)} still outstanding on this patient’s
+                  bills. Change it if part has been paid by hand, or enter 0 to clear the due.
+                </p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label="Due amount" required htmlFor="patient-due-amount">
+                    <TextInput
+                      id="patient-due-amount"
+                      inputMode="decimal"
+                      placeholder="0"
+                      value={dueAmount}
+                      onChange={event => setDueAmount(event.target.value)}
+                    />
+                  </Field>
+                  <Field
+                    label="Patient phone"
+                    required
+                    htmlFor="patient-due-phone"
+                    hint="Typed to confirm whose debt this is."
+                  >
+                    <TextInput
+                      id="patient-due-phone"
+                      type="tel"
+                      value={duePhone}
+                      onChange={event => setDuePhone(event.target.value)}
+                    />
+                  </Field>
+                </div>
+                <Field
+                  label="Note"
+                  htmlFor="patient-due-note"
+                  hint="Optional — up to 200 characters."
+                >
+                  <TextInput
+                    id="patient-due-note"
+                    maxLength={200}
+                    value={dueNote}
+                    onChange={event => setDueNote(event.target.value)}
+                  />
+                </Field>
+                {dueError && (
+                  <p role="alert" className="text-xs font-semibold text-error">
+                    {dueError}
+                  </p>
+                )}
+                <div className="flex flex-wrap gap-3">
+                  <Button type="submit" variant="brand" size="lg" disabled={dueSaving}>
+                    {dueSaving && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
+                    {due > 0 ? 'Save due' : 'Record due'}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="lg"
+                    onClick={() => setDueOpen(false)}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </form>
+            )}
           </Card>
 
           {loading ? (
