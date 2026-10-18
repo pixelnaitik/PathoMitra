@@ -1051,14 +1051,23 @@
   --safe-bottom: max(env(safe-area-inset-bottom, 0px), var(--safe-area-inset-bottom, 0px));
   --safe-left: max(env(safe-area-inset-left, 0px), var(--safe-area-inset-left, 0px));
 
+  /* The one horizontal gutter the whole shell shares. The content cards, the
+     header's tool cluster and the floating tab bar all start at this offset from
+     the safe edge — they used to be 16px / 18px / 12px, which is why the left
+     edge of the screen read as a ragged line and the header and footer looked
+     offset from the page they belong to. Composed with `--safe-left/right` at
+     every call site, never added to a fixed padding utility. */
+  --shell-gutter: 1rem;
+  --shell-gutter-lg: 2rem;
+
   /* The floating tab bar's own footprint, in one place. The bar occupies from
      `--safe-bottom + gap` up to `--safe-bottom + gap + h`, and the content
      column has to clear exactly that; when the clearance was a bare `pb-28`
      (112px) it fell short on every device whose bottom inset is over 36px
      (3-button nav is 48dp), so the last row of every page sat under the bar.
-     Both sides now read these tokens, so they cannot drift apart again. */
+     The gap is the shell gutter, so the bar's sides line up with the cards. */
   --tab-bar-h: 4rem;
-  --tab-bar-gap: 0.75rem;
+  --tab-bar-gap: var(--shell-gutter);
 
   /* The two gutters `#main-content` picks between. The tab bar and the
      quick-action FAB are viewport-fixed and live outside the scroller, so the

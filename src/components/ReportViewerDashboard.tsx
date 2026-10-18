@@ -57,6 +57,37 @@ const FLAG_STYLE: Record<Flag, { chip: string; value: string; label: string }> =
 };
 
 /**
+ * Shared cell chrome.
+ *
+ * The horizontal padding tightens below `fold:` because the phone view of this
+ * table drops to three columns (see the `Flag` cell's `hidden fold:table-cell`)
+ * and the three that remain have to fit ~280px on a 320px screen without ever
+ * going sideways — a flag you have to swipe to find is a flag a clinician
+ * misses.
+ */
+const CELL = 'border-t border-outline-variant/15 px-2.5 py-2.5 fold:px-3';
+const HEAD_CELL = 'px-2.5 py-2.5 font-black fold:px-3';
+
+/**
+ * The HIGH / LOW / NORMAL chip. Rendered twice per row — in the fourth column
+ * from `fold:` up, and under the observed value below it — so exactly one is
+ * ever visible. It is one component so the two copies can never disagree about
+ * colour, wording or size.
+ */
+function FlagChip({ flag }: { flag: Flag }) {
+  return (
+    <span
+      className={cn(
+        'inline-flex rounded-full border bg-surface-container-lowest px-2 py-0.5 text-[9.5px] font-black tracking-wider',
+        FLAG_STYLE[flag].chip,
+      )}
+    >
+      {FLAG_STYLE[flag].label}
+    </span>
+  );
+}
+
+/**
  * Flag a numeric result against its reference range.
  *
  * Only the first number in the cell is considered ("1.2 - 3.4" style text
@@ -246,7 +277,12 @@ export function ReportViewerDashboard({
       title={shown.patientName}
       description={meta.title}
       footer={
-        <div className="flex flex-wrap items-center justify-end gap-2">
+        /* Two even columns on a phone, right-aligned inline row from `fold:` up.
+            A wrapping `justify-end` row left the whole left half of each line
+            empty — five buttons floated to the right edge over a block of dead
+            space, which read as the footer sitting off-centre. The primary action
+            takes the full last row. */
+        <div className="grid grid-cols-2 gap-2 fold:flex fold:flex-wrap fold:items-center fold:justify-end">
           <Button variant="outline" size="sm" onClick={onEdit}>
             <PencilLine className="w-4 h-4" /> Edit
           </Button>
@@ -265,7 +301,12 @@ export function ReportViewerDashboard({
           >
             <Share2 className="w-4 h-4" /> Share
           </Button>
-          <Button variant="brand" size="sm" onClick={() => onOutput('pdf')}>
+          <Button
+            variant="brand"
+            size="sm"
+            className="col-span-2 fold:col-span-1"
+            onClick={() => onOutput('pdf')}
+          >
             <FileDown className="w-4 h-4" /> Open PDF
           </Button>
         </div>
@@ -320,27 +361,32 @@ export function ReportViewerDashboard({
             <h4 className="mb-1.5 px-1 text-[11px] font-black uppercase tracking-widest text-on-surface-variant">
               {category}
             </h4>
-            {/* `overflow-x-auto`, not `overflow-hidden`. For a <table>, `w-full`
-                is a minimum rather than a maximum — the used width is
-                max(100%, min-content) — and this table's four columns need ~351px
-                of content (Parameter / Observed value / Ref. range / a NORMAL
-                chip) against the ~320px a 360px phone leaves inside the sheet's
-                px-5. Clipping cut the Flag column and the card's own right border
-                off; scrolling them keeps every flag reachable by swipe. */}
+            {/* Three columns on a phone, four from `fold:` up.
+
+                A <table>'s `w-full` is a minimum, not a maximum — the used width
+                is max(100%, min-content) — and all four columns need ~351px
+                against the ~320px a 360px phone leaves inside the sheet's px-5.
+                Making that scrollable (the previous attempt, with a `min-w-[22rem]`
+                floor) still hid the Flag column off-screen at rest, which is the
+                one column a reader is scanning. So below `fold:` the Flag column
+                is dropped and its chip rides under the observed value instead:
+                every flag visible, no sideways scroll, and `overflow-x-auto` stays
+                only as the safety net that turns any future overflow into a scroll
+                rather than a clipped column. */}
             <div className="overflow-x-auto overscroll-x-contain rounded-2xl border border-outline-variant/30 bg-surface-container-lowest">
-              <table className="w-full min-w-[22rem] border-separate border-spacing-0 text-left">
+              <table className="w-full border-separate border-spacing-0 text-left">
                 <thead>
                   <tr className="bg-surface-container-high/60 text-[10.5px] font-black uppercase tracking-wider text-on-surface-variant sm:text-[11px]">
-                    <th scope="col" className="px-3 py-2.5 font-black">
+                    <th scope="col" className={HEAD_CELL}>
                       Parameter
                     </th>
-                    <th scope="col" className="px-3 py-2.5 font-black">
+                    <th scope="col" className={HEAD_CELL}>
                       Observed value
                     </th>
-                    <th scope="col" className="px-3 py-2.5 font-black">
+                    <th scope="col" className={HEAD_CELL}>
                       Ref. range
                     </th>
-                    <th scope="col" className="px-3 py-2.5 text-right font-black">
+                    <th scope="col" className={`${HEAD_CELL} hidden text-right fold:table-cell`}>
                       Flag
                     </th>
                   </tr>
@@ -351,50 +397,61 @@ export function ReportViewerDashboard({
                       <tr key={row.name}>
                         <td
                           colSpan={4}
-                          className="border-t border-outline-variant/20 bg-surface-container-low/70 px-3 py-2 text-[11px] font-black uppercase tracking-wider text-secondary"
+                          className="border-t border-outline-variant/20 bg-surface-container-low/70 px-2.5 py-2 text-[11px] font-black uppercase tracking-wider text-secondary fold:px-3"
                         >
                           {row.name}
                         </td>
                       </tr>
                     ) : (
                       <tr key={row.name} className="align-top">
-                        <td className="border-t border-outline-variant/15 px-3 py-2.5 text-[12.5px] font-semibold leading-snug text-on-surface sm:text-sm">
+                        <td
+                          className={cn(
+                            CELL,
+                            'text-[12.5px] font-semibold leading-snug text-on-surface sm:text-sm',
+                          )}
+                        >
                           {row.name}
                         </td>
-                        <td className="border-t border-outline-variant/15 px-3 py-2.5">
+                        <td className={CELL}>
                           {row.value ? (
-                            <span
-                              className={cn(
-                                'text-[12.5px] font-extrabold tabular-nums sm:text-sm',
-                                row.flag ? FLAG_STYLE[row.flag].value : 'text-on-surface',
-                              )}
-                            >
-                              {row.value}
-                              {row.unit && (
-                                <span className="ml-1 text-[10.5px] font-bold text-on-surface-variant">
-                                  {row.unit}
+                            <>
+                              <span
+                                className={cn(
+                                  'text-[12.5px] font-extrabold tabular-nums sm:text-sm',
+                                  row.flag ? FLAG_STYLE[row.flag].value : 'text-on-surface',
+                                )}
+                              >
+                                {row.value}
+                                {row.unit && (
+                                  <span className="ml-1 text-[10.5px] font-bold text-on-surface-variant">
+                                    {row.unit}
+                                  </span>
+                                )}
+                              </span>
+                              {/* Phone-only copy of the flag, under the number. */}
+                              {row.flag && (
+                                <span className="mt-1 flex fold:hidden">
+                                  <FlagChip flag={row.flag} />
                                 </span>
                               )}
-                            </span>
+                            </>
                           ) : (
                             <span className="text-[12.5px] text-on-surface-variant sm:text-sm">
                               —
                             </span>
                           )}
                         </td>
-                        <td className="border-t border-outline-variant/15 px-3 py-2.5 text-[11.5px] font-medium tabular-nums text-on-surface-variant sm:text-xs">
+                        <td
+                          className={cn(
+                            CELL,
+                            'text-[11.5px] font-medium tabular-nums text-on-surface-variant sm:text-xs',
+                          )}
+                        >
                           {row.refLabel || '—'}
                         </td>
-                        <td className="border-t border-outline-variant/15 px-3 py-2.5 text-right">
+                        <td className={cn(CELL, 'hidden text-right fold:table-cell')}>
                           {row.flag ? (
-                            <span
-                              className={cn(
-                                'inline-flex rounded-full border bg-surface-container-lowest px-2 py-0.5 text-[9.5px] font-black tracking-wider',
-                                FLAG_STYLE[row.flag].chip,
-                              )}
-                            >
-                              {FLAG_STYLE[row.flag].label}
-                            </span>
+                            <FlagChip flag={row.flag} />
                           ) : (
                             <span className="text-[10px] text-on-surface-variant">—</span>
                           )}

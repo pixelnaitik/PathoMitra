@@ -341,8 +341,17 @@ export default function DashboardLayout({
    * declared in src/index.css from the same tokens that position the bar, and
    * this only picks which of the two applies. Written as whole literal class
    * names because Tailwind can only generate what it can see in the source.
+   *
+   * It is hidden on Overview and Patients, where registering a patient is
+   * already a first-class control on the page (the empty-state
+   * "Register first patient" CTA and the "Register" button in the Recent
+   * patients header). There it was not a shortcut, it was an overlay: a 56px
+   * circle parked on the right edge of whatever card happened to scroll past,
+   * which on Overview covered the "Reports Issued" tile and on the earlier build
+   * covered the Reports desk's own "Manage" button.
    */
-  const fabVisible = !!onRegisterPatient && activeTab !== 'patients' && !mobileMenuOpen;
+  const fabVisible =
+    !!onRegisterPatient && !['patients', 'dashboard'].includes(activeTab) && !mobileMenuOpen;
 
   /**
    * `overflow-x-clip`, not a bare `overflow-y-auto`. Per CSS, an `overflow-x:
@@ -521,13 +530,24 @@ export default function DashboardLayout({
             // The horizontal padding is composed with the display cutout rather than
             // paired with a `.px-safe` helper: that helper is unlayered CSS, so it
             // would silently beat `md:px-8` (see the note in src/index.css).
-            'min-h-16 pt-safe vibrancy border-b border-[var(--glass-border)] flex items-center justify-between pl-[calc(1rem_+_var(--safe-left))] pr-[calc(1rem_+_var(--safe-right))] md:pl-[calc(2rem_+_var(--safe-left))] md:pr-[calc(2rem_+_var(--safe-right))] shrink-0 z-30 transition-shadow duration-300',
+            // `--shell-gutter` is the same token the content column and the tab bar
+            // use, so the header's tools, the cards below and the bar at the bottom
+            // all start on one vertical line instead of 16px / 16px / 12px.
+            'min-h-16 pt-safe vibrancy border-b border-[var(--glass-border)] flex items-center justify-between pl-[calc(var(--shell-gutter)_+_var(--safe-left))] pr-[calc(var(--shell-gutter)_+_var(--safe-right))] md:pl-[calc(var(--shell-gutter-lg)_+_var(--safe-left))] md:pr-[calc(var(--shell-gutter-lg)_+_var(--safe-right))] shrink-0 z-30 transition-shadow duration-300',
             headerScrolled && 'shadow-[0_6px_24px_-16px_var(--sh-2)]',
           )}
         >
-          <div className="flex items-center gap-3 min-w-0">
+          {/* `flex-1` + `min-w-0` on this group is what lets the title claim the
+              space between the two control clusters and truncate, rather than
+              either pushing the tools off the right edge or vanishing itself. */}
+          <div className="flex min-w-0 flex-1 items-center gap-3">
             <button
-              className="fold:hidden -ml-2 flex h-10 w-10 items-center justify-center rounded-full text-on-surface active:bg-surface-container-high"
+              // -ml-2.5, not -ml-2: the 40px button holds a 20px glyph, so the
+              // icon only lands on the shell gutter when the button is pulled
+              // left by half the difference. At -ml-2 the hamburger sat 2px off
+              // the card edge below it — small, but it is what made the header
+              // look out of line with the page.
+              className="fold:hidden -ml-2.5 flex h-10 w-10 items-center justify-center rounded-full text-on-surface active:bg-surface-container-high"
               onClick={() => setMobileMenuOpen(true)}
               aria-label="Open navigation menu"
               aria-expanded={mobileMenuOpen}
@@ -539,11 +559,12 @@ export default function DashboardLayout({
               className="hidden fold:flex !static !py-1 !px-3"
               onClick={activeTab === 'settings' ? () => setActiveTab('dashboard') : undefined}
             />
-            {/* `sm:` (640px) hid the section name on every portrait phone, which
-                is why the bar read as a lone hamburger at the left with the tool
-                cluster stranded at the right edge. `fold:` puts it on the same
-                edge the shell itself switches on. */}
-            <h2 className="truncate text-[17px] font-bold tracking-[-0.02em] text-on-surface capitalize hidden fold:block">
+            {/* The section name. It used to be `hidden sm:block` — 640px — which
+                hid it on every portrait phone, leaving a lone hamburger at one
+                edge and four icons at the other with a void between them. It now
+                always renders and truncates, so the bar names where you are on a
+                320px screen too. */}
+            <h2 className="min-w-0 flex-1 truncate text-[17px] font-bold tracking-[-0.02em] text-on-surface capitalize fold:flex-none">
               {navItems.find(n => n.id === activeTab)?.label ?? activeTab}
             </h2>
           </div>
@@ -625,11 +646,23 @@ export default function DashboardLayout({
           onTouchMove={handlePullTouchMove}
           onTouchEnd={handlePullTouchEnd}
           className={cn(
-            'flex-1 overflow-y-auto overflow-x-clip p-4 md:p-8 scrollbar-hide overscroll-contain',
+            // Split into pt/px rather than `p-`, and that is load-bearing: a
+            // `md:p-8` shorthand sorts *after* a base `pb-…` utility in the
+            // stylesheet, so it silently overwrote the bottom gutter on every
+            // viewport ≥ 768px — which, now that `fold:` also demands 480px of
+            // height, is exactly a landscape phone. Measured: at 800×360 the last
+            // row sat 97px under the tab bar. With no shorthand there is nothing
+            // left for a variant to clobber.
+            //
+            // `--shell-gutter` is the header's and the tab bar's inset too, so the
+            // three share one left edge. `overflow-x-clip` (see the note on
+            // `contentPadBottom`) stops this scroller being a sideways scrollport
+            // that detaches the page from the fixed bars.
+            'flex-1 overflow-y-auto overflow-x-clip pt-[var(--shell-gutter)] pr-[var(--shell-gutter)] pl-[var(--shell-gutter)] md:pt-[var(--shell-gutter-lg)] md:pr-[var(--shell-gutter-lg)] md:pl-[var(--shell-gutter-lg)] scrollbar-hide overscroll-contain',
             contentPadBottom,
             // Rail mode has neither the pill nor the FAB over the content, but
             // the gesture bar still crosses the bottom edge on the APK.
-            'fold:pb-[calc(2rem_+_var(--safe-bottom))]',
+            'fold:pb-[calc(var(--shell-gutter-lg)_+_var(--safe-bottom))]',
           )}
         >
           {/* Pull-to-refresh indicator */}
@@ -685,7 +718,7 @@ export default function DashboardLayout({
               transition={{ type: 'spring', stiffness: 380, damping: 20 }}
               onClick={onRegisterPatient}
               aria-label="Register patient"
-              className="fold:hidden fixed right-[calc(1rem_+_var(--safe-right))] bottom-[calc(var(--safe-bottom)_+_var(--fab-offset))] z-40 flex h-[var(--fab-h)] w-[var(--fab-h)] items-center justify-center rounded-full bg-primary text-on-primary shadow-float active:scale-95"
+              className="fold:hidden fixed right-[calc(var(--shell-gutter)_+_var(--safe-right))] md:right-[calc(var(--shell-gutter-lg)_+_var(--safe-right))] bottom-[calc(var(--safe-bottom)_+_var(--fab-offset))] z-40 flex h-[var(--fab-h)] w-[var(--fab-h)] items-center justify-center rounded-full bg-primary text-on-primary shadow-float active:scale-95"
             >
               <UserPlus className="w-6 h-6" aria-hidden="true" />
             </motion.button>
@@ -696,9 +729,13 @@ export default function DashboardLayout({
         <nav
           aria-label="Primary"
           className={cn(
-            // The offsets are built from the same --tab-bar-* tokens the content
-            // gutter above reads, so bar and clearance cannot drift again.
-            'fold:hidden fixed bottom-[calc(var(--safe-bottom)_+_var(--tab-bar-gap))] left-[calc(var(--tab-bar-gap)_+_var(--safe-left))] right-[calc(var(--tab-bar-gap)_+_var(--safe-right))] z-40 bg-surface-container-lowest border border-outline-variant/40 rounded-3xl shadow-float overflow-hidden',
+            // The vertical offset comes from the same --tab-bar-* tokens the
+            // content gutter above reads, so bar and clearance cannot drift. The
+            // horizontal inset follows the *content column's* gutter including its
+            // `md:` step: the bar is still up on a landscape phone (wide enough
+            // for `md:`, too short for `fold:`), and a fixed 16px there put the
+            // bar outside a page padded to 32px.
+            'fold:hidden fixed bottom-[calc(var(--safe-bottom)_+_var(--tab-bar-gap))] left-[calc(var(--shell-gutter)_+_var(--safe-left))] right-[calc(var(--shell-gutter)_+_var(--safe-right))] md:left-[calc(var(--shell-gutter-lg)_+_var(--safe-left))] md:right-[calc(var(--shell-gutter-lg)_+_var(--safe-right))] z-40 bg-surface-container-lowest border border-outline-variant/40 rounded-3xl shadow-float overflow-hidden',
             // The drawer carries the same destinations and paints over the bar —
             // leaving it up just collides with the sign-out row.
             mobileMenuOpen && 'hidden',
