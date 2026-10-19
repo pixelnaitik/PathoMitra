@@ -1,9 +1,10 @@
 # Microsoft Store Listing + Certification Notes — draft for submission
 
-**Drafted:** 2026-10-17 · **Consumes:** `docs/ms-store-remediation-plan-2026-10-17.md` Phase 8
+**Drafted:** 2026-10-17 · **Consumes:** [`ms-store-remediation-plan-2026-10-17.md`](ms-store-remediation-plan-2026-10-17.md) Phase 8
 **Status:** draft text, ready to paste — but the lines marked `⟨GATE⟩` must not be submitted until the
 named condition is actually true. Every other statement here was verified against the code or the built
-package on 2026-10-17.
+package on 2026-10-17. Nothing has been entered in Partner Center as of 2026-10-18; the product version has
+since moved to 2.8.6, so any version number pasted from this file must be re-read from `package.json`.
 
 Rule this document is written under: **Store Policies 10.1.1** — metadata must accurately describe the
 product, its limitations included, and must never mislead as to features or functionality. Where the
@@ -13,16 +14,16 @@ honest sentence is less attractive than the marketing one, the honest one is use
 
 ## 1. Product identity
 
-| Field | Value |
-|---|---|
-| Product name | **PathoMitra** |
-| Tagline (short-description opening, *not* the title) | Lab management, on the machine it runs on |
-| Publisher display name | `⟨GATE D-3⟩` — matches the Partner Center account exactly. Today `electron-builder.config.mjs` says `Naitik Raj`; if the enrollment becomes a Company account, the manifest publisher and the MSI `CompanyName` must be re-built to match |
-| Package family name | Route M: not applicable (Win32 MSI). Route X: taken from the Partner Center reservation, never guessed |
-| Category | **Business → Productivity** (primary). Not "Health & Fitness → Medical": the app is a lab's administrative console, not a patient-facing or diagnostic device, and the category is a discoverability claim as much as a filing box |
-| Supported languages | English (United States) only — the app ships one locale (`index.html lang="en"`), so declaring more would fail 10.7 |
-| Architecture | x64 |
-| License | MIT (open source) + the custom EULA text in §6 |
+| Field                                                | Value                                                                                                                                                                                                                                     |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Product name                                         | **PathoMitra**                                                                                                                                                                                                                            |
+| Tagline (short-description opening, _not_ the title) | Lab management, on the machine it runs on                                                                                                                                                                                                 |
+| Publisher display name                               | `⟨GATE D-3⟩` — matches the Partner Center account exactly. Today `electron-builder.config.mjs` says `Naitik Raj`; if the enrollment becomes a Company account, the manifest publisher and the MSI `CompanyName` must be re-built to match |
+| Package family name                                  | Route M: not applicable (Win32 MSI). Route X: taken from the Partner Center reservation, never guessed                                                                                                                                    |
+| Category                                             | **Business → Productivity** (primary). Not "Health & Fitness → Medical": the app is a lab's administrative console, not a patient-facing or diagnostic device, and the category is a discoverability claim as much as a filing box        |
+| Supported languages                                  | English (United States) only — the app ships one locale (`index.html lang="en"`), so declaring more would fail 10.7                                                                                                                       |
+| Architecture                                         | x64                                                                                                                                                                                                                                       |
+| License                                              | MIT (open source) + the custom EULA text in §6                                                                                                                                                                                            |
 
 ---
 
@@ -119,15 +120,15 @@ design, so a reinstall cannot destroy records.
 
 ## 4. Search terms — exactly 7 (10.1.3)
 
-| # | Term | Why it is a user's word, not ours |
-|---|---|---|
-| 1 | `pathology lab software` | the category a lab searches in |
-| 2 | `laboratory information system` | the industry name for what this is (LIS) |
-| 3 | `patient record management` | what the operator buys it to do |
-| 4 | `pathology report printing` | the daily job |
-| 5 | `lab billing and invoicing` | the second daily job |
-| 6 | `offline medical records` | the differentiator, phrased as a need |
-| 7 | `clinical lab records encrypted` | the requirement that closes the sale |
+| #   | Term                             | Why it is a user's word, not ours        |
+| --- | -------------------------------- | ---------------------------------------- |
+| 1   | `pathology lab software`         | the category a lab searches in           |
+| 2   | `laboratory information system`  | the industry name for what this is (LIS) |
+| 3   | `patient record management`      | what the operator buys it to do          |
+| 4   | `pathology report printing`      | the daily job                            |
+| 5   | `lab billing and invoicing`      | the second daily job                     |
+| 6   | `offline medical records`        | the differentiator, phrased as a need    |
+| 7   | `clinical lab records encrypted` | the requirement that closes the sale     |
 
 Not used, on purpose: `react`, `vite`, `capacitor`, `tailwindcss`, `open source`, `free`, `PathoLab`.
 The first four are build tools no laboratory searches for (and `package.json.keywords` currently
@@ -151,14 +152,14 @@ not `src/components/Hero.tsx`'s `ProductMock` (an invented dashboard that is lab
    an unaware capture at 150 % scaling returns a virtualised rectangle that looks clipped when the
    layout is fine — that false alarm happened on 2026-10-17).
 
-| # | Screen | Caption (≤ 200) |
-|---|---|---|
-| 1 | Overview dashboard | Register patients, build reports and track the day's workload — all on the lab's own machine, with no server in the loop |
-| 2 | Register patient, wide two-column layout | Patient details on the left, the test panel on the right, and one price line per package rather than one per component |
-| 3 | Report composer, entry table | Every parameter, its reference range, its unit and its result in one table; derived values are calculated, not typed |
-| 4 | Issued report with version history | Amending an issued report requires a reason and keeps the previous version — the history is part of the record |
-| 5 | Bill / invoice | Itemised bill with discount, tax and payment state, printed from the lab's own letterhead and price list |
-| 6 | Settings → Security | Passcode, auto-lock timer, screenshot protection and sealed backups, with the erase-everything control on the same screen |
+| #   | Screen                                   | Caption (≤ 200)                                                                                                           |
+| --- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Overview dashboard                       | Register patients, build reports and track the day's workload — all on the lab's own machine, with no server in the loop  |
+| 2   | Register patient, wide two-column layout | Patient details on the left, the test panel on the right, and one price line per package rather than one per component    |
+| 3   | Report composer, entry table             | Every parameter, its reference range, its unit and its result in one table; derived values are calculated, not typed      |
+| 4   | Issued report with version history       | Amending an issued report requires a reason and keeps the previous version — the history is part of the record            |
+| 5   | Bill / invoice                           | Itemised bill with discount, tax and payment state, printed from the lab's own letterhead and price list                  |
+| 6   | Settings → Security                      | Passcode, auto-lock timer, screenshot protection and sealed backups, with the erase-everything control on the same screen |
 
 ---
 
@@ -180,15 +181,15 @@ and accreditation of the laboratory and of its reports remain the laboratory's r
 
 ## 7. Age rating (IARC) — the honest answer set
 
-| Question | Answer | Basis |
-|---|---|---|
-| Violence, gore | No | — |
-| Sexual content | No | — |
-| Gambling | No | — |
-| User-generated content | **No** | Reports and bills never leave the device except by the operator's own hand; there is no surface where content created in the app is viewed by another user online, which is what 11.12 keys on |
-| Online chat / contact with strangers | No | no network capability |
-| Collects or transmits personal information | **No — with the qualifier stated in the description** | the app processes health data *locally*; nothing is collected or transmitted by the developer. Answering "yes" here would be wrong; answering "no" without the description saying the data stays on-device would be misleading, which is why §2 has the "DATA AND PRIVACY" block |
-| Directed at children | No | professional tooling; §8 of the privacy policy handles the minor-*patient* case honestly |
+| Question                                   | Answer                                                | Basis                                                                                                                                                                                                                                                                            |
+| ------------------------------------------ | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Violence, gore                             | No                                                    | —                                                                                                                                                                                                                                                                                |
+| Sexual content                             | No                                                    | —                                                                                                                                                                                                                                                                                |
+| Gambling                                   | No                                                    | —                                                                                                                                                                                                                                                                                |
+| User-generated content                     | **No**                                                | Reports and bills never leave the device except by the operator's own hand; there is no surface where content created in the app is viewed by another user online, which is what 11.12 keys on                                                                                   |
+| Online chat / contact with strangers       | No                                                    | no network capability                                                                                                                                                                                                                                                            |
+| Collects or transmits personal information | **No — with the qualifier stated in the description** | the app processes health data _locally_; nothing is collected or transmitted by the developer. Answering "yes" here would be wrong; answering "no" without the description saying the data stays on-device would be misleading, which is why §2 has the "DATA AND PRIVACY" block |
+| Directed at children                       | No                                                    | professional tooling; §8 of the privacy policy handles the minor-_patient_ case honestly                                                                                                                                                                                         |
 
 ---
 

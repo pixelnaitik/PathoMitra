@@ -56,26 +56,37 @@ only one block silently disappears in the other mode.
 
 Single family, two roles — technical and legible, no display font.
 
-- **Font:** Inter, loaded at weights **400 / 500 / 600 / 700** only
-  (`@import` in `index.css`, `display=swap`).
-- **Roles:** `--font-sans` and `--font-display` (both Inter today, separated so
-  a display face can be introduced without a sweep).
+- **Font: none is downloaded.** `index.css` deliberately ships **no remote font request** — an
+  `@import url(fonts.googleapis.com/…Inter…)` used to compile into the first bytes of the CSS, so every
+  cold start (including the offline APK, where the request can only fail) blocked first paint on a network
+  round trip and leaked the device's address to a third party. Typography is the platform stack declared as
+  `--font-sans` / `--font-display`: `'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Text' /
+'SF Pro Display', ui-sans-serif, system-ui, sans-serif`. A locally installed Inter is used; Android
+  renders Roboto. The self-hosting recipe (`public/fonts/inter-latin.woff2` + `@font-face` per weight, with
+  `font-display: swap`) is written in the comment at the top of `index.css` — `public/_headers` already
+  caches `*.woff2` immutably and CSP `font-src` is already `'self'`.
+- **Roles:** `--font-sans` and `--font-display` are separated so a display face can be introduced later
+  without a sweep.
 - **Weights:** 400 body and labels · 500 inputs and secondary buttons ·
   600 emphasis and table headers · 700 headings, primary buttons, KPI figures.
 - **Tracking:** headings use negative tracking (`tracking-[-0.02em]` /
   `tracking-tighter`); uppercase micro-labels use `tracking-[0.06em]` or wider.
 
-> **Known gap:** `font-black` (900) appears in several places
-> (`Footer`, `HowItWorks`, report status chips and section labels in
-> `ReportsPage`/`SettingsPage`) but **900 is never loaded**, so those render at 700. Either drop `font-black` for `font-bold` or add the weight to the import;
-> do not leave it as an unintended no-op, and do not re-add 900 casually — the
-> weight list was deliberately trimmed for LCP.
+> **Known gap:** `font-black` (900) is used in 35 places (mostly `SettingsPage` labels,
+> `ReportViewerDashboard` and `ReportsPage`) while no 900 weight file is loaded, so those render at the
+> family's bold. Either
+> drop `font-black` for `font-bold`, or self-host a variable Inter and declare the weight range — but do not
+> leave the claim of a weight that never arrives, and do not re-add `font-black` casually. (This gap predates
+> the removal of the remote font request, when 900 was genuinely never loaded.)
 
 ## 4. Layout, spacing, shape
 
 - **Shell:** `src/pages/dashboard/DashboardLayout.tsx` owns navigation and the
-  content frame. There is no separate `Sidebar.tsx`. Desktop shows the persistent
-  side navigation; mobile collapses to a compact bar/drawer with the same tab set.
+  content frame. There is no separate `Sidebar.tsx`. At `fold:` and up the rail is persistent; on a phone the
+  navigation is a **4-item bottom pill** (Overview · Patients · Bills · Reports) with the drawer reached from
+  the header — Settings is deliberately _not_ a fifth pill item (a fifth entry wrapped onto a second row inside
+  the `grid-cols-4` `overflow-hidden` pill; fixed in 2.7.1). If a fifth tab is ever added, `grid-cols-4` moves
+  with it.
 - **Canvas:** content columns cap at `max-w-7xl` so wide monitors do not stretch
   forms; grids use `gap-4`/`gap-6`.
 - **Radius:** soft and structural — cards at `--radius-3xl`/`2xl`, controls
@@ -83,6 +94,21 @@ Single family, two roles — technical and legible, no display font.
   adjacent elements is the fastest way to make a screen look assembled.
 - **Breakpoints:** mobile-first. Write the base style for phones, then add `md:`
   and `lg:` — never the reverse.
+- **One fold edge, height-aware:** the shell's phone/tablet switch is the custom variant `fold:`
+  (`@media (min-width: 600px) and (min-height: 480px)`), not `sm:`. Height is part of it because a landscape
+  phone is 740–900 px wide and ~360 px tall, and giving it the tablet rail left the tab bar over a column
+  that Android still called sw360dp. `SHELL_RAIL_MQ` in `DashboardLayout.tsx` mirrors the same query — change
+  one, change the other.
+- **One gutter, everywhere:** `--shell-gutter` (1rem) / `--shell-gutter-lg` (2rem) feed the header padding,
+  the content padding, the tab-bar inset and the FAB inset. Do not hard-code a side padding on a shell
+  element — that is how the header and footer came to disagree with the content by a few pixels.
+- **Never pad a shell scroller with a variant shorthand.** `md:p-8` sorts _after_ a base `pb-[…]` utility and
+  silently eats the bottom clearance on every viewport ≥768px. Use `pt-`/`pr-`/`pl-` plus a separate `pb-`.
+- **Bar/content clearance is composed, not guessed:** `--tab-bar-h`, `--tab-bar-gap`,
+  `--content-gutter[-fab]` build the bottom gutter from the bar footprint plus `--safe-area-inset-bottom`, so
+  a 3-button-nav device (48 dp inset) cannot lose the last row. `#main-content` is `overflow-x: clip` — a
+  vertical `auto` scroller forces `overflow-x: auto`, which lets one min-content overflow pan the whole page
+  sideways under the fixed bars.
 
 ## 5. Component primitives (`src/components/ui`)
 
