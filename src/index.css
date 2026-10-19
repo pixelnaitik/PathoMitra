@@ -13,7 +13,23 @@
    `font-display: swap` and `src: url(/fonts/inter-latin.woff2) format('woff2')`.
    `public/_headers` already caches /*.woff2 immutably for a year, and CSP
    `font-src` is already 'self' — no other change is required. */
-@import 'tailwindcss';
+/* Turning off automatic content detection is load-bearing, not a style choice.
+   Tailwind v4 by default scans the whole project tree (minus gitignore), which
+   here includes the markdown docs, promotion_website, and — worst — the
+   previously synced bundle under android/app/src/main/assets/public. Prose that
+   names a utility in backticks then becomes a real rule in the shipped
+   stylesheet: an abbreviated padding-bottom candidate in the design doc emitted
+   a rule whose selector holds an ellipsis character, and a mention of the
+   font-display token emitted a font-display utility. Measured on the 2.8.7
+   re-cut — 142 bytes of junk with zero source change — which broke the
+   APK-vs-tree byte-identity check the release process depends on. The synced
+   bundle case is self-perpetuating: once a junk rule ships, the next scan finds
+   it in the served index.html and keeps it alive. The root index.html needs no
+   utilities (its splash markup is all custom classes), so src is the only real
+   content root. Keep this file free of literal class candidates too — the same
+   scanner reads it. */
+@import 'tailwindcss' source(none);
+@source './**/*.{ts,tsx}';
 
 /* Dark mode is driven by <html data-theme="dark"> (set by lib/theme.ts + the
    inline bootstrap in index.html) — never by the OS, so the user's explicit
