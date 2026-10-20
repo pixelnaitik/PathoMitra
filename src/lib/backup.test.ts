@@ -1,4 +1,27 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// The snapshot folder is a device filesystem, so it is faked here: what is worth
+// pinning is which NAME a snapshot is allowed to take, not how a plugin writes
+// bytes. A directory that has never been created answers `[]`, exactly as
+// `listAppFiles` does on every real platform.
+const files = vi.hoisted(() => ({ written: [] as { path: string; data: string }[] }));
+vi.mock('./native-files', () => ({
+  listAppFiles: async (dir: string) =>
+    files.written
+      .filter(entry => entry.path.startsWith(`${dir}/`))
+      .map(entry => entry.path.slice(dir.length + 1))
+      .sort()
+      .reverse(),
+  writeAppTextFile: async (path: string, data: string) => {
+    files.written.push({ path, data });
+    return { name: path.split('/').pop() as string, uri: `app://${path}`, path };
+  },
+  readAppTextFile: async (path: string) => files.written.find(f => f.path === path)?.data ?? '',
+  deleteAppFile: async (path: string) => {
+    files.written = files.written.filter(entry => entry.path !== path);
+  },
+  shareAppFile: async () => undefined,
+}));
 
 // The restore path touches the store through `initDataStore()` (and, since the
 // billing feature, through the Firestore-shaped façade in `data/fs` when it
@@ -13,7 +36,7 @@ vi.mock('../data', () => ({
   isShell: false,
 }));
 
-import { restoreBackup, type BackupFile } from './backup';
+import { restoreBackup, createBackup, backupFileName, type BackupFile } from './backup';
 import { getPriceList, priceKey, resetPriceListCache } from './price-list';
 
 type Store = Record<string, Record<string, unknown>>;
@@ -43,6 +66,11 @@ function makeRepo(failOn?: (entity: string, id: string) => boolean, seed: Store 
       if (failOn?.(entity, id)) throw new Error(`write refused: ${entity}/${id}`);
       (store[entity] ??= {})[id] = value;
     },
+    // `buildBackup` snapshots every collection through `list`.
+    list: async (entity: string) =>
+      Object.entries(store[entity] ?? {}).map(([id, data]) => ({ id, data: () => data })),
+    // `countRecords` (the "back up soon" nudge) asks for sizes only.
+    count: async (entity: string) => Object.keys(store[entity] ?? {}).length,
     // `data/fs` reads single documents through this — the price-list reload after
     // a restore goes here, so it has to answer like the real adapters do.
     get: async (entity: string, id: string) => {
@@ -68,6 +96,11 @@ beforeEach(() => {
   vi.restoreAllMocks();
   localStorage.clear();
   resetPriceListCache();
+  files.written = [];
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('restoreBackup (P0.9 — atomic, validated, honest)', () => {
@@ -197,5 +230,65 @@ describe('restoreBackup (P0.9 — atomic, validated, honest)', () => {
     const result = await restoreBackup(makeBackup({ patients: [{ id: 'p1', name: 'Asha' }] }));
     expect(result.totalRecords).toBe(1);
     expect(getPriceList().entries).toEqual({});
+  });
+});
+
+describe('createBackup — a snapshot is never silently replaced', () => {
+  /** Freeze the clock so two calls land in the same stamped minute. */
+  async function twiceInOneMinute(): Promise<{ first: string; second: string }> {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-19T18:30:05.000Z'));
+    h.repo = makeRepo(undefined, { patients: { p1: { name: 'Asha' } } });
+    const first = await createBackup();
+    const second = await createBackup();
+    vi.useRealTimers();
+    return { first: first.fileName, second: second.fileName };
+  }
+
+  it('names both snapshots when both are taken inside the same minute', async () => {
+    // `stamp` only resolves to the minute and the write is a plain replace, so
+    // the second "Back up now" used to overwrite the file the first one just
+    // made — data loss with a success toast on it, in the one folder that may
+    // hold a lab's only copy of its records.
+    const { first, second } = await twiceInOneMinute();
+    const stem = backupFileName(new Date('2026-10-19T18:30:05.000Z')).replace(/\.json$/, '');
+
+    expect(first).toBe(`${stem}.json`);
+    expect(second).toBe(`${stem}-2.json`);
+    expect(files.written.map(entry => entry.path)).toEqual([
+      `PathoMitra/Backups/${stem}.json`,
+      `PathoMitra/Backups/${stem}-2.json`,
+    ]);
+  });
+
+  it('keeps stepping past a name that is already taken', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-19T18:30:05.000Z'));
+    h.repo = makeRepo();
+    const stem = backupFileName(new Date('2026-10-19T18:30:05.000Z')).replace(/\.json$/, '');
+    files.written.push(
+      { path: `PathoMitra/Backups/${stem}.json`, data: '{}' },
+      { path: `PathoMitra/Backups/${stem}-2.json`, data: '{}' },
+    );
+
+    const taken = await createBackup();
+    vi.useRealTimers();
+    expect(taken.fileName).toBe(`${stem}-3.json`);
+  });
+
+  it('reports the real record count on the summary it returns', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-19T18:31:00.000Z'));
+    h.repo = makeRepo(undefined, { patients: { p1: { name: 'Asha' }, p2: { name: 'Bilal' } } });
+    const { summary } = await createBackup();
+    vi.useRealTimers();
+
+    // The minute rolled over, so this one takes the plain name with no suffix —
+    // the suffix is a collision rule, not a new naming scheme. `stamp` reads the
+    // *local* clock (the day the lab closes on), so the expected name comes from
+    // `backupFileName` itself rather than a literal that would only hold in UTC.
+    expect(summary.totalRecords).toBe(2);
+    expect(summary.fileName).toBe(backupFileName(new Date('2026-10-19T18:31:00.000Z')));
+    expect(summary.encrypted).toBeUndefined();
   });
 });

@@ -90,6 +90,15 @@ export interface BillingPrefs {
   currency: string;
   /** Round the printed grand total up to the nearest rupee. */
   roundToRupee: boolean;
+  /**
+   * Who last saved these prefs, and when. Audit only — no arithmetic reads
+   * them. Tax rate, currency and rounding move what every future bill charges,
+   * so they need the same attribution a price change already carries; these two
+   * fields are the whole of it, which is why they are optional and why nothing
+   * downstream trusts them for anything but display.
+   */
+  updatedBy?: string;
+  updatedAt?: string;
 }
 
 export const BILLING_PREFS_DOC_ID = 'billing-prefs';
@@ -200,6 +209,12 @@ export function sanitizeBillingPrefs(raw: unknown): BillingPrefs {
         ? e.currency
         : DEFAULT_BILLING_PREFS.currency,
     roundToRupee: e.roundToRupee !== false,
+    ...(typeof e.updatedBy === 'string' && e.updatedBy
+      ? { updatedBy: e.updatedBy.slice(0, 128) }
+      : {}),
+    ...(typeof e.updatedAt === 'string' && e.updatedAt
+      ? { updatedAt: e.updatedAt.slice(0, 64) }
+      : {}),
   };
 }
 
@@ -480,9 +495,21 @@ function applyPriceChange(price: number, change: BulkPriceChange): number {
   }
 }
 
+/**
+ * Save the lab's billing preferences.
+ *
+ * `actor` is recorded on the document rather than dropped: every price change
+ * keeps a `history[]` row naming who moved it, and until now the three numbers
+ * that touch *every* bill — tax rate, currency, rounding — were the one money
+ * write in the app with no attribution at all.
+ */
 export async function saveBillingPrefs(prefs: BillingPrefs, actor: string): Promise<BillingPrefs> {
-  const sanitized = sanitizeBillingPrefs(prefs);
-  await persistPrefs({ ...sanitized, ...(actor ? {} : {}) });
+  const stamped: BillingPrefs = {
+    ...prefs,
+    ...(actor ? { updatedBy: actor, updatedAt: new Date().toISOString() } : {}),
+  };
+  const sanitized = sanitizeBillingPrefs(stamped);
+  await persistPrefs(sanitized);
   return sanitized;
 }
 
@@ -583,6 +610,10 @@ export function billLinesFrom(
 ): InvoiceItem[] {
   const names = testSelection.map(name => String(name ?? '').trim()).filter(Boolean);
   const lines: InvoiceItem[] = [];
+  // Folded, exactly as `mergeDuplicateLines` and every price lookup folds. A raw
+  // comparison here is the one way a member could be both absorbed *and* charged:
+  // `hb (haemoglobin)` in the order would not match `HB (HAEMOGLOBIN)` in the
+  // panel, and the twenty-fold overcharge this function exists to prevent is back.
   const absorbed = new Set<string>();
 
   // Panels first: they claim their members before any lone test is considered.
@@ -603,12 +634,12 @@ export function billLinesFrom(
         unpriced: false,
         covers: members,
       });
-      members.forEach(member => absorbed.add(member));
+      members.forEach(member => absorbed.add(priceKey(member)));
       continue;
     }
     // Unpriced package: still one line, flagged. Its members are absorbed all the
     // same, so they can never be charged a second time underneath it.
-    members.forEach(member => absorbed.add(member));
+    members.forEach(member => absorbed.add(priceKey(member)));
     lines.push({
       name,
       kind: 'panel',
@@ -623,7 +654,7 @@ export function billLinesFrom(
 
   // Then the tests that came through no package.
   for (const name of names) {
-    if (absorbed.has(name)) continue;
+    if (absorbed.has(priceKey(name))) continue;
     const info = findTestInfo(name);
     if (info?.isHeader) continue;
     if (info?.isGroup) continue; // already handled above, priced or itemised

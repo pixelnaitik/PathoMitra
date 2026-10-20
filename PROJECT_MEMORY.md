@@ -11,6 +11,66 @@
 > rounds 4–5 and MS Store rounds 2–3 narratives, per-build hashes, dated audit scores). Nothing from it is
 > current unless it is repeated below; read it only when a decision's provenance is needed.
 
+## Verified 2026-10-19 (whole-code audit session — findings below are now FIXED, see next section)
+
+### Fixed in this session (working tree, uncommitted) — gate re-run green
+
+Every finding above except the last bullet is fixed, each with a regression test that was
+proved to fail against the old code:
+
+| Fix                                                                                                                                             | File                                         | New test                                                                                                   |
+| ----------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Backup name is stepped forward on a same-minute collision (`…-1830-2.json`) instead of replacing                                                | `src/lib/backup.ts` `uniqueBackupFileName()` | `backup.test.ts › createBackup — a snapshot is never silently replaced` (3 tests)                          |
+| `discountPercent` now _replaces_ a rupee `discount` (matches the documented contract)                                                           | `src/lib/invoices.ts:125-129`                | `invoices.test.ts › lets a percent discount replace a rupee one instead of stacking on it`                 |
+| `voidInvoice` pre-reads and refuses a missing bill (the shim's `updateDoc` is an upsert)                                                        | `src/lib/invoices.ts:313-321`                | `invoices.test.ts › refuses an id with no bill behind it rather than minting a void stub`                  |
+| `jsonPath` refuses a non-identifier field (was silently querying a different field → count 0); `contains` now escapes `%`/`_` with `ESCAPE '\'` | `src/data/sqliteRepository.ts`               | `sqliteRepository.test.ts › count — the SQL path only answers what it can compute` (2 tests)               |
+| `clearAll` is one SQLCipher transaction (deletes) + the `VACUUM` after it, and names the touched tables so listeners refresh                    | `src/data/sqliteRepository.ts:461-485`       | `sqliteRepository.test.ts › clearAll › erases every collection in one transaction and tells the listeners` |
+| Desktop "Restart PathoMitra": `app.relaunch()` + `app.exit(0)`; reload branch guarded by `isDestroyed()`                                        | `electron/main.ts:136-150`                   | none — `electron/` has no test harness (the owed CSP/sender-frame regression test, item 9)                 |
+| Panel absorption folds names (`priceKey`) like every other catalogue join, so a differently-typed member cannot be absorbed _and_ charged       | `src/lib/price-list.ts:610-657`              | `price-list.test.ts › absorbs a member whose stored spelling differs from the catalogue`                   |
+| `saveBillingPrefs` actually records `actor` (`updatedBy` / `updatedAt` on the doc)                                                              | `src/lib/price-list.ts`                      | `price-list.test.ts › saveBillingPrefs` (3 tests)                                                          |
+| `listBackups` docblock now describes what it does (names only; counts/`encrypted` come from the read at share/restore time)                     | `src/lib/backup.ts:245-253`                  | n/a — comment corrected, no behaviour change                                                               |
+
+Side-effect worth knowing: **the SQLite test fake was itself wrong** — `commitTransaction()`
+_merged_ pending rows into the committed map, so a row deleted inside a transaction came back
+after commit. It now replaces the table. The new `clearAll` test is what exposed it; the older
+`tx.delete('reports','r1')` test never asserted the row was gone, which is why it survived.
+
+Gate after the fixes (`.tmp/audit-verify.log`): `tsc --noEmit` clean · eslint **0 errors /
+22 warnings** (unchanged — no new warning added, ratchet still 23) · **50 files / 798 tests
+passed** (786 → 798, +12) · coverage **89.97 / 81.94 / 91.66 / 91.21** (up on every axis, thresholds
+82/68/82/85) · `vite build` OK in 23.89 s.
+
+**Deliberately NOT done** (needs an owner decision or a refactor this gate cannot cover, so it
+would be unsafe to bundle with these fixes): splitting the seven 1 200+ line files; the
+`electron/` regression test for the relaunch/CSP paths; the deferred items 9-11
+(window minimums, first-run theme, `pm:db:clear` token, clinical sign-off, commission policy);
+the min-WebView capability guard (item 15). Nothing was committed or pushed — 11 files are dirty
+in the working tree; the husky pre-commit hook (`prettier --write`) has already been satisfied.
+
+| Fact              | Value                                                                                                                                             | Evidence                                                           |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| HEAD              | **`e4db774` _chore(release): 2.8.7_** on `main`, **ahead 4 of `pathomitra/main` (`49f7949`)** — everything below `49f7949` is still unpushed      | `git log` / `git branch -vv`                                       |
+| `package.json`    | version **2.8.7**                                                                                                                                 | read from the file                                                 |
+| Working tree      | clean                                                                                                                                             | `git status --short`                                               |
+| Gate at this HEAD | `tsc --noEmit` **0 errors** · `eslint . --max-warnings=23` → **22 warnings / 0 errors** · `vitest run` → **50 files / 786 tests passed**, 10.01 s | `.tmp/audit-tsc.log`, `.tmp/audit-lint.log`, `.tmp/audit-test.log` |
+| Still unverified  | the 2.8.7 pair has **no APK/MSI on disk** (the live artifacts are still 2.8.6); `dist/` was not rebuilt this session                              | not run                                                            |
+| Size baseline     | `src/` = **185 files / 48 794 lines**, 50 of them tests                                                                                           | measured with `Get-ChildItem` + `Measure-Object`                   |
+
+**New code-audit findings (report-only, no fix applied).** No P0. Severity = this file's usual P0/P1/P2.
+
+- **P1 — a second backup taken inside the same minute silently replaces the first.** `stamp()` is minute-resolution (`backup.ts:143-150`) and `writeAppTextFile` is a plain `Filesystem.writeFile` replace (`native-files.ts:199-221`), so `pathomitra-backup-20261019-1830.json` written twice keeps only the last. For a product whose whole backup story is "this file may be the only copy", the name needs a collision probe or a seconds component.
+- **P1 — the bill-discount contract contradicts the code.** `RaiseInvoiceInput.discount` is documented "`discountPercent` wins if both" (`invoices.ts:74-75`) but `buildInvoiceDraft` **adds** the rupee amount and the percent, then clamps to the subtotal (`invoices.ts:121-125`). No caller passes `discountPercent` today (verified by grep: `invoices.ts` only), so the trap is armed but not yet live.
+- **P2 — the Firestore shim's `updateDoc` creates a document Firestore would refuse to touch.** `webRepository.update` (`:97-102`) and `sqliteRepository.update` (`:272-281`) both merge onto `{}` when the id is absent, so `voidInvoice` (`invoices.ts:302-318`) mints a phantom `invoices/<bad-id>` row carrying `status:'void'` and no patient/amount, and its own post-read guard **cannot** catch it because the row now exists.
+- **P2 — `buildCountQuery`'s fallback contract is wrong in two places.** `jsonPath` strips every non-`[A-Za-z0-9_]` char (`sqliteRepository.ts:67-70`) and the guard only rejects an _empty_ result (`:93-94`), so `created-at` silently becomes `$."createdat"` → count **0** instead of falling back to the JS path. And `contains` compiles to `LIKE '%'||LOWER(?)||'%'` (`:109-113`) without escaping `%`/`_`, which cannot match `applyQuery`'s `.includes()` (`query.ts:79-86`) for those values. Latent today — no caller counts with `contains` (OverviewPage uses no filter / one `==`).
+- **P2 — `SqliteRepository.clearAll` is not atomic** (`:444-462`): ten independent deletes + a `VACUUM` outside any transaction, so "erase everything" can half-apply. (It cannot use `transaction()` — the `VACUUM` must stay outside — so the fix is a tx around the deletes only.)
+- **P2 — desktop "Restart PathoMitra" restarts nothing.** `app.relaunch()` at `main.ts:129` is never followed by `app.exit()`; the live window stays up, the relaunched process loses the single-instance lock (`main.ts:94`) and just re-focuses the old one.
+- **P2 — `billLinesFrom` joins the catalogue two different ways.** Panel absorption compares **raw** strings (`price-list.ts:606`, `:611`, `:626`) while `mergeDuplicateLines` keys on the **folded** `priceKey` (`:650`) and every other lookup in the app folds or lowercases. A member that reaches `testSelection` with different casing/punctuation is therefore charged _and_ absorbed — the exact double-count this function exists to prevent.
+- **P2 — billing prefs are the one money write with no audit trail**, and the reason is a dead parameter: `saveBillingPrefs(prefs, actor)` never uses `actor` (`price-list.ts:483-487`) — `...(actor ? {} : {})` is a no-op — so tax rate / currency / rounding changes are unattributed while every price change keeps `history[]`.
+- **P2 — stale comment as a capability claim.** `listBackups`' docblock says "each entry is opened and summarised" (`backup.ts:220-228`); the body never reads a file and returns `counts:{}` / `totalRecords:0` / no `encrypted` flag for every row. Harmless in the UI today (DataBackupPanel renders only the filename), but the function is not what its comment says.
+- **P2 — structure/maintainability**: `pathology-tests.ts` 2 559 · `ReportsPage.tsx` 2 070 · `SettingsPage.tsx` 1 664 · `PatientsPage.tsx` 1 397 · `report-pdf.ts` 1 330 · `ManageTestsPanel.tsx` 1 259 · `BillsPage.tsx` 1 247 lines. The lint ratchet has **one** spare slot (22 of 23) and all 22 are `react-hooks/set-state-in-effect` / `exhaustive-deps`.
+- **Re-checked, still open exactly as written above**: `main.ts:150-151` window minimums (1024×640), no `CSS.supports('color','color-mix(…)')` startup guard anywhere in `index.html` / `src/main.tsx` / `src/App.tsx` (grep: 0 hits), and `raiseInvoiceForReport` still has no call site in `ReportsPage.tsx`.
+- **Confirmed clean** (so a later session does not re-litigate): clinical derivations in `report-calculations.ts` (MCV/MCH/MCHC/absolute-count formulas + the strict `parseMeasurement` reject), and the derived keys match `pathology-tests.ts` catalogue names verbatim · local-part path-traversal guard and the CSP/permission/offline posture in `electron/main.ts` · the `isTrustedSender` frame check in `electron/ipc.ts` · PBKDF2 params and the clock-rollback lockout defence in `password.ts` / `local-account.ts` · `date-range.ts` local-day bounds · CSV formula-injection guard · `report-workflow.ts` amendment gate (reads `existing` from the store, bumps the live version correctly, snapshot ids cannot collide) · no committed secrets (`.env` is untracked and holds only `VITE_SUPPORT_EMAIL` / `VITE_PRIVACY_URL`) · zero TODO/FIXME/`@ts-ignore` in `src/`.
+
 ## Verified 2026-10-18 (read or executed in the cleanup session)
 
 | Fact                      | Value                                                                                                                                                                                                 | Evidence                         |

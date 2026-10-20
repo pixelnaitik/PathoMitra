@@ -19,7 +19,18 @@
  * 10.2 security, 10.4.2 "must continue to run and remain responsive") and a
  * lab console full of patient records asks for it independently.
  */
-import { Menu, app, BrowserWindow, dialog, nativeImage, nativeTheme, net, protocol, session, shell } from 'electron';
+import {
+  Menu,
+  app,
+  BrowserWindow,
+  dialog,
+  nativeImage,
+  nativeTheme,
+  net,
+  protocol,
+  session,
+  shell,
+} from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -125,8 +136,18 @@ function attachRecovery(win: BrowserWindow): void {
         noLink: true,
       })
       .then(({ response }) => {
-        if (response === 0) win.webContents.reload();
-        else if (response === 1) app.relaunch();
+        if (response === 0) {
+          if (!win.isDestroyed()) win.webContents.reload();
+          return;
+        }
+        if (response === 1) {
+          // `relaunch()` only *schedules* the next spawn — it does not stop this
+          // process. Without the exit, the crashed instance keeps running, the
+          // new one loses the single-instance lock, and "Restart PathoMitra"
+          // quietly re-focuses the very window that just died.
+          app.relaunch();
+          app.exit(0);
+        }
       });
   };
 
@@ -252,16 +273,18 @@ app.whenReady().then(() => {
   /* exception through, rather than to rely on nobody ever asking. Chromium     */
   /* grants some permissions implicitly when no handler is installed at all.   */
   /* ----------------------------------------------------------------------- */
-  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
-    const granted = ALLOWED_PERMISSIONS.has(permission);
-    if (!granted) {
-      console.warn(
-        `PathoMitra desktop: denied permission "${permission}"` +
-          (details?.requestingUrl ? ` requested by ${details.requestingUrl}` : ''),
-      );
-    }
-    callback(granted);
-  });
+  session.defaultSession.setPermissionRequestHandler(
+    (_webContents, permission, callback, details) => {
+      const granted = ALLOWED_PERMISSIONS.has(permission);
+      if (!granted) {
+        console.warn(
+          `PathoMitra desktop: denied permission "${permission}"` +
+            (details?.requestingUrl ? ` requested by ${details.requestingUrl}` : ''),
+        );
+      }
+      callback(granted);
+    },
+  );
   // Electron 28+ checks this one separately; without it a permission the request
   // handler would allow can still be silently granted by the OS-level check.
   session.defaultSession.setPermissionCheckHandler((_webContents, permission) =>

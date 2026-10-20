@@ -259,6 +259,16 @@ export async function setDoc(ref: DocRef, data: DocumentData, options?: SetOptio
   else await getRepository().set(ref.path, ref.id, clean(data));
 }
 
+/**
+ * Patch a document in place.
+ *
+ * ⚠ Not Firestore-accurate: real `updateDoc` rejects when the document does not
+ * exist, while every local adapter merges the patch onto an empty object and
+ * therefore *creates* the row. A caller that means "change this existing record"
+ * must read it first and refuse when it is absent — `voidInvoice()` does — or a
+ * bad id silently mints a partial document that then reads back as real and
+ * travels into every backup.
+ */
 export async function updateDoc(ref: DocRef, data: DocumentData): Promise<void> {
   await getRepository().update(ref.path, ref.id, clean(data));
 }

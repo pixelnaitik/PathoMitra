@@ -31,16 +31,21 @@ import {
   billableTests,
   bulkAdjustPrices,
   clearPrice,
+  DEFAULT_BILLING_PREFS,
+  getBillingPrefs,
   getPriceList,
   isOrderable,
   loadPriceList,
   priceKey,
   resolveKind,
   resolvePrice,
+  saveBillingPrefs,
+  sanitizeBillingPrefs,
   sanitizePriceList,
   setOrderable,
   unpricedNames,
   upsertPrice,
+  BILLING_PREFS_DOC_ID,
   PRICE_LIST_DOC_ID,
   resetPriceListCache,
   type PriceList,
@@ -181,7 +186,7 @@ describe('resolvePrice', () => {
     expect(resolvePrice(OWN_MEMBER_ONE, list({}))).toBeNull();
   });
 
-  it('falls back to the catalogue\'s suggested rate for a name the lab never priced', () => {
+  it("falls back to the catalogue's suggested rate for a name the lab never priced", () => {
     // The bill an unconfigured lab prints used to be ₹0 with "not priced" on
     // every line. The suggested tariff is what fixed that, so it is asserted.
     expect(resolvePrice('HB (HAEMOGLOBIN)', list({}))).toBe(80);
@@ -280,9 +285,29 @@ describe('billLinesFrom — the panel double-count guard', () => {
       list({ [OWN_MEMBER_ONE]: 100 }),
     );
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatchObject({ name: OWN_PANEL, kind: 'panel', unpriced: true, lineTotal: 0 });
+    expect(lines[0]).toMatchObject({
+      name: OWN_PANEL,
+      kind: 'panel',
+      unpriced: true,
+      lineTotal: 0,
+    });
     // Members are absorbed either way, so none of them can be charged twice.
     expect(lines[0]?.covers).toEqual([OWN_MEMBER_ONE, OWN_MEMBER_TWO]);
+  });
+
+  it('absorbs a member whose stored spelling differs from the catalogue', () => {
+    // Every other catalogue join in the app folds the name first (`priceKey`,
+    // `findTestInfo`, `mergeDuplicateLines`), so an order carrying
+    // `lab assay one` instead of `LAB ASSAY ONE` used to slip past the raw-string
+    // absorption check — the member was absorbed *and* charged, which is exactly
+    // the double-count this walk exists to prevent.
+    seedOwnPanel();
+    const lines = billLinesFrom(
+      [OWN_PANEL, OWN_MEMBER_ONE.toLowerCase()],
+      list({ [OWN_PANEL]: 500, [OWN_MEMBER_ONE]: 200 }),
+    );
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ name: OWN_PANEL, kind: 'panel', lineTotal: 500 });
   });
 
   it('charges the built-in package at its suggested rate when the lab set none', () => {
@@ -480,5 +505,30 @@ describe('loadPriceList', () => {
     store.documents.set('meta/blocked', {});
     await loadPriceList({ force: true });
     expect(resolvePrice('CRP')).toBe(700);
+  });
+});
+
+describe('saveBillingPrefs', () => {
+  it('records who moved the billing numbers, and when', async () => {
+    // Tax rate, currency and rounding change what *every* future bill charges.
+    // Until `actor` was actually written to the document, this was the one money
+    // write in the app with no trail at all, while every price change keeps a
+    // `history[]` row naming who moved it.
+    await saveBillingPrefs({ ...DEFAULT_BILLING_PREFS, taxPercent: 12 }, 'Ashu');
+
+    const stored = store.documents.get(`meta/${BILLING_PREFS_DOC_ID}`);
+    expect(stored).toMatchObject({ taxPercent: 12, updatedBy: 'Ashu' });
+    expect(typeof stored?.updatedAt).toBe('string');
+    expect(getBillingPrefs().taxPercent).toBe(12);
+  });
+
+  it('leaves the audit fields off when nobody is named', async () => {
+    await saveBillingPrefs({ ...DEFAULT_BILLING_PREFS, currency: 'Rs' }, '');
+    expect(store.documents.get(`meta/${BILLING_PREFS_DOC_ID}`)).not.toHaveProperty('updatedBy');
+  });
+
+  it('still clamps a hostile stored percent', () => {
+    // A restored snapshot cannot invent a 5000% tax rate through this reader.
+    expect(sanitizeBillingPrefs({ taxPercent: 5000 }).taxPercent).toBe(100);
   });
 });

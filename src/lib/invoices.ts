@@ -118,12 +118,15 @@ export function buildInvoiceDraft(input: RaiseInvoiceInput): InvoiceDraft {
   const items = billLinesFrom(names, list);
 
   const base = totalsOf(items, 0, input.taxPercent ?? prefs.taxPercent);
-  const percentDiscount =
+  // A percent discount *replaces* a rupee one rather than stacking on it — the
+  // rule this field documents. Summing them lets a ₹ figure left in the form
+  // behind a percentage edit deepen the discount the operator meant, on a
+  // document the patient keeps.
+  const requestedDiscount =
     input.discountPercent != null && input.discountPercent > 0
       ? roundMoney((base.subtotal * Math.min(100, Math.max(0, input.discountPercent))) / 100)
-      : 0;
-  const discount = roundMoney(Math.min(base.subtotal, (input.discount ?? 0) + percentDiscount));
-  const totals = totalsOf(items, discount, input.taxPercent ?? prefs.taxPercent);
+      : roundMoney(Math.max(0, input.discount ?? 0));
+  const totals = totalsOf(items, requestedDiscount, input.taxPercent ?? prefs.taxPercent);
 
   const referral = resolveReferral(input.patient.doctorName, input.doctors ?? [], prefs);
   // The commission figure is stamped at bill time from the base this bill
@@ -306,6 +309,16 @@ export async function voidInvoice(
 ): Promise<InvoiceRecord> {
   const trimmed = reason.trim();
   if (!trimmed) throw new Error('A voided bill needs a reason — otherwise it looks like a gap.');
+  // Read before writing: `updateDoc` on this store is an *upsert*, where real
+  // Firestore refuses to update a document that does not exist. Without the
+  // probe, a bad or already-deleted id would mint a `void` row carrying no
+  // patient, no lines and no amount — and the re-read below could not catch it,
+  // because the row would now exist. The phantom would then ride into every
+  // later backup and out of the `bills` count only by luck.
+  const before = await getInvoice(invoiceId);
+  if (!before) {
+    throw new Error('That bill could not be found — nothing was voided.');
+  }
   await updateDoc(doc(db, 'invoices', invoiceId), {
     status: 'void',
     voidReason: trimmed.slice(0, 500),

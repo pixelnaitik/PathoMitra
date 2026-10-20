@@ -315,6 +315,21 @@ describe('buildInvoiceDraft', () => {
     expect(draft.referral?.commission).toBe(150);
   });
 
+  it('lets a percent discount replace a rupee one instead of stacking on it', async () => {
+    await upsertPrice({ name: CBC, price: 400, actor: 'a' });
+    const draft = buildInvoiceDraft({
+      patient: PATIENT,
+      issuedBy: 'a',
+      discount: 100,
+      discountPercent: 10,
+    });
+    // 10% of 400 = 40 — not 40 + the ₹100 still sitting in the form (140). The
+    // field documents "`discountPercent` wins if both", and this is the arithmetic
+    // that ends up printed on a document the patient keeps.
+    expect(draft.totals.discount).toBe(40);
+    expect(draft.totals.amount).toBe(360);
+  });
+
   it('lists the unpriced names instead of charging them as zero', async () => {
     const draft = buildInvoiceDraft({ patient: PART_UNPRICED_PATIENT, issuedBy: 'a' });
     // The package is priced off the suggested rate; only the lab's own test has
@@ -436,6 +451,16 @@ describe('voidInvoice', () => {
     const voided = await voidInvoice(invoice.id, 'raised for the wrong patient', 'a');
     expect(voided.status).toBe('void');
     expect(store.documents.has(`invoices/${invoice.id}`)).toBe(true);
+  });
+
+  it('refuses an id with no bill behind it rather than minting a void stub', async () => {
+    // The local store's `updateDoc` is an upsert where real Firestore refuses to
+    // update a missing document. Without the pre-read, a mistyped or
+    // already-deleted number would create `invoices/IN9999-0001` carrying
+    // `status: 'void'` and nothing else — and the re-read at the end of
+    // `voidInvoice` could not catch it, because the row would now exist.
+    await expect(voidInvoice('IN9999-0001', 'typo in the number', 'a')).rejects.toThrow(/found/);
+    expect(store.documents.has('invoices/IN9999-0001')).toBe(false);
   });
 });
 

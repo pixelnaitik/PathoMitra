@@ -149,6 +149,31 @@ export function backupFileName(createdAt: Date = new Date()): string {
   return `pathomitra-backup-${stamp(createdAt)}.json`;
 }
 
+/**
+ * A snapshot name that is not already on the device.
+ *
+ * `stamp` only resolves to the minute and the write below is a plain replace,
+ * so a second "Back up now" inside the same minute used to overwrite the
+ * snapshot it had just made — and for a lab whose backup folder may hold the
+ * only copy of its records, that is data loss with a success toast on it. The
+ * name is stepped forward instead (`…-1830-2.json`), so every tap of the button
+ * leaves a file behind.
+ */
+async function uniqueBackupFileName(createdAt: Date): Promise<string> {
+  const stem = backupFileName(createdAt).replace(/\.json$/, '');
+  // `listAppFiles` answers `[]` for a folder that was never created, so the
+  // very first backup on a fresh install takes this path without special casing.
+  const taken = new Set(await listAppFiles(BACKUP_DIR, '.json'));
+  if (!taken.has(`${stem}.json`)) return `${stem}.json`;
+  for (let suffix = 2; suffix <= 99; suffix++) {
+    const candidate = `${stem}-${suffix}.json`;
+    if (!taken.has(candidate)) return candidate;
+  }
+  throw new Error(
+    'Ninety-nine snapshots already exist for that minute. Wait a moment and take the backup again.',
+  );
+}
+
 function summarise(backup: BackupFile, fileName?: string): BackupSummary {
   return {
     fileName,
@@ -192,7 +217,7 @@ export async function createBackup(
   options: { passphrase?: string } = {},
 ): Promise<{ summary: BackupSummary; fileName: string }> {
   const backup = await buildBackup();
-  const fileName = backupFileName(new Date(backup.createdAt));
+  const fileName = await uniqueBackupFileName(new Date(backup.createdAt));
   const passphrase = options.passphrase ?? '';
   const payload = passphrase
     ? await sealPayload(JSON.stringify(backup), passphrase)
@@ -220,10 +245,13 @@ export async function shareBackup(fileName: string): Promise<void> {
 /**
  * Snapshots on the device, newest first.
  *
- * Listing only gives file names, and a name is not a date the user can trust
- * once a file has been copied around — so each entry is opened and summarised.
- * A file that fails to parse is still listed (the user may want to delete it),
- * with its name as the only known fact.
+ * Only the *name* is known here: opening every file to read its record counts
+ * would serialise and parse the whole database on each visit to Settings, and
+ * the panel lists names, not counts. A name is also not a date the user can
+ * trust once a file has been copied around — so `shareBackup` and the restore
+ * path re-read the file itself, and that is where the record count and the
+ * sealed/plaintext distinction come from. A file that cannot be parsed is still
+ * listed, because the user may well want to delete it.
  */
 export async function listBackups(): Promise<BackupSummary[]> {
   const listings = await Promise.all(

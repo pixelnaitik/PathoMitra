@@ -24,6 +24,9 @@ class FakeConnection {
   private pending: Store | null = null;
   private active = false;
   readonly calls: string[] = [];
+  /** Every statement handed to `query()`, so a test can see what was attempted. */
+  readonly sqls: string[] = [];
+  readonly boundParams: unknown[][] = [];
 
   open(): Promise<void> {
     return Promise.resolve();
@@ -51,9 +54,12 @@ class FakeConnection {
     this.calls.push('commit');
     if (!this.active) return Promise.reject(new Error('Failed in commitTransaction'));
     for (const [table, rows] of this.pending ?? []) {
-      const target = this.committed.get(table) ?? new Map<string, string>();
-      for (const [id, data] of rows) target.set(id, data);
-      this.committed.set(table, target);
+      // The pending copy starts as the committed rows plus whatever the batch
+      // wrote, so the table is *replaced* on commit. Merging instead would
+      // resurrect every row the batch deleted — which is exactly what `clearAll`
+      // does to all ten tables, and what made this fake report a wiped
+      // collection as still holding its data.
+      this.committed.set(table, rows);
     }
     this.active = false;
     this.pending = null;
@@ -125,6 +131,8 @@ class FakeConnection {
   }
 
   query(sql: string, params: unknown[] = []): Promise<{ values: unknown[] }> {
+    this.sqls.push(sql);
+    this.boundParams.push(params);
     const table = /^SELECT id, data FROM (\w+)/.exec(sql)?.[1];
     if (!table) return Promise.resolve({ values: [] });
     const rows = this.active ? this.writeTarget(table) : (this.committed.get(table) ?? new Map());
@@ -248,5 +256,61 @@ describe('SqliteRepository.transaction', () => {
     });
     expect(await repo.get('reports', 'r1')).not.toBeNull();
     expect((await conn.isTransactionActive()).result).toBe(false);
+  });
+});
+
+describe('SqliteRepository.count — the SQL path only answers what it can compute', () => {
+  it('falls back to the in-memory path for a field name SQL cannot express', async () => {
+    // `jsonPath` used to strip the punctuation and query `createdat`, which
+    // matches no field at all. The clause then answered **0 rows**: a wrong
+    // number that reads like an empty lab, not like a query that gave up.
+    const { repo, conn } = await withRepo();
+    await repo.set('reports', 'r1', { 'created-at': '2026-10-01' });
+
+    const n = await repo.count('reports', [{ field: 'created-at', op: '==', value: '2026-10-01' }]);
+
+    expect(n).toBe(1);
+    expect(conn.sqls.some(sql => sql.includes('COUNT(*)'))).toBe(false);
+  });
+
+  it('escapes the LIKE wildcards so a contains count agrees with the JS filter', async () => {
+    // `applyQuery` compares with `String.includes`, so `%` in a search term is a
+    // plain character. Unescaped it is a wildcard, and `50%` would also match
+    // `50 mg/dL` — one filter, two answers, depending on which store the
+    // screen happens to be reading.
+    const { repo, conn } = await withRepo();
+    await repo.set('patients', 'p1', { remark: '50 mg/dL' });
+
+    const n = await repo.count('patients', [{ field: 'remark', op: 'contains', value: '50%' }]);
+
+    expect(n).toBe(0);
+    const like = conn.sqls.find(sql => sql.includes('COUNT(*)'));
+    expect(like).toContain(`ESCAPE '\\'`);
+    expect(conn.boundParams[conn.sqls.indexOf(like as string)]).toEqual(['50\\%']);
+  });
+});
+
+describe('SqliteRepository.clearAll', () => {
+  it('erases every collection in one transaction and tells the listeners', async () => {
+    const { repo, conn } = await withRepo();
+    await repo.set('reports', 'r1', { status: 'final' });
+    await repo.set('patients', 'p1', { name: 'Asha' });
+
+    const seen: number[] = [];
+    const unsubscribe = repo.subscribe('reports', docs => seen.push(docs.length));
+
+    await repo.clearAll();
+
+    // One BEGIN and one COMMIT. Ten independent deletes meant "erase everything"
+    // could half-apply — a lab that believes it wiped the device left holding
+    // part of a database.
+    expect(conn.calls.filter(c => c === 'begin')).toHaveLength(1);
+    expect(conn.calls.filter(c => c === 'commit')).toHaveLength(1);
+    expect(await repo.count('reports')).toBe(0);
+    expect(await repo.count('patients')).toBe(0);
+    // A raw `DELETE FROM x` does not go through `delete()`, so the tables the
+    // body names are the only way a listener learns the rows are gone.
+    expect(seen[seen.length - 1]).toBe(0);
+    unsubscribe();
   });
 });

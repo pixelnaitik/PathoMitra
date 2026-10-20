@@ -64,9 +64,23 @@ function toDoc(row: Row): LocalDoc {
   return makeDoc(row.id, parsed);
 }
 
-/** JSON path for a document field, with anything but an identifier removed. */
-function jsonPath(field: string): string {
-  return `$."${field.replace(/[^A-Za-z0-9_]/g, '')}"`;
+/**
+ * JSON path for a document field, or `null` when the name cannot be expressed.
+ *
+ * A name this layer cannot reproduce is refused rather than sanitised: stripping
+ * the punctuation off `created-at` would quietly query `createdat`, and a clause
+ * that matches no field answers **0 rows** — a wrong number that looks like an
+ * empty lab, not like a query that failed. The caller falls back to the
+ * in-memory path in that case, which is the one `applyQuery` uses everywhere.
+ */
+function jsonPath(field: string): string | null {
+  if (!/^[A-Za-z0-9_]+$/.test(field)) return null;
+  return '$."' + field + '"';
+}
+
+/** Make a value literal for a `LIKE` comparison that declares `ESCAPE '\'`. */
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, char => `\\${char}`);
 }
 
 function isScalar(value: unknown): value is string | number | boolean {
@@ -90,9 +104,9 @@ function buildCountQuery(
   const params: unknown[] = [];
 
   for (const filter of where ?? []) {
-    const field = jsonPath(filter.field);
-    if (!field.startsWith('$."') || field === '$.""') return null;
-    const extract = `json_extract(data, '${field}')`;
+    const path = jsonPath(filter.field);
+    if (!path) return null;
+    const extract = `json_extract(data, '${path}')`;
 
     switch (filter.op) {
       case '==':
@@ -108,8 +122,11 @@ function buildCountQuery(
       }
       case 'contains': {
         if (typeof filter.value !== 'string') return null;
-        clauses.push(`LOWER(${extract}) LIKE '%' || LOWER(?) || '%'`);
-        params.push(filter.value);
+        // `applyQuery` compares with `String.includes`, so `%` and `_` are plain
+        // characters in a search term. Without ESCAPE, `50%` would match
+        // `50 mg/dL` here and miss it in the browser — one filter, two answers.
+        clauses.push(`LOWER(${extract}) LIKE '%' || LOWER(?) || '%' ESCAPE '\\'`);
+        params.push(escapeLike(filter.value));
         break;
       }
       case 'in': {
@@ -443,17 +460,24 @@ export class SqliteRepository implements DataRepository {
 
   async clearAll(): Promise<void> {
     await this.init();
-    for (const entity of ENTITIES) {
-      await this.enqueue(async () => {
-        // `transaction = false` for the same reason as `applySet`, and because
-        // `VACUUM` below cannot run inside a transaction at all.
+    // One transaction over the tables, then the `VACUUM` outside it. Ten
+    // independent deletes meant "erase everything" could half-apply — a lab that
+    // believes it wiped the device left holding part of a database. The
+    // statements still pass `transaction = false` for the same reason `applySet`
+    // does: the plugin would nest a BEGIN and abort the whole unit.
+    await this.transaction(async () => {
+      for (const entity of ENTITIES) {
         await this.conn().run(`DELETE FROM ${entity};`, [], false);
-        await this.emit(entity);
-      });
-    }
-    // "Erase everything" is a promise about the bytes, not just the rows: DELETE
-    // leaves the pages in the file, so the clinical documents a lab believes it
-    // destroyed stay recoverable from the database file until it is rebuilt.
+        // A raw `run()` does not go through `delete()`, so the tables that
+        // changed have to be named here — otherwise no listener learns the rows
+        // are gone and every open screen keeps showing data that no longer exists.
+        this.touched.add(entity);
+      }
+    });
+    // `VACUUM` cannot run inside a transaction at all. "Erase everything" is a
+    // promise about the bytes, not just the rows: DELETE leaves the pages in the
+    // file, so the clinical documents a lab believes it destroyed stay
+    // recoverable from the database file until it is rebuilt.
     try {
       await this.conn().run('VACUUM;', [], false);
     } catch (error) {
