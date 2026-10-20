@@ -11,6 +11,27 @@
 > rounds 4–5 and MS Store rounds 2–3 narratives, per-build hashes, dated audit scores). Nothing from it is
 > current unless it is repeated below; read it only when a decision's provenance is needed.
 
+## Verified 2026-10-20 (2.8.9 Android test build — APK packaged this session)
+
+Cut because the `2.8.8` APK on disk was built at 21:51 local — after the `chore(release): 2.8.8` commit
+(`d39ab0b`, 21:48) but **before** the layout fix `c47522f` (22:02). So `2.8.8` does **not** contain the
+`DashboardLayout.tsx` change; `2.8.9` is the first APK that does.
+
+| Fact           | Value                                                                                                                                                                                                         | Evidence                              |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| `package.json` | version **2.8.9** (versionCode 2008009)                                                                                                                                                                       | read from file + `aapt2 dump badging` |
+| HEAD           | **`16d68eb` _chore(release): 2.8.9_** on `main`, **ahead 1 of `pathomitra/main` (`c47522f`)** — the release bump commit is **NOT pushed** yet                                                                 | `git log` / `git status`              |
+| Working tree   | clean                                                                                                                                                                                                         | `git status --short`                  |
+| Build path     | `npm run android:test-build` (TEST BUILD, `--allow-placeholder`), `JAVA_HOME` pinned to Temurin 21 at `C:\Users\naiti\.gradle\jdks\eclipse_adoptium-21-amd64-windows.2`, `TEMP/TMP/TMPDIR` → workspace `.tmp` | build log `.tmp/build-289.log`        |
+| Gradle gate    | `assembleRelease` + `bundleRelease` BUILD SUCCESSFUL; `check:android` → **Release manifest OK — com.pathomitra.app v2.8.9 (2008009), 6 permissions, not debuggable, backups excluded**                        | same log                              |
+
+**Artifact** — `buildoutput/android/app-release-2.8.9.apk`, 17 149 297 B, SHA-256
+`eb4abf61693ad3cd3376d5be7aca4474ac9e3fffe4e0844564b50230911571a9`; versionName 2.8.9 / versionCode
+2008009, minSdk 28, targetSdk 36; `zipalign -c -v 4` **Verification successful**; signed with the stable key
+`1550d59f…09587a4d` → updates an installed 2.6.x–2.8.x **in place**, lab DB kept (**never uninstall**).
+Test-build AAB kept as `buildoutput/android/app-release-2.8.9-TEST-BUILD-DO-NOT-SUBMIT.aab`. **No desktop
+(MSI) rebuild this round** — only the APK/AAB were asked for.
+
 ## Verified 2026-10-19 (whole-code audit session — findings below are now FIXED, see next section)
 
 ### Fixed in this session (working tree, uncommitted) — gate re-run green

@@ -364,8 +364,8 @@ export default function DashboardLayout({
    * stops `scrollIntoView` from panning the page while it centres a nav chip.
    */
   const contentPadBottom = fabVisible
-    ? 'pb-[calc(var(--safe-bottom)_+_9.5rem)]'
-    : 'pb-[calc(var(--safe-bottom)_+_6rem)]';
+    ? 'pb-[calc(var(--safe-bottom)_+_8.5rem)]'
+    : 'pb-[calc(var(--safe-bottom)_+_5.25rem)]';
 
   return (
     // `shell-h` (src/index.css) is the `100vh` → `100dvh` fallback chain. A bare

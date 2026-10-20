@@ -27,15 +27,12 @@ const config: CapacitorConfig = {
       // native side reads the meta tag after page commit.
       //
       // Which of the two paths a handset takes is decided by the *Android System
-      // WebView* major version, not by this app (SystemBars.java:194): at 140+ the
-      // insets pass through and `env(safe-area-inset-*)` is real; below that the
-      // native side pads the decor view and hands CSS zeros. src/index.css takes
-      // `max(env(), var(--safe-area-inset-*))`, which is correct on both — and it
-      // is why the same APK laid out differently on two handsets before the
-      // content clearance started composing `--safe-bottom` as well.
+      // WebView* major version (SystemBars.java:194): at 140+ the insets pass
+      // through; below that the native side pads the decor view and sets
+      // --safe-area-inset-* to 0px. CSS prioritizes var(--safe-area-inset-*)
+      // over env() to prevent Chromium < 140 from double-padding the header/footer.
       initialViewportFitValueHint: 'cover',
-      // `css` (the default) additionally mirrors the insets into the
-      // --safe-area-inset-* custom properties that src/index.css falls back to.
+      // `css` mirrors the insets into --safe-area-inset-* custom properties.
       insetsHandling: 'css',
     },
     Keyboard: {

@@ -83,6 +83,15 @@
           r.setAttribute('data-text-size', textSize);
           r.setAttribute('data-motion', reduceMotion ? 'reduced' : 'full');
           r.setAttribute('data-radius', cornerStyle);
+
+          // On Android WebViews where native decor insets the view, default to 0px
+          // so Chromium's env(safe-area-inset-*) doesn't double-pad the header or push the footer too high.
+          if (navigator.userAgent.indexOf('Android') > -1) {
+            r.style.setProperty('--safe-area-inset-top', '0px');
+            r.style.setProperty('--safe-area-inset-bottom', '0px');
+            r.style.setProperty('--safe-area-inset-left', '0px');
+            r.style.setProperty('--safe-area-inset-right', '0px');
+          }
         } catch (e) {}
       })();
     </script>
