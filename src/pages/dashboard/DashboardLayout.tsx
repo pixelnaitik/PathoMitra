@@ -364,8 +364,8 @@ export default function DashboardLayout({
    * stops `scrollIntoView` from panning the page while it centres a nav chip.
    */
   const contentPadBottom = fabVisible
-    ? 'pb-[calc(var(--safe-bottom)_+_9rem)]'
-    : 'pb-[calc(var(--safe-bottom)_+_5.5rem)]';
+    ? 'pb-[calc(var(--safe-bottom)_+_9.5rem)]'
+    : 'pb-[calc(var(--safe-bottom)_+_6rem)]';
 
   return (
     // `shell-h` (src/index.css) is the `100vh` → `100dvh` fallback chain. A bare
@@ -525,112 +525,110 @@ export default function DashboardLayout({
         <header
           role="banner"
           className={cn(
-            // min-h (not h): the safe-area padding has to grow the bar instead of
-            // eating into its 64px content band, or the tools slide under the clock.
-            // The horizontal padding is composed with the display cutout rather than
-            // paired with a `.px-safe` helper: that helper is unlayered CSS, so it
-            // would silently beat `md:px-8` (see the note in src/index.css).
-            // `--shell-gutter` is the same token the content column and the tab bar
-            // use, so the header's tools, the cards below and the bar at the bottom
-            // all start on one vertical line instead of 16px / 16px / 12px.
-            'min-h-16 pt-safe vibrancy border-b border-[var(--glass-border)] flex items-center justify-between pl-[calc(var(--shell-gutter)_+_var(--safe-left))] pr-[calc(var(--shell-gutter)_+_var(--safe-right))] md:pl-[calc(var(--shell-gutter-lg)_+_var(--safe-left))] md:pr-[calc(var(--shell-gutter-lg)_+_var(--safe-right))] shrink-0 z-30 transition-shadow duration-300',
+            'vibrancy border-b border-[var(--glass-border)] shrink-0 z-30 transition-shadow duration-300',
             headerScrolled && 'shadow-[0_6px_24px_-16px_var(--sh-2)]',
           )}
         >
-          {/* `flex-1` + `min-w-0` on this group is what lets the title claim the
-              space between the two control clusters and truncate, rather than
-              either pushing the tools off the right edge or vanishing itself. */}
-          <div className="flex min-w-0 flex-1 items-center gap-3">
-            <button
-              // -ml-2.5, not -ml-2: the 40px button holds a 20px glyph, so the
-              // icon only lands on the shell gutter when the button is pulled
-              // left by half the difference. At -ml-2 the hamburger sat 2px off
-              // the card edge below it — small, but it is what made the header
-              // look out of line with the page.
-              className="fold:hidden -ml-2.5 flex h-10 w-10 items-center justify-center rounded-full text-on-surface active:bg-surface-container-high"
-              onClick={() => setMobileMenuOpen(true)}
-              aria-label="Open navigation menu"
-              aria-expanded={mobileMenuOpen}
-              aria-controls="main-nav"
-            >
-              <Menu className="w-5 h-5" aria-hidden="true" />
-            </button>
-            <BackButton
-              className="hidden fold:flex !static !py-1 !px-3"
-              onClick={activeTab === 'settings' ? () => setActiveTab('dashboard') : undefined}
-            />
-            {/* The section name. It used to be `hidden sm:block` — 640px — which
+          {/* Safe-area spacer for notch/cutout on Android and iOS devices */}
+          <div className="h-[var(--safe-top)] w-full" aria-hidden="true" />
+
+          {/* Action bar content band: constant 56px height, vertically centered */}
+          <div className="h-14 flex items-center justify-between pl-[calc(var(--shell-gutter)_+_var(--safe-left))] pr-[calc(var(--shell-gutter)_+_var(--safe-right))] md:pl-[calc(var(--shell-gutter-lg)_+_var(--safe-left))] md:pr-[calc(var(--shell-gutter-lg)_+_var(--safe-right))]">
+            {/* `flex-1` + `min-w-0` on this group is what lets the title claim the
+                space between the two control clusters and truncate, rather than
+                either pushing the tools off the right edge or vanishing itself. */}
+            <div className="flex min-w-0 flex-1 items-center gap-3">
+              <button
+                // -ml-2.5, not -ml-2: the 40px button holds a 20px glyph, so the
+                // icon only lands on the shell gutter when the button is pulled
+                // left by half the difference. At -ml-2 the hamburger sat 2px off
+                // the card edge below it — small, but it is what made the header
+                // look out of line with the page.
+                className="fold:hidden -ml-2.5 flex h-10 w-10 items-center justify-center rounded-full text-on-surface active:bg-surface-container-high"
+                onClick={() => setMobileMenuOpen(true)}
+                aria-label="Open navigation menu"
+                aria-expanded={mobileMenuOpen}
+                aria-controls="main-nav"
+              >
+                <Menu className="w-5 h-5" aria-hidden="true" />
+              </button>
+              <BackButton
+                className="hidden fold:flex !static !py-1 !px-3"
+                onClick={activeTab === 'settings' ? () => setActiveTab('dashboard') : undefined}
+              />
+              {/* The section name. It used to be `hidden sm:block` — 640px — which
                 hid it on every portrait phone, leaving a lone hamburger at one
                 edge and four icons at the other with a void between them. It now
                 always renders and truncates, so the bar names where you are on a
                 320px screen too. */}
-            <h2 className="min-w-0 flex-1 truncate text-[17px] font-bold tracking-[-0.02em] text-on-surface capitalize fold:flex-none">
-              {navItems.find(n => n.id === activeTab)?.label ?? activeTab}
-            </h2>
-          </div>
-          {/* `shrink-0`: flex items default to `min-width: auto`, so on a 320px
+              <h2 className="min-w-0 flex-1 truncate text-[17px] font-bold tracking-[-0.02em] text-on-surface capitalize fold:flex-none">
+                {navItems.find(n => n.id === activeTab)?.label ?? activeTab}
+              </h2>
+            </div>
+            {/* `shrink-0`: flex items default to `min-width: auto`, so on a 320px
               handset the four 40px tools were the only thing the header could
               squeeze, and they collapsed to their icons' min-content. */}
-          <div className="flex shrink-0 items-center gap-2 md:gap-4">
-            <button
-              onClick={() => setSearchOpen(true)}
-              aria-label="Search (Ctrl+K)"
-              title="Search  ·  Ctrl+K"
-              className="flex h-10 items-center gap-2 rounded-full bg-surface-container-high/70 px-3 text-on-surface-variant transition hover:text-on-surface active:scale-95"
-            >
-              <Search className="w-[18px] h-[18px]" aria-hidden="true" />
-              <span className="hidden text-[13px] font-semibold lg:inline">Search</span>
-            </button>
-            <NotificationCenter
-              onOpen={handleNotificationOpen}
-              onOpenSettings={() => navigate('/dashboard/settings?section=notifications')}
-            />
-            <button
-              onClick={toggleThemeMode}
-              aria-label={themeMode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-              title={themeMode === 'dark' ? 'Light mode' : 'Dark mode'}
-              className="flex h-10 w-10 items-center justify-center rounded-full bg-surface-container-high/70 text-on-surface-variant transition hover:text-on-surface active:scale-95"
-            >
-              <AnimatePresence mode="wait" initial={false}>
-                <motion.span
-                  key={themeMode}
-                  initial={{ rotate: -60, opacity: 0, scale: 0.6 }}
-                  animate={{ rotate: 0, opacity: 1, scale: 1 }}
-                  exit={{ rotate: 60, opacity: 0, scale: 0.6 }}
-                  transition={{ duration: 0.2 }}
-                  className="flex"
-                >
-                  {themeMode === 'dark' ? (
-                    <Sun className="w-[18px] h-[18px]" aria-hidden="true" />
-                  ) : (
-                    <Moon className="w-[18px] h-[18px]" aria-hidden="true" />
-                  )}
-                </motion.span>
-              </AnimatePresence>
-            </button>
-            {/* Profile / settings affordance. This used to be a plain <div>
+            <div className="flex shrink-0 items-center gap-2 md:gap-4">
+              <button
+                onClick={() => setSearchOpen(true)}
+                aria-label="Search (Ctrl+K)"
+                title="Search  ·  Ctrl+K"
+                className="flex h-10 items-center gap-2 rounded-full bg-surface-container-high/70 px-3 text-on-surface-variant transition hover:text-on-surface active:scale-95"
+              >
+                <Search className="w-[18px] h-[18px]" aria-hidden="true" />
+                <span className="hidden text-[13px] font-semibold lg:inline">Search</span>
+              </button>
+              <NotificationCenter
+                onOpen={handleNotificationOpen}
+                onOpenSettings={() => navigate('/dashboard/settings?section=notifications')}
+              />
+              <button
+                onClick={toggleThemeMode}
+                aria-label={themeMode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+                title={themeMode === 'dark' ? 'Light mode' : 'Dark mode'}
+                className="flex h-10 w-10 items-center justify-center rounded-full bg-surface-container-high/70 text-on-surface-variant transition hover:text-on-surface active:scale-95"
+              >
+                <AnimatePresence mode="wait" initial={false}>
+                  <motion.span
+                    key={themeMode}
+                    initial={{ rotate: -60, opacity: 0, scale: 0.6 }}
+                    animate={{ rotate: 0, opacity: 1, scale: 1 }}
+                    exit={{ rotate: 60, opacity: 0, scale: 0.6 }}
+                    transition={{ duration: 0.2 }}
+                    className="flex"
+                  >
+                    {themeMode === 'dark' ? (
+                      <Sun className="w-[18px] h-[18px]" aria-hidden="true" />
+                    ) : (
+                      <Moon className="w-[18px] h-[18px]" aria-hidden="true" />
+                    )}
+                  </motion.span>
+                </AnimatePresence>
+              </button>
+              {/* Profile / settings affordance. This used to be a plain <div>
                 wearing `role="button"` with an Enter-only key handler, so
                 Space did nothing and screen readers announced a control that
                 partially acted like a button (UI-P0-04). A native <button>
                 gets Enter + Space, focus, and correct semantics for free. */}
-            <button
-              type="button"
-              onClick={() => setActiveTab('settings')}
-              aria-label="Open settings"
-              className="flex items-center gap-3 cursor-pointer rounded-full p-1.5 pr-1 transition-colors hover:bg-surface-container-high/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-            >
-              <div className="flex flex-col items-end hidden sm:flex">
-                <span className="text-[13px] font-bold text-on-surface leading-tight">
-                  {user?.displayName || 'Dr. Pathologist'}
-                </span>
-                <span className="text-[11px] text-on-surface-variant leading-tight">
-                  {role === 'admin' ? 'Lab Administrator' : 'LIMS Control Panel'}
-                </span>
-              </div>
-              <div className="w-9 h-9 rounded-full bg-surface-container border border-[var(--elevated-border)] flex items-center justify-center overflow-hidden">
-                <AvatarIcon seed={avatarSeed} />
-              </div>
-            </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('settings')}
+                aria-label="Open settings"
+                className="flex items-center gap-3 cursor-pointer rounded-full p-1.5 pr-1 transition-colors hover:bg-surface-container-high/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              >
+                <div className="flex flex-col items-end hidden sm:flex">
+                  <span className="text-[13px] font-bold text-on-surface leading-tight">
+                    {user?.displayName || 'Dr. Pathologist'}
+                  </span>
+                  <span className="text-[11px] text-on-surface-variant leading-tight">
+                    {role === 'admin' ? 'Lab Administrator' : 'LIMS Control Panel'}
+                  </span>
+                </div>
+                <div className="w-9 h-9 rounded-full bg-surface-container border border-[var(--elevated-border)] flex items-center justify-center overflow-hidden">
+                  <AvatarIcon seed={avatarSeed} />
+                </div>
+              </button>
+            </div>
           </div>
         </header>
 
@@ -718,24 +716,24 @@ export default function DashboardLayout({
               transition={{ type: 'spring', stiffness: 380, damping: 20 }}
               onClick={onRegisterPatient}
               aria-label="Register patient"
-              className="fold:hidden fixed right-[calc(var(--shell-gutter)_+_var(--safe-right))] md:right-[calc(var(--shell-gutter-lg)_+_var(--safe-right))] bottom-[calc(var(--safe-bottom)_+_4.75rem)] z-40 flex h-14 w-14 items-center justify-center rounded-full bg-primary text-on-primary shadow-float active:scale-95"
+              className="fold:hidden fixed right-[calc(var(--shell-gutter)_+_var(--safe-right))] md:right-[calc(var(--shell-gutter-lg)_+_var(--safe-right))] bottom-[calc(var(--safe-bottom)_+_5.25rem)] z-40 flex h-14 w-14 items-center justify-center rounded-full bg-primary text-on-primary shadow-float active:scale-95"
             >
               <UserPlus className="w-6 h-6" aria-hidden="true" />
             </motion.button>
           )}
         </AnimatePresence>
 
-        {/* Mobile bottom tab bar — docked navigation with safe-area support */}
+        {/* Mobile bottom tab bar — floating pill navigation */}
         <nav
           aria-label="Primary"
           className={cn(
-            'fold:hidden fixed bottom-0 left-0 right-0 z-40 bg-surface-container-lowest/95 backdrop-blur-md border-t border-[var(--glass-border)] shadow-raised pb-[var(--safe-bottom)]',
+            'fold:hidden fixed bottom-[max(0.75rem,calc(var(--safe-bottom)_+_0.5rem))] left-3 right-3 sm:left-6 sm:right-6 max-w-lg mx-auto z-40 bg-surface-container-lowest/90 backdrop-blur-xl border border-[var(--elevated-border)] rounded-full shadow-raised overflow-hidden',
             // The drawer carries the same destinations and paints over the bar —
             // leaving it up just collides with the sign-out row.
             mobileMenuOpen && 'hidden',
           )}
         >
-          <div className="grid grid-cols-4 h-16 max-w-lg mx-auto px-1.5">
+          <div className="grid grid-cols-4 h-15 px-2">
             {bottomNavItems.map(item => (
               <button
                 key={item.id}
