@@ -364,8 +364,8 @@ export default function DashboardLayout({
    * stops `scrollIntoView` from panning the page while it centres a nav chip.
    */
   const contentPadBottom = fabVisible
-    ? 'pb-[var(--content-gutter-fab)]'
-    : 'pb-[var(--content-gutter)]';
+    ? 'pb-[calc(var(--safe-bottom)_+_9rem)]'
+    : 'pb-[calc(var(--safe-bottom)_+_5.5rem)]';
 
   return (
     // `shell-h` (src/index.css) is the `100vh` → `100dvh` fallback chain. A bare
@@ -718,30 +718,24 @@ export default function DashboardLayout({
               transition={{ type: 'spring', stiffness: 380, damping: 20 }}
               onClick={onRegisterPatient}
               aria-label="Register patient"
-              className="fold:hidden fixed right-[calc(var(--shell-gutter)_+_var(--safe-right))] md:right-[calc(var(--shell-gutter-lg)_+_var(--safe-right))] bottom-[calc(var(--safe-bottom)_+_var(--fab-offset))] z-40 flex h-[var(--fab-h)] w-[var(--fab-h)] items-center justify-center rounded-full bg-primary text-on-primary shadow-float active:scale-95"
+              className="fold:hidden fixed right-[calc(var(--shell-gutter)_+_var(--safe-right))] md:right-[calc(var(--shell-gutter-lg)_+_var(--safe-right))] bottom-[calc(var(--safe-bottom)_+_4.75rem)] z-40 flex h-14 w-14 items-center justify-center rounded-full bg-primary text-on-primary shadow-float active:scale-95"
             >
               <UserPlus className="w-6 h-6" aria-hidden="true" />
             </motion.button>
           )}
         </AnimatePresence>
 
-        {/* Mobile bottom tab bar — floating rounded pill */}
+        {/* Mobile bottom tab bar — docked navigation with safe-area support */}
         <nav
           aria-label="Primary"
           className={cn(
-            // The vertical offset comes from the same --tab-bar-* tokens the
-            // content gutter above reads, so bar and clearance cannot drift. The
-            // horizontal inset follows the *content column's* gutter including its
-            // `md:` step: the bar is still up on a landscape phone (wide enough
-            // for `md:`, too short for `fold:`), and a fixed 16px there put the
-            // bar outside a page padded to 32px.
-            'fold:hidden fixed bottom-[calc(var(--safe-bottom)_+_var(--tab-bar-gap))] left-[calc(var(--shell-gutter)_+_var(--safe-left))] right-[calc(var(--shell-gutter)_+_var(--safe-right))] md:left-[calc(var(--shell-gutter-lg)_+_var(--safe-left))] md:right-[calc(var(--shell-gutter-lg)_+_var(--safe-right))] z-40 bg-surface-container-lowest border border-outline-variant/40 rounded-3xl shadow-float overflow-hidden',
+            'fold:hidden fixed bottom-0 left-0 right-0 z-40 bg-surface-container-lowest/95 backdrop-blur-md border-t border-[var(--glass-border)] shadow-raised pb-[var(--safe-bottom)]',
             // The drawer carries the same destinations and paints over the bar —
             // leaving it up just collides with the sign-out row.
             mobileMenuOpen && 'hidden',
           )}
         >
-          <div className="grid grid-cols-4 h-[var(--tab-bar-h)] px-1.5">
+          <div className="grid grid-cols-4 h-16 max-w-lg mx-auto px-1.5">
             {bottomNavItems.map(item => (
               <button
                 key={item.id}

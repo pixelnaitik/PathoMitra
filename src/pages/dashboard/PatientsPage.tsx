@@ -745,7 +745,7 @@ export default function PatientsPage({
             className="z-30 w-full sm:w-60"
           />
         </div>
-        <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+        <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto shrink-0">
           <Button
             variant={duesOnly ? 'brand' : 'outline'}
             size="sm"
@@ -761,8 +761,8 @@ export default function PatientsPage({
             Export CSV
           </Button>
           {role !== 'guest' && (
-            <Button variant="brand" size="lg" shine onClick={() => setIsModalOpen(true)}>
-              <UserPlus className="w-5 h-5" />
+            <Button variant="brand" size="sm" shine onClick={() => setIsModalOpen(true)}>
+              <UserPlus className="mr-1.5 h-4 w-4" />
               Register Patient
             </Button>
           )}

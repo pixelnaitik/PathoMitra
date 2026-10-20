@@ -974,16 +974,14 @@ export default function ReportsPage({
             className="z-30 w-full sm:w-60"
           />
         </div>
-        <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+        <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto shrink-0">
           <Button variant="outline" size="sm" onClick={exportFilteredCsv}>
             <FileSpreadsheet className="mr-2 h-4 w-4" aria-hidden="true" />
             Export CSV
           </Button>
           {role !== 'guest' && (
-            // The shared <Button> so this toolbar matches the identical
-            // "Export CSV + primary CTA" row on the Patients and Doctors tabs.
-            <Button variant="brand" size="lg" shine onClick={() => setIsModalOpen(true)}>
-              <FilePlus className="w-5 h-5" aria-hidden="true" />
+            <Button variant="brand" size="sm" shine onClick={() => setIsModalOpen(true)}>
+              <FilePlus className="mr-1.5 h-4 w-4" aria-hidden="true" />
               New Report
             </Button>
           )}
