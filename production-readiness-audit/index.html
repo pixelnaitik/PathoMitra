@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="Interactive, evidence-led production-readiness audit of PathoMitra across clinical features, Android, Electron, Web, security, data, UX, accessibility, resilience, and release engineering.">
+  <title>PathoMitra — Production Readiness Audit</title>
+  <style>
+    :root {
+      --bg: 220 32% 7%; --surface: 220 28% 11%; --surface-2: 220 25% 16%; --surface-3: 220 22% 21%;
+      --ink: 210 30% 96%; --muted: 215 18% 70%; --line: 215 22% 25%; --teal: 158 64% 48%; --teal-soft: 158 45% 18%;
+      --blue: 211 90% 62%; --blue-soft: 211 60% 20%; --amber: 36 92% 58%; --amber-soft: 36 55% 18%;
+      --red: 358 72% 62%; --red-soft: 358 45% 19%; --green: 145 58% 52%; --green-soft: 145 40% 17%;
+      --shadow: 0 24px 70px -35px hsl(220 60% 2% / .85); --radius: 22px; --radius-sm: 14px;
+      --display: "Bahnschrift", "Avenir Next Condensed", "Segoe UI", sans-serif; --body: "Segoe UI", Inter, system-ui, sans-serif;
+      --mono: "Cascadia Code", Consolas, monospace; --ease: cubic-bezier(.22,1,.36,1);
+    }
+    html[data-theme="light"] {
+      --bg: 210 24% 95%; --surface: 210 30% 99%; --surface-2: 210 24% 92%; --surface-3: 210 20% 86%;
+      --ink: 220 35% 13%; --muted: 215 14% 38%; --line: 210 18% 79%; --teal: 158 64% 30%; --teal-soft: 158 45% 88%;
+      --blue: 211 80% 40%; --blue-soft: 211 70% 90%; --amber: 33 85% 38%; --amber-soft: 36 75% 88%;
+      --red: 358 65% 43%; --red-soft: 358 60% 92%; --green: 145 50% 32%; --green-soft: 145 45% 88%;
+      --shadow: 0 24px 70px -40px hsl(220 40% 25% / .45);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; color: hsl(var(--ink)); background: hsl(var(--bg)); font: 15px/1.55 var(--body); }
+    body::before { content: ""; position: fixed; inset: 0; pointer-events: none; opacity: .35; background-image: linear-gradient(hsl(var(--line)/.22) 1px,transparent 1px),linear-gradient(90deg,hsl(var(--line)/.22) 1px,transparent 1px); background-size: 32px 32px; mask-image: linear-gradient(to bottom,black,transparent 75%); }
+    button,input,select { font: inherit; }
+    button,a { -webkit-tap-highlight-color: transparent; }
+    button { color: inherit; }
+    a { color: hsl(var(--teal)); text-underline-offset: 3px; }
+    a:hover { color: hsl(var(--blue)); }
+    :focus-visible { outline: 3px solid hsl(var(--blue)); outline-offset: 3px; border-radius: 8px; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+    .skip-link { position: fixed; left: 18px; top: -90px; z-index: 999; padding: 12px 18px; border-radius: 12px; color: white; background: hsl(var(--teal)); }
+    .skip-link:focus { top: 18px; }
+    .topbar { position: sticky; top: 0; z-index: 80; display: flex; align-items: center; gap: 18px; padding: 12px max(18px,calc((100vw - 1500px)/2)); border-bottom: 1px solid hsl(var(--line)/.8); background: hsl(var(--surface)/.88); backdrop-filter: blur(18px); }
+    .brand { display: flex; align-items: center; gap: 11px; flex: 0 0 auto; }
+    .brand-mark { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 13px 13px 13px 4px; color: white; background: linear-gradient(135deg,hsl(var(--teal)),hsl(var(--blue))); font: 900 21px/1 var(--display); box-shadow: 0 10px 30px -12px hsl(var(--teal)/.7); }
+    .brand strong { display: block; font: 800 17px/1.1 var(--display); letter-spacing: -.02em; }
+    .brand span { display: block; color: hsl(var(--muted)); font: 700 9px/1.4 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+    .tabs { display: flex; gap: 3px; flex: 1; overflow-x: auto; scrollbar-width: none; }
+    .tabs::-webkit-scrollbar { display: none; }
+    .tab { flex: 0 0 auto; border: 0; border-radius: 999px; padding: 9px 12px; color: hsl(var(--muted)); background: transparent; cursor: pointer; font-size: 12px; font-weight: 750; transition: background .2s,color .2s,transform .2s; }
+    .tab:hover { color: hsl(var(--ink)); background: hsl(var(--surface-2)); }
+    .tab[aria-selected="true"] { color: hsl(var(--bg)); background: hsl(var(--teal)); transform: translateY(-1px); }
+    .top-actions { display: flex; gap: 7px; flex: 0 0 auto; }
+    .button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 38px; padding: 8px 12px; border: 1px solid hsl(var(--line)); border-radius: 11px; color: hsl(var(--ink)); background: hsl(var(--surface)); cursor: pointer; font-size: 12px; font-weight: 750; transition: transform .18s var(--ease),border-color .18s,background .18s; }
+    .button:hover { border-color: hsl(var(--teal)); background: hsl(var(--teal-soft)); transform: translateY(-1px); }
+    .button:active { transform: translateY(0) scale(.98); }
+    .button.primary { color: white; border-color: transparent; background: hsl(var(--teal)); }
+    .button.ghost { background: transparent; }
+    main { position: relative; max-width: 1500px; margin: 0 auto; padding: 34px 22px 80px; }
+    .eyebrow { margin: 0 0 10px; color: hsl(var(--teal)); font: 800 10px/1.2 var(--mono); letter-spacing: .14em; text-transform: uppercase; }
+    h1,h2,h3,p { margin-top: 0; }
+    h1 { max-width: 880px; margin-bottom: 16px; font: 850 clamp(40px,6vw,78px)/.96 var(--display); letter-spacing: -.055em; }
+    h2 { margin-bottom: 8px; font: 820 clamp(26px,3vw,40px)/1.04 var(--display); letter-spacing: -.035em; }
+    h3 { margin-bottom: 6px; font: 800 19px/1.18 var(--display); letter-spacing: -.02em; }
+    .lede { max-width: 800px; color: hsl(var(--muted)); font-size: 16px; }
+    .hero { position: relative; display: grid; grid-template-columns: minmax(0,1.45fr) minmax(310px,.55fr); gap: 24px; min-height: 470px; padding: clamp(24px,4vw,48px); overflow: hidden; border: 1px solid hsl(var(--line)); border-radius: 30px; background: hsl(var(--surface)); box-shadow: var(--shadow); }
+    .hero::before { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg,hsl(var(--surface)/.98) 0%,hsl(var(--surface)/.9) 48%,hsl(var(--surface)/.35) 100%),url('../public/auth-lab-bg.jpg') center/cover; opacity: .9; }
+    .hero::after { content: ""; position: absolute; width: 330px; height: 330px; right: -130px; bottom: -190px; border: 48px solid hsl(var(--teal)/.12); border-radius: 50%; }
+    .hero-copy,.instrument { position: relative; z-index: 1; }
+    .verdict-banner { display: inline-flex; align-items: center; gap: 9px; margin: 2px 0 20px; padding: 8px 12px; border: 1px solid hsl(var(--red)/.4); border-radius: 999px; color: hsl(var(--red)); background: hsl(var(--red-soft)); font: 800 10px/1 var(--mono); letter-spacing: .09em; text-transform: uppercase; }
+    .verdict-banner::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 5px hsl(var(--red)/.12); }
+    .hero-note { max-width: 760px; margin: 18px 0 0; padding: 14px 16px; border-left: 3px solid hsl(var(--amber)); border-radius: 0 12px 12px 0; color: hsl(var(--ink)); background: hsl(var(--amber-soft)/.65); font-size: 12px; }
+    .instrument { align-self: stretch; display: flex; flex-direction: column; justify-content: center; min-height: 370px; padding: 26px; border: 1px solid hsl(var(--line)/.7); border-radius: 26px; background: hsl(var(--bg)/.72); backdrop-filter: blur(14px); }
+    .instrument-label { color: hsl(var(--muted)); font: 750 9px/1 var(--mono); letter-spacing: .13em; text-transform: uppercase; }
+    .score-ring { --score: 5; --ring: hsl(var(--amber)); display: grid; place-items: center; width: 180px; height: 180px; margin: 24px auto 18px; border-radius: 50%; background: conic-gradient(var(--ring) calc(var(--score)*10%),hsl(var(--surface-3)) 0); position: relative; }
+    .score-ring::before { content: ""; position: absolute; inset: 12px; border-radius: 50%; background: hsl(var(--surface)); }
+    .score-ring strong,.score-ring span { position: relative; z-index: 1; }
+    .score-ring strong { display: block; text-align: center; font: 850 56px/.9 var(--display); letter-spacing: -.06em; }
+    .score-ring span { display: block; margin-top: 8px; text-align: center; color: hsl(var(--muted)); font: 750 9px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+    .instrument-verdict { text-align: center; font: 850 25px/1 var(--display); }
+    .instrument-sub { margin: 10px auto 0; max-width: 290px; text-align: center; color: hsl(var(--muted)); font-size: 12px; }
+    .lifecycle { margin-top: 26px; }
+    .lifecycle-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 10px; }
+    .lifecycle-head strong { font: 800 11px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .lifecycle-head span { color: hsl(var(--muted)); font-size: 11px; }
+    .lifecycle-track { display: grid; grid-template-columns: repeat(8,minmax(92px,1fr)); gap: 7px; overflow-x: auto; padding-bottom: 4px; }
+    .life-node { min-width: 92px; padding: 11px 10px; border: 1px solid hsl(var(--line)); border-top: 4px solid hsl(var(--amber)); border-radius: 12px; text-align: left; background: hsl(var(--surface)/.85); cursor: pointer; transition: transform .18s,border-color .18s; }
+    .life-node:hover { transform: translateY(-2px); border-color: hsl(var(--teal)); }
+    .life-node.risk { border-top-color: hsl(var(--red)); }
+    .life-node.missing { border-top-color: hsl(var(--red)); border-style: dashed; }
+    .life-node strong { display: block; font: 800 12px/1.2 var(--display); }
+    .life-node span { display: block; margin-top: 5px; color: hsl(var(--muted)); font: 700 8px/1.3 var(--mono); text-transform: uppercase; }
+    .stat-grid { display: grid; grid-template-columns: repeat(5,1fr); gap: 11px; margin: 18px 0 30px; }
+    .stat-card { padding: 16px; border: 1px solid hsl(var(--line)); border-radius: 16px; background: hsl(var(--surface)); }
+    .stat-card span { display: block; color: hsl(var(--muted)); font: 750 9px/1.2 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .stat-card strong { display: block; margin-top: 8px; font: 850 29px/1 var(--display); letter-spacing: -.04em; }
+    .stat-card small { display: block; margin-top: 7px; color: hsl(var(--muted)); font-size: 10px; }
+    .view[hidden] { display: none !important; }
+    .section { margin-top: 32px; }
+    .section-head { display: flex; justify-content: space-between; align-items: end; gap: 18px; margin-bottom: 14px; }
+    .section-head p { max-width: 740px; margin: 0; color: hsl(var(--muted)); font-size: 12px; }
+    .panel { border: 1px solid hsl(var(--line)); border-radius: var(--radius); background: hsl(var(--surface)); box-shadow: 0 14px 40px -32px hsl(var(--bg)/.8); }
+    .panel-pad { padding: 20px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 13px; }
+    .mini-head { margin: 0 0 12px; color: hsl(var(--muted)); font: 800 9px/1.2 var(--mono); letter-spacing: .11em; text-transform: uppercase; }
+    .gate-list,.finding-list,.improvement-list { display: grid; gap: 9px; }
+    .gate { display: grid; grid-template-columns: auto minmax(0,1fr) auto; gap: 12px; align-items: start; padding: 13px; border: 1px solid hsl(var(--line)); border-radius: 13px; background: hsl(var(--surface)); }
+    .gate h3 { margin: 0; font-size: 15px; }
+    .gate p { margin: 4px 0 0; color: hsl(var(--muted)); font-size: 11px; }
+    .gate-owner { color: hsl(var(--muted)); font: 700 8px/1.5 var(--mono); text-align: right; text-transform: uppercase; }
+    .badge { display: inline-flex; align-items: center; min-height: 22px; padding: 3px 7px; border: 1px solid transparent; border-radius: 999px; font: 800 8px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
+    .p0,.no { color: hsl(var(--red)); background: hsl(var(--red-soft)); border-color: hsl(var(--red)/.25); }
+    .p1,.partial { color: hsl(var(--amber)); background: hsl(var(--amber-soft)); border-color: hsl(var(--amber)/.25); }
+    .p2,.yes,.pass { color: hsl(var(--green)); background: hsl(var(--green-soft)); border-color: hsl(var(--green)/.25); }
+    .neutral { color: hsl(var(--blue)); background: hsl(var(--blue-soft)); border-color: hsl(var(--blue)/.25); }
+    .warn { color: hsl(var(--amber)); background: hsl(var(--amber-soft)); }
+    .fail,.not-run { color: hsl(var(--red)); background: hsl(var(--red-soft)); }
+    .unknown { color: hsl(var(--muted)); background: hsl(var(--surface-2)); }
+    .dimension-list { display: grid; gap: 9px; }
+    .dimension-row { display: grid; grid-template-columns: 145px 1fr 34px; gap: 9px; align-items: center; }
+    .dimension-row label { font-size: 11px; font-weight: 700; }
+    .bar { height: 8px; overflow: hidden; border-radius: 999px; background: hsl(var(--surface-3)); }
+    .bar span { display: block; width: calc(var(--value)*10%); height: 100%; border-radius: inherit; background: var(--bar-color,hsl(var(--teal))); transform-origin: left; animation: bar-in .65s var(--ease) both; }
+    .dimension-row output { text-align: right; font: 800 11px/1 var(--mono); }
+    @keyframes bar-in { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+    .donut-wrap { display: flex; align-items: center; gap: 18px; margin-top: 18px; }
+    .donut { --yes: 0deg; --partial: 180deg; display: grid; place-items: center; width: 120px; height: 120px; flex: 0 0 auto; border-radius: 50%; background: conic-gradient(hsl(var(--green)) 0 var(--yes),hsl(var(--amber)) var(--yes) var(--partial),hsl(var(--red)) var(--partial) 360deg); position: relative; }
+    .donut::before { content: ""; position: absolute; inset: 19px; border-radius: 50%; background: hsl(var(--surface)); }
+    .donut-center { position: relative; text-align: center; }
+    .donut-center strong { display: block; font: 850 25px/1 var(--display); }
+    .donut-center span { color: hsl(var(--muted)); font: 700 8px/1 var(--mono); text-transform: uppercase; }
+    .legend { display: grid; gap: 7px; }
+    .legend div { display: flex; align-items: center; gap: 7px; font-size: 11px; }
+    .legend i { width: 9px; height: 9px; border-radius: 3px; }
+    .filters { position: sticky; top: 70px; z-index: 30; display: flex; flex-wrap: wrap; gap: 8px; align-items: end; padding: 12px; margin-bottom: 14px; border: 1px solid hsl(var(--line)); border-radius: 15px; background: hsl(var(--surface)/.94); backdrop-filter: blur(14px); }
+    .filter-field { display: grid; gap: 4px; }
+    .filter-field label { color: hsl(var(--muted)); font: 750 8px/1 var(--mono); letter-spacing: .07em; text-transform: uppercase; }
+    .filter-field input,.filter-field select { min-height: 36px; max-width: 230px; padding: 7px 9px; border: 1px solid hsl(var(--line)); border-radius: 9px; color: hsl(var(--ink)); background: hsl(var(--surface-2)); }
+    .filter-field.search { flex: 1 1 230px; }
+    .filter-field.search input { width: 100%; max-width: none; }
+    .result-count { margin-left: auto; color: hsl(var(--muted)); font: 700 10px/1 var(--mono); }
+    .feature-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 13px; }
+    .feature-card { display: flex; flex-direction: column; min-height: 325px; padding: 17px; border: 1px solid hsl(var(--line)); border-radius: 18px; background: hsl(var(--surface)); transition: transform .2s var(--ease),border-color .2s,box-shadow .2s; }
+    .feature-card:hover { transform: translateY(-3px); border-color: hsl(var(--teal)/.65); box-shadow: var(--shadow); }
+    .feature-top { display: flex; justify-content: space-between; gap: 10px; align-items: start; }
+    .feature-category { color: hsl(var(--muted)); font: 800 8px/1.3 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .feature-title { margin: 7px 0; font: 820 19px/1.13 var(--display); letter-spacing: -.025em; }
+    .feature-title button { padding: 0; border: 0; text-align: left; color: inherit; background: transparent; cursor: pointer; font: inherit; }
+    .feature-title button:hover { color: hsl(var(--teal)); }
+    .feature-summary { margin: 0 0 11px; color: hsl(var(--muted)); font-size: 11px; }
+    .mini-score { --score: 5; --score-color: hsl(var(--amber)); display: grid; place-items: center; width: 48px; height: 48px; flex: 0 0 auto; border-radius: 50%; background: conic-gradient(var(--score-color) calc(var(--score)*10%),hsl(var(--surface-3)) 0); position: relative; }
+    .mini-score::before { content: ""; position: absolute; inset: 5px; border-radius: 50%; background: hsl(var(--surface)); }
+    .mini-score strong { position: relative; font: 850 17px/1 var(--display); }
+    .platform-tags { display: flex; flex-wrap: wrap; gap: 5px; margin: 10px 0; }
+    .platform-tag { padding: 3px 6px; border-radius: 6px; color: hsl(var(--blue)); background: hsl(var(--blue-soft)); font: 700 8px/1 var(--mono); text-transform: uppercase; }
+    .top-gaps { display: grid; gap: 6px; margin-bottom: 12px; }
+    .top-gap { display: flex; gap: 6px; align-items: start; font-size: 10px; }
+    .top-gap span:last-child { color: hsl(var(--muted)); }
+    .feature-footer { display: flex; justify-content: space-between; gap: 8px; align-items: center; margin-top: auto; padding-top: 11px; border-top: 1px solid hsl(var(--line)); }
+    .text-button { padding: 3px 0; border: 0; color: hsl(var(--teal)); background: transparent; cursor: pointer; font-weight: 800; font-size: 11px; }
+    .text-button:hover { text-decoration: underline; }
+    .compare-button { min-height: 28px; padding: 4px 8px; border: 1px solid hsl(var(--line)); border-radius: 8px; color: hsl(var(--muted)); background: transparent; cursor: pointer; font-size: 9px; font-weight: 750; }
+    .compare-button.selected { color: hsl(var(--teal)); border-color: hsl(var(--teal)); background: hsl(var(--teal-soft)); }
+    .compare-tray { position: fixed; left: 50%; bottom: 18px; z-index: 70; display: none; align-items: center; gap: 10px; max-width: calc(100vw - 28px); padding: 10px 12px; border: 1px solid hsl(var(--teal)/.5); border-radius: 14px; background: hsl(var(--surface)/.96); box-shadow: var(--shadow); transform: translateX(-50%); backdrop-filter: blur(14px); }
+    .compare-tray.show { display: flex; animation: rise-in .25s var(--ease); }
+    .compare-tray span { color: hsl(var(--muted)); font-size: 11px; }
+    @keyframes rise-in { from { opacity: 0; transform: translate(-50%,10px); } to { opacity: 1; transform: translate(-50%,0); } }
+    .empty-state { padding: 36px; border: 1px dashed hsl(var(--line)); border-radius: 17px; text-align: center; color: hsl(var(--muted)); background: hsl(var(--surface)); }
+    .finding { padding: 15px; border: 1px solid hsl(var(--line)); border-left: 5px solid hsl(var(--amber)); border-radius: 13px; background: hsl(var(--surface)); }
+    .finding.severity-P0 { border-left-color: hsl(var(--red)); }
+    .finding.severity-P2 { border-left-color: hsl(var(--blue)); }
+    .finding-head { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; margin-bottom: 6px; }
+    .finding h3 { flex: 1 1 260px; margin: 0; font-size: 17px; }
+    .finding p { margin: 6px 0 9px; color: hsl(var(--muted)); font-size: 11px; }
+    .refs { display: flex; flex-wrap: wrap; gap: 5px; }
+    .ref { display: inline-flex; gap: 5px; align-items: center; padding: 4px 6px; border: 1px solid hsl(var(--line)); border-radius: 7px; color: hsl(var(--blue)); background: hsl(var(--surface-2)); font: 700 8px/1.3 var(--mono); text-decoration: none; }
+    .ref:hover { border-color: hsl(var(--blue)); }
+    .platform-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 13px; }
+    .platform-card { padding: 18px; border: 1px solid hsl(var(--line)); border-radius: 19px; background: hsl(var(--surface)); }
+    .platform-score { display: flex; align-items: baseline; gap: 7px; margin: 10px 0; }
+    .platform-score strong { font: 850 41px/1 var(--display); letter-spacing: -.05em; }
+    .platform-score span { color: hsl(var(--muted)); font: 700 9px/1 var(--mono); text-transform: uppercase; }
+    .check-list { display: grid; gap: 7px; margin-top: 14px; }
+    .check { display: grid; grid-template-columns: 112px 1fr; gap: 8px; padding: 8px 0; border-top: 1px solid hsl(var(--line)); font-size: 10px; }
+    .check-status { font: 800 8px/1.4 var(--mono); text-transform: uppercase; }
+    .radar-wrap { display: grid; grid-template-columns: minmax(300px,440px) 1fr; gap: 18px; align-items: center; }
+    .radar { width: 100%; height: auto; }
+    .radar text { fill: hsl(var(--muted)); font: 700 9px var(--mono); }
+    .heatmap-wrap { overflow-x: auto; border: 1px solid hsl(var(--line)); border-radius: 15px; background: hsl(var(--surface)); }
+    .heatmap { width: 100%; min-width: 980px; border-collapse: collapse; font-size: 9px; }
+    .heatmap th,.heatmap td { padding: 7px 5px; border-right: 1px solid hsl(var(--line)); border-bottom: 1px solid hsl(var(--line)); text-align: center; }
+    .heatmap th { position: sticky; top: 0; color: hsl(var(--muted)); background: hsl(var(--surface-2)); font: 700 8px/1.2 var(--mono); text-transform: uppercase; }
+    .heatmap th:first-child,.heatmap td:first-child { min-width: 190px; text-align: left; }
+    .heat-cell { --value: 5; display: inline-grid; place-items: center; width: 25px; height: 22px; border-radius: 5px; color: white; background: hsl(calc(150 - var(--value)*13) 38% 39%); font: 800 8px/1 var(--mono); }
+    .evidence-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    .evidence-table th,.evidence-table td { padding: 10px; border-bottom: 1px solid hsl(var(--line)); text-align: left; vertical-align: top; }
+    .evidence-table th { color: hsl(var(--muted)); background: hsl(var(--surface-2)); font: 700 8px/1.2 var(--mono); text-transform: uppercase; }
+    .evidence-table code { color: hsl(var(--blue)); font: 700 9px/1.4 var(--mono); }
+    .vuln-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 11px; }
+    .vuln { padding: 14px; border: 1px solid hsl(var(--line)); border-radius: 14px; background: hsl(var(--surface)); }
+    .vuln h3 { margin-top: 10px; font-size: 16px; }
+    .vuln p { margin: 6px 0; color: hsl(var(--muted)); font-size: 10px; }
+    .vuln small { color: hsl(var(--blue)); font: 700 8px/1.4 var(--mono); }
+    .rubric { display: grid; grid-template-columns: repeat(2,1fr); gap: 9px; }
+    .rubric div { padding: 12px; border: 1px solid hsl(var(--line)); border-radius: 12px; background: hsl(var(--surface-2)); font-size: 10px; }
+    .rubric strong { display: block; margin-bottom: 5px; font: 800 13px/1 var(--display); }
+    .roadmap-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; }
+    .roadmap-column { padding: 17px; border: 1px solid hsl(var(--line)); border-radius: 19px; background: hsl(var(--surface)); }
+    .roadmap-column h3 { display: flex; align-items: center; gap: 8px; }
+    .roadmap-column .gate { grid-template-columns: auto 1fr; }
+    .roadmap-column .gate-owner { grid-column: 2; text-align: left; }
+    dialog { width: min(1000px,calc(100vw - 28px)); max-height: calc(100dvh - 30px); padding: 0; border: 1px solid hsl(var(--line)); border-radius: 24px; color: hsl(var(--ink)); background: hsl(var(--surface)); box-shadow: 0 40px 120px hsl(220 60% 2% / .7); }
+    dialog::backdrop { background: hsl(220 45% 3% / .72); backdrop-filter: blur(6px); }
+    .dialog-head { position: sticky; top: 0; z-index: 2; display: flex; justify-content: space-between; gap: 15px; align-items: start; padding: 20px 22px; border-bottom: 1px solid hsl(var(--line)); background: hsl(var(--surface)/.96); backdrop-filter: blur(12px); }
+    .dialog-head h2 { margin: 5px 0 0; font-size: 29px; }
+    .dialog-body { padding: 21px 22px 30px; }
+    .dialog-score { display: flex; gap: 9px; align-items: center; }
+    .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin: 18px 0; }
+    .detail-block { padding: 15px; border: 1px solid hsl(var(--line)); border-radius: 14px; background: hsl(var(--surface-2)); }
+    .detail-block ul { margin: 0; padding-left: 17px; }
+    .detail-block li { margin: 5px 0; font-size: 11px; }
+    .gap-detail,.improvement,.resolved-detail { padding: 13px 0; border-top: 1px solid hsl(var(--line)); }
+    .gap-detail:first-child,.improvement:first-child,.resolved-detail:first-child { border-top: 0; }
+    .gap-detail h4,.improvement h4,.resolved-detail h4 { margin: 6px 0 5px; font: 800 15px/1.25 var(--display); }
+    .gap-detail p,.improvement p,.resolved-detail p { margin: 5px 0 8px; color: hsl(var(--muted)); font-size: 11px; }
+    .acceptance { padding: 8px 10px; border-radius: 9px; color: hsl(var(--green)); background: hsl(var(--green-soft)); font-size: 10px; }
+    .toast { position: fixed; right: 18px; bottom: 18px; z-index: 200; max-width: min(390px,calc(100vw - 36px)); padding: 12px 15px; border-radius: 12px; color: white; background: hsl(var(--ink)); box-shadow: var(--shadow); opacity: 0; transform: translateY(12px); pointer-events: none; transition: opacity .2s,transform .2s; }
+    html[data-theme="light"] .toast { color: hsl(var(--surface)); }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    footer { position: relative; max-width: 1500px; margin: 0 auto; padding: 22px; color: hsl(var(--muted)); font-size: 10px; }
+    .compare-table { width: 100%; min-width: 720px; border-collapse: collapse; font-size: 10px; }
+    .compare-table th,.compare-table td { padding: 9px; border-bottom: 1px solid hsl(var(--line)); text-align: center; }
+    .compare-table th:first-child,.compare-table td:first-child { text-align: left; }
+    .compare-table th { color: hsl(var(--muted)); background: hsl(var(--surface-2)); font: 700 8px/1.2 var(--mono); text-transform: uppercase; }
+    @media (max-width: 1100px) {
+      .hero { grid-template-columns: 1fr; } .instrument { min-height: 300px; } .feature-grid { grid-template-columns: repeat(2,1fr); }
+      .platform-grid,.roadmap-grid { grid-template-columns: 1fr; } .vuln-grid { grid-template-columns: repeat(2,1fr); }
+      .top-actions .button span { display: none; } .stat-grid { grid-template-columns: repeat(3,1fr); }
+    }
+    @media (max-width: 720px) {
+      .topbar { gap: 9px; padding: 10px 12px; } .brand span { display: none; } .brand strong { font-size: 14px; }
+      .tab { padding: 8px 9px; font-size: 10px; } main { padding: 22px 12px 55px; } .hero { padding: 22px 17px; border-radius: 23px; }
+      h1 { font-size: clamp(38px,13vw,58px); } .stat-grid { grid-template-columns: repeat(2,1fr); }
+      .grid-2,.grid-3,.detail-grid,.radar-wrap { grid-template-columns: 1fr; } .feature-grid { grid-template-columns: 1fr; }
+      .feature-card { min-height: 0; } .filters { position: static; } .filter-field { flex: 1 1 125px; }
+      .filter-field input,.filter-field select { width: 100%; max-width: none; } .result-count { margin-left: 0; }
+      .dimension-row { grid-template-columns: 115px 1fr 30px; } .gate { grid-template-columns: auto 1fr; }
+      .gate-owner { grid-column: 2; text-align: left; } .vuln-grid,.rubric { grid-template-columns: 1fr; }
+      .dialog-head,.dialog-body { padding: 16px; } .dialog-head h2 { font-size: 22px; } .donut-wrap { justify-content: center; }
+      .lifecycle-track { grid-template-columns: repeat(8,95px); } .compare-tray { width: calc(100vw - 24px); justify-content: space-between; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *,*::before,*::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+    }
+    @media print {
+      :root,html[data-theme="light"] { --bg: 0 0% 100%; --surface: 0 0% 100%; --surface-2: 0 0% 95%; --surface-3: 0 0% 90%; --ink: 220 30% 12%; --muted: 215 10% 35%; --line: 210 10% 80%; }
+      body { background: white; color: black; font-size: 10px; } body::before,.topbar,.filters,.top-actions,.toast,.compare-tray,.text-button,.compare-button,footer,dialog { display: none !important; }
+      main { max-width: none; padding: 0; } .hero { min-height: 0; box-shadow: none; break-inside: avoid; } .hero::before { background: none; }
+      .view[hidden] { display: none !important; } .print-all .view[hidden] { display: block !important; } .print-all .view { break-before: page; }
+      .panel,.feature-card,.gate,.finding,.platform-card,.vuln { box-shadow: none; break-inside: avoid; } .feature-grid { grid-template-columns: repeat(2,1fr); }
+      a { color: black; text-decoration: none; } .ref { color: black; background: white; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to audit content</a>
+  <header class="topbar">
+    <div class="brand" aria-label="PathoMitra audit">
+      <div class="brand-mark" aria-hidden="true">P</div>
+      <div><strong>PathoMitra</strong><span>Readiness audit · 2.8.9</span></div>
+    </div>
+    <nav class="tabs" role="tablist" aria-label="Audit views">
+      <button class="tab" role="tab" aria-selected="true" aria-controls="view-overview" data-view="overview">Overview</button>
+      <button class="tab" role="tab" aria-selected="false" aria-controls="view-features" data-view="features">Features</button>
+      <button class="tab" role="tab" aria-selected="false" aria-controls="view-findings" data-view="findings">Risk register</button>
+      <button class="tab" role="tab" aria-selected="false" aria-controls="view-quality" data-view="quality">Quality matrix</button>
+      <button class="tab" role="tab" aria-selected="false" aria-controls="view-platforms" data-view="platforms">Platforms</button>
+      <button class="tab" role="tab" aria-selected="false" aria-controls="view-evidence" data-view="evidence">Evidence</button>
+      <button class="tab" role="tab" aria-selected="false" aria-controls="view-roadmap" data-view="roadmap">Roadmap</button>
+    </nav>
+    <div class="top-actions">
+      <button class="button" id="themeToggle" aria-label="Switch to light theme"><span aria-hidden="true">◐</span><span>Theme</span></button>
+      <button class="button" id="downloadJson" aria-label="Download audit JSON"><span aria-hidden="true">↓</span><span>JSON</span></button>
+      <button class="button" id="printAudit" aria-label="Print full audit"><span aria-hidden="true">⎙</span><span>Print</span></button>
+    </div>
+  </header>
+
+  <main id="main-content">
+    <section class="hero" aria-labelledby="audit-title">
+      <div class="hero-copy">
+        <p class="eyebrow">Evidence-led production review · Android / Windows / Web</p>
+        <h1 id="audit-title">Production readiness, under the microscope.</h1>
+        <p class="lede">A feature-by-feature audit of PathoMitra’s clinical workflows, data integrity, platform shells, security, UX, accessibility, resilience, performance, and release controls.</p>
+        <div class="verdict-banner">Overall verdict: no-go for broad production</div>
+        <p class="hero-note"><strong>Recommended posture:</strong> a constrained single-operator pilot only after all P0 gates are closed, clinical governance approves ranges and critical-value policy, and signed Android/Desktop artifacts pass clean verification.</p>
+        <div class="lifecycle">
+          <div class="lifecycle-head"><strong>Clinical journey coverage</strong><span>Open a stage for its full audit</span></div>
+          <div class="lifecycle-track" id="lifecycleTrack"></div>
+        </div>
+      </div>
+      <aside class="instrument" aria-label="Overall readiness score">
+        <div class="instrument-label">Composite readiness index</div>
+        <div class="score-ring" id="overallRing"><div><strong id="overallScore">0.0</strong><span>out of 10</span></div></div>
+        <div class="instrument-verdict">NO-GO</div>
+        <p class="instrument-sub" id="overallSub"></p>
+      </aside>
+    </section>
+
+    <section class="stat-grid" aria-label="Audit summary">
+      <div class="stat-card"><span>Capabilities audited</span><strong id="featureCount">0</strong><small>Clinical, platform, cross-cutting</small></div>
+      <div class="stat-card"><span>P0 findings</span><strong id="p0Count">0</strong><small>Release-blocking evidence</small></div>
+      <div class="stat-card"><span>P1 findings</span><strong id="p1Count">0</strong><small>Material operational risk</small></div>
+      <div class="stat-card"><span>Verified fixes</span><strong id="resolvedCount">0</strong><small>Remediations confirmed in source</small></div>
+      <div class="stat-card"><span>Quality dimensions</span><strong id="dimensionCount">0</strong><small>Scored for every feature</small></div>
+    </section>
+
+    <section class="view" id="view-overview" role="tabpanel" aria-labelledby="tab-overview">
+      <div class="section-head"><div><p class="eyebrow">Release decision</p><h2>What blocks production now</h2></div><p>P0 items are correctness, security, clinical-safety, data-integrity, continuity, or release-provenance failures. Numeric averages never override a P0.</p></div>
+      <div class="grid-2">
+        <div class="panel panel-pad"><p class="mini-head">Priority gates</p><div class="gate-list" id="priorityGates"></div></div>
+        <div class="panel panel-pad">
+          <p class="mini-head">Average quality profile</p><div class="dimension-list" id="overallDimensions"></div>
+          <div class="donut-wrap"><div class="donut" id="verdictDonut"><div class="donut-center"><strong id="donutTotal">0</strong><span>features</span></div></div><div class="legend" id="verdictLegend"></div></div>
+        </div>
+      </div>
+      <div class="section">
+        <div class="section-head"><div><p class="eyebrow">Verified remediations</p><h2>What has already improved</h2></div><p>These fixes are present in the current source. They are retained as evidence so the audit does not confuse historical gaps with current blockers.</p></div>
+        <div class="grid-3" id="resolvedGrid"></div>
+      </div>
+      <div class="section">
+        <div class="section-head"><div><p class="eyebrow">Runtime posture</p><h2>Platforms are not equally ready</h2></div><p>Platform scores summarize target-specific release evidence; source quality and artifact readiness are related but distinct.</p></div>
+        <div class="platform-grid" id="overviewPlatforms"></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-features" role="tabpanel" aria-labelledby="tab-features" hidden>
+      <div class="section-head"><div><p class="eyebrow">Feature audit</p><h2>Every capability, scored and evidenced</h2></div><p>Open any feature for its description, verdict, 12 dimension scores, active gaps, verified fixes, and acceptance-oriented improvements. Select up to three to compare.</p></div>
+      <div class="filters" aria-label="Feature filters">
+        <div class="filter-field search"><label for="featureSearch">Search</label><input id="featureSearch" type="search" placeholder="Feature, gap, file, function…"></div>
+        <div class="filter-field"><label for="verdictFilter">Verdict</label><select id="verdictFilter"><option value="all">All verdicts</option><option>NO</option><option>PARTIALLY</option><option>YES</option></select></div>
+        <div class="filter-field"><label for="categoryFilter">Category</label><select id="categoryFilter"><option value="all">All categories</option></select></div>
+        <div class="filter-field"><label for="platformFilter">Platform</label><select id="platformFilter"><option value="all">All platforms</option><option>Android</option><option>Desktop</option><option>Web</option></select></div>
+        <div class="filter-field"><label for="dimensionFilter">Dimension</label><select id="dimensionFilter"><option value="all">All dimensions</option></select></div>
+        <div class="filter-field"><label for="severityFilter">Gap severity</label><select id="severityFilter"><option value="all">All severities</option><option>P0</option><option>P1</option><option>P2</option></select></div>
+        <button class="button ghost" id="resetFilters">Reset</button><span class="result-count" id="featureResultCount" aria-live="polite"></span>
+      </div>
+      <div class="feature-grid" id="featureGrid"></div><div class="empty-state" id="featureEmpty" hidden>No features match these filters.</div>
+    </section>
+
+    <section class="view" id="view-findings" role="tabpanel" aria-labelledby="tab-findings" hidden>
+      <div class="section-head"><div><p class="eyebrow">Risk register</p><h2>All active, source-linked findings</h2></div><p>Historical issues that have been fixed are shown separately under Verified remediations, not counted as active risk.</p></div>
+      <div class="filters" aria-label="Finding filters">
+        <div class="filter-field search"><label for="findingSearch">Search findings</label><input id="findingSearch" type="search" placeholder="Issue, file, function…"></div>
+        <div class="filter-field"><label for="findingSeverity">Severity</label><select id="findingSeverity"><option value="all">All severities</option><option>P0</option><option>P1</option><option>P2</option></select></div>
+        <div class="filter-field"><label for="findingDimension">Dimension</label><select id="findingDimension"><option value="all">All dimensions</option></select></div>
+        <div class="filter-field"><label for="findingFeature">Feature</label><select id="findingFeature"><option value="all">All features</option></select></div>
+        <button class="button ghost" id="resetFindingFilters">Reset</button><span class="result-count" id="findingResultCount" aria-live="polite"></span>
+      </div>
+      <div class="finding-list" id="findingsList"></div><div class="empty-state" id="findingEmpty" hidden>No findings match these filters.</div>
+    </section>
+
+    <section class="view" id="view-quality" role="tabpanel" aria-labelledby="tab-quality" hidden>
+      <div class="section-head"><div><p class="eyebrow">Quality attributes</p><h2>Readiness heatmap</h2></div><p>Twelve dimensions per feature. Scores are diagnostic averages; any P0 forces a NO verdict. Hover a heatmap cell for its dimension description.</p></div>
+      <div class="grid-2">
+        <div class="panel panel-pad"><p class="mini-head">Average quality radar</p><div class="radar-wrap"><svg class="radar" id="radarChart" viewBox="0 0 520 430" role="img" aria-label="Radar chart of average PathoMitra quality scores"></svg><div id="radarSummary"></div></div></div>
+        <div class="panel panel-pad"><p class="mini-head">Scoring rubric</p><div class="rubric" id="rubricGrid"></div><p style="margin:15px 0 0;color:hsl(var(--muted));font-size:11px">“Unknown” runtime behavior is treated as a readiness gap, not assumed to work. The report is not a certification.</p></div>
+      </div>
+      <div class="section"><div class="heatmap-wrap"><table class="heatmap" id="heatmapTable"><caption class="sr-only">Feature by quality dimension scores</caption></table></div></div>
+      <div class="section"><div class="panel panel-pad"><p class="mini-head">Dimension definitions</p><div class="grid-3" id="dimensionCards"></div></div></div>
+    </section>
+
+    <section class="view" id="view-platforms" role="tabpanel" aria-labelledby="tab-platforms" hidden>
+      <div class="section-head"><div><p class="eyebrow">Runtime & artifact gates</p><h2>Android, Desktop, and Web</h2></div><p>Native encryption is a strength, but release identity, signing, file boundaries, device evidence, and browser storage remain decisive.</p></div>
+      <div class="platform-grid" id="platformCards"></div>
+      <div class="section"><div class="section-head"><div><p class="eyebrow">Release checklist</p><h2>Acceptance gates</h2></div><p>Concrete completion criteria, owners, and linked findings—not generic recommendations.</p></div><div class="gate-list" id="allGates"></div></div>
+    </section>
+
+    <section class="view" id="view-evidence" role="tabpanel" aria-labelledby="tab-evidence" hidden>
+      <div class="section-head"><div><p class="eyebrow">Verification record</p><h2>Commands, artifacts, and dependencies</h2></div><p>Results distinguish current source checks, local artifacts, and work that was not run. Failed coverage is not replaced with stale historical numbers.</p></div>
+      <div class="panel panel-pad" style="overflow-x:auto"><table class="evidence-table"><thead><tr><th>Check</th><th>Command</th><th>Status</th><th>Observed result</th><th>Scope</th></tr></thead><tbody id="checksBody"></tbody></table></div>
+      <div class="section"><div class="section-head"><div><p class="eyebrow">Supply chain</p><h2>Current dependency advisories</h2></div><p>Production-only: one low. Full tree: one high in tooling, 20 moderate, one low. No critical finding was reported.</p></div><div class="vuln-grid" id="vulnGrid"></div></div>
+      <div class="section"><div class="section-head"><div><p class="eyebrow">Audit boundaries</p><h2>What this review does not prove</h2></div></div><div class="panel panel-pad"><ul id="limitationsList" style="margin:0;padding-left:18px"></ul></div></div>
+    </section>
+
+    <section class="view" id="view-roadmap" role="tabpanel" aria-labelledby="tab-roadmap" hidden>
+      <div class="section-head"><div><p class="eyebrow">Remediation plan</p><h2>From no-go to pilot to production</h2></div><p>Sequence work by release risk. “Now” closes P0 gates; “Next” hardens operations and evidence; “Later” raises mature features toward 10/10.</p></div>
+      <div class="roadmap-grid" id="roadmapGrid"></div>
+      <div class="section"><div class="panel panel-pad"><p class="mini-head">Definition of done</p><div class="grid-3" id="definitionCards"></div></div></div>
+    </section>
+  </main>
+
+  <div class="compare-tray" id="compareTray" aria-live="polite"><span id="compareLabel">0 selected</span><button class="button primary" id="openCompare">Compare</button><button class="button ghost" id="clearCompare">Clear</button></div>
+  <dialog id="featureDialog" aria-labelledby="dialogTitle"><div class="dialog-head"><div><p class="eyebrow" id="dialogCategory"></p><h2 id="dialogTitle"></h2><div class="platform-tags" id="dialogPlatforms"></div></div><div class="dialog-score"><div id="dialogVerdict"></div><div class="mini-score" id="dialogScore"><strong></strong></div></div></div><div class="dialog-body" id="dialogBody"></div></dialog>
+  <dialog id="compareDialog" aria-labelledby="compareTitle"><div class="dialog-head"><div><p class="eyebrow">Side-by-side assessment</p><h2 id="compareTitle">Feature comparison</h2></div><button class="button" id="closeCompare" aria-label="Close comparison">Close</button></div><div class="dialog-body" id="compareBody"></div></dialog>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <footer>PathoMitra production-readiness audit · Source snapshot 2.8.9 · Generated 2026-11-24 · Evidence links are relative to the repository root.</footer>
+
+  <script src="audit-data-v2.js"></script>
+  <script>
+    (() => {
+      'use strict';
+      const D = globalThis.AUDIT_DATA;
+      const $ = (selector, root = document) => root.querySelector(selector);
+      const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+      const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+      const avg = values => values.reduce((a,b) => a+b, 0) / values.length;
+      const scoreColor = score => score >= 9 ? 'hsl(var(--green))' : score >= 5 ? 'hsl(var(--amber))' : 'hsl(var(--red))';
+      const verdictClass = verdict => verdict.toLowerCase();
+      const severityClass = severity => `severity-${severity.toLowerCase()}`;
+      const dimById = id => D.dimensions.find(d => d.id === id);
+      const featureById = id => D.features.find(f => f.id === id);
+      const selected = new Set();
+      let toastTimer;
+      function toast(message) { const el = $('#toast'); el.textContent = message; el.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 2600); }
+      function badge(text, kind = 'neutral') { return `<span class="badge ${kind}">${esc(text)}</span>`; }
+      function refsHtml(refs = []) { return `<div class="refs">${refs.map(ref => `<a class="ref" href="../${esc(ref.path)}" target="_blank" rel="noopener noreferrer"><span>${esc(ref.path)}</span><span>· ${esc(ref.symbol)}</span></a>`).join('')}</div>`; }
+      function dimensionRows(feature) { return D.dimensions.map(dim => { const value = feature.dimensions[dim.id]; return `<div class="dimension-row" title="${esc(dim.description)}"><label>${esc(dim.label)}</label><div class="bar"><span style="--value:${value};--bar-color:${scoreColor(value)}"></span></div><output>${value}</output></div>`; }).join(''); }
+      function gateHtml(gate) { return `<article class="gate">${badge(gate.priority, gate.priority === 'P0' ? 'p0' : 'p1')}<div><h3>${esc(gate.title)}</h3><p>${esc(gate.detail)}</p><p style="color:hsl(var(--green))"><strong>Accept:</strong> ${esc(gate.acceptance)}</p><div class="refs">${gate.gapIds.map(id => { const found = allFindings().find(g => g.id === id); return found ? `<button class="ref" style="cursor:pointer" data-feature="${found.feature.id}">${esc(id)} · ${esc(found.feature.name)}</button>` : ''; }).join('')}</div></div><div class="gate-owner">${esc(gate.owner)}</div></article>`; }
+      function renderLifecycle() { $('#lifecycleTrack').innerHTML = D.lifecycle.map(node => { const feature = featureById(node.feature); return `<button class="life-node ${node.state}" data-feature="${node.feature}"><strong>${esc(node.name)}</strong><span>${feature?.score ?? '—'}/10 · ${node.state}</span></button>`; }).join(''); }
+      function renderSummary() {
+        $('#overallScore').textContent = D.meta.overallScore.toFixed(1); $('#overallRing').style.setProperty('--score', D.meta.overallScore); $('#overallRing').style.setProperty('--ring', scoreColor(D.meta.overallScore));
+        $('#overallSub').textContent = `${D.meta.featureCount} capabilities · ${D.meta.p0Count} P0 findings · ${D.meta.p1Count} P1 findings · ${D.meta.resolvedCount} verified fixes`;
+        $('#featureCount').textContent = D.meta.featureCount; $('#p0Count').textContent = D.meta.p0Count; $('#p1Count').textContent = D.meta.p1Count; $('#resolvedCount').textContent = D.meta.resolvedCount; $('#dimensionCount').textContent = D.dimensions.length;
+        const counts = { YES:0, PARTIALLY:0, NO:0 }; D.features.forEach(f => counts[f.verdict]++); const yes = counts.YES / D.features.length * 360; const partial = yes + counts.PARTIALLY / D.features.length * 360;
+        $('#verdictDonut').style.setProperty('--yes', `${yes}deg`); $('#verdictDonut').style.setProperty('--partial', `${partial}deg`); $('#donutTotal').textContent = D.features.length;
+        $('#verdictLegend').innerHTML = [['YES','hsl(var(--green))'],['PARTIALLY','hsl(var(--amber))'],['NO','hsl(var(--red))']].map(([name,color]) => `<div><i style="background:${color}"></i><span>${name} · ${counts[name]}</span></div>`).join('');
+        $('#overallDimensions').innerHTML = D.dimensions.map(dim => { const value = D.meta.dimensionAverages[dim.id]; return `<div class="dimension-row" title="${esc(dim.description)}"><label>${esc(dim.label)}</label><div class="bar"><span style="--value:${value};--bar-color:${scoreColor(value)}"></span></div><output>${value}</output></div>`; }).join('');
+        $('#priorityGates').innerHTML = D.releaseGates.filter(g => g.priority === 'P0').slice(0,6).map(gateHtml).join('');
+        $('#resolvedGrid').innerHTML = D.resolvedFixes.slice(0,9).map(item => `<article class="platform-card">${badge('VERIFIED','pass')}<h3 style="margin-top:10px">${esc(item.title)}</h3><p style="color:hsl(var(--muted));font-size:11px">${esc(item.detail)}</p>${refsHtml(item.refs)}</article>`).join('');
+        $('#overviewPlatforms').innerHTML = D.platforms.map(p => `<article class="platform-card"><p class="mini-head">${esc(p.name)}</p><div class="platform-score"><strong>${p.score}</strong><span>/ 10</span></div>${badge(p.verdict, verdictClass(p.verdict))}<p style="margin:11px 0 0;color:hsl(var(--muted));font-size:11px">${esc(p.summary)}</p><button class="text-button" data-platform="${p.id}">Open platform checks →</button></article>`).join('');
+      }
+      function featureCard(feature) {
+        const top = [...feature.gaps].sort((a,b) => a.severity.localeCompare(b.severity)).slice(0,2);
+        return `<article class="feature-card"><div class="feature-top"><div><div class="feature-category">${esc(feature.category)}</div><h3 class="feature-title"><button data-feature="${feature.id}">${esc(feature.name)}</button></h3></div><div class="mini-score" style="--score:${feature.score};--score-color:${scoreColor(feature.score)}"><strong>${feature.score}</strong></div></div><p class="feature-summary">${esc(feature.summary)}</p><div>${badge(feature.verdict, verdictClass(feature.verdict))}</div><div class="platform-tags">${feature.platforms.map(p => `<span class="platform-tag">${esc(p)}</span>`).join('')}</div><div class="top-gaps">${top.map(g => `<div class="top-gap">${badge(g.severity,g.severity==='P0'?'p0':g.severity==='P1'?'p1':'p2')}<span>${esc(g.title)}</span></div>`).join('')}</div><div class="feature-footer"><button class="text-button" data-feature="${feature.id}">Open full audit →</button><button class="compare-button ${selected.has(feature.id)?'selected':''}" data-compare="${feature.id}">${selected.has(feature.id)?'Selected':'Compare'}</button></div></article>`;
+      }
+      function filteredFeatures() {
+        const q = $('#featureSearch').value.trim().toLowerCase(); const verdict = $('#verdictFilter').value; const category = $('#categoryFilter').value; const platform = $('#platformFilter').value; const dimension = $('#dimensionFilter').value; const severity = $('#severityFilter').value;
+        return D.features.filter(f => {
+          if (verdict !== 'all' && f.verdict !== verdict) return false; if (category !== 'all' && f.category !== category) return false; if (platform !== 'all' && !f.platforms.includes(platform)) return false;
+          if (dimension !== 'all' && !f.gaps.some(g => g.dimension === dimension)) return false; if (severity !== 'all' && !f.gaps.some(g => g.severity === severity)) return false;
+          if (!q) return true; const haystack = [f.name,f.category,f.summary,...f.strengths,...f.gaps.flatMap(g => [g.title,g.detail,...g.refs.flatMap(r => [r.path,r.symbol])])].join(' ').toLowerCase(); return haystack.includes(q);
+        });
+      }
+      function renderFeatures() { const features = filteredFeatures(); $('#featureGrid').innerHTML = features.map(featureCard).join(''); $('#featureEmpty').hidden = features.length > 0; $('#featureResultCount').textContent = `${features.length} / ${D.features.length} features`; }
+      function allFindings() { return D.features.flatMap(f => f.gaps.map(g => ({ ...g, feature:f }))).sort((a,b) => a.severity.localeCompare(b.severity) || a.feature.name.localeCompare(b.feature.name)); }
+      function renderFindings() {
+        const q = $('#findingSearch').value.trim().toLowerCase(); const severity = $('#findingSeverity').value; const dimension = $('#findingDimension').value; const feature = $('#findingFeature').value;
+        const findings = allFindings().filter(g => (severity==='all'||g.severity===severity)&&(dimension==='all'||g.dimension===dimension)&&(feature==='all'||g.feature.id===feature)&&(!q||[g.title,g.detail,g.feature.name,...g.refs.flatMap(r=>[r.path,r.symbol])].join(' ').toLowerCase().includes(q)));
+        $('#findingsList').innerHTML = findings.map(g => `<article class="finding ${severityClass(g.severity)}"><div class="finding-head">${badge(g.severity,g.severity==='P0'?'p0':g.severity==='P1'?'p1':'p2')}${badge(dimById(g.dimension)?.label??g.dimension)}<button class="text-button" data-feature="${g.feature.id}">${esc(g.feature.name)}</button><span class="result-count">${esc(g.id)}</span></div><h3>${esc(g.title)}</h3><p>${esc(g.detail)}</p>${refsHtml(g.refs)}</article>`).join('');
+        $('#findingEmpty').hidden = findings.length > 0; $('#findingResultCount').textContent = `${findings.length} / ${allFindings().length} findings`;
+      }
+      function renderPlatforms() {
+        $('#platformCards').innerHTML = D.platforms.map(p => `<article class="platform-card"><p class="mini-head">${esc(p.name)}</p><div class="platform-score"><strong>${p.score}</strong><span>/ 10 · ${p.verdict}</span></div>${badge(p.verdict,verdictClass(p.verdict))}<p style="color:hsl(var(--muted));font-size:11px">${esc(p.summary)}</p><div class="check-list">${p.checks.map(c => `<div class="check"><span class="check-status ${c.status.startsWith('PASS')?'pass':c.status==='FAIL'?'fail':'unknown'}">${esc(c.status.replaceAll('_',' '))}</span><span>${esc(c.label)} — ${esc(c.detail)}</span></div>`).join('')}</div></article>`).join('');
+        $('#allGates').innerHTML = D.releaseGates.map(gateHtml).join('');
+      }
+      function radarPoint(index,value,max=10) { const angle = Math.PI*2*index/D.dimensions.length-Math.PI/2; const radius=value/max*145; return [260+Math.cos(angle)*radius,215+Math.sin(angle)*radius]; }
+      function renderQuality() {
+        const values = D.dimensions.map(d => D.meta.dimensionAverages[d.id]);
+        const grid = [2,4,6,8,10].map(level => `<polygon points="${D.dimensions.map((_,i)=>radarPoint(i,level).join(',')).join(' ')}" fill="none" stroke="hsl(var(--line))"/>`).join('');
+        const axes = D.dimensions.map((dim,i) => { const p=radarPoint(i,10); const l=radarPoint(i,11.6); return `<line x1="260" y1="215" x2="${p[0]}" y2="${p[1]}" stroke="hsl(var(--line))"/><text x="${l[0]}" y="${l[1]}" text-anchor="${l[0]<245?'end':l[0]>275?'start':'middle'}" dominant-baseline="middle">${esc(dim.short)}</text>`; }).join('');
+        const points = values.map((v,i)=>radarPoint(i,v).join(',')).join(' ');
+        $('#radarChart').innerHTML = `<title>Average readiness by dimension</title><desc>Twelve quality dimensions scored from one to ten.</desc>${grid}${axes}<polygon points="${points}" fill="hsl(var(--teal)/.22)" stroke="hsl(var(--teal))" stroke-width="3"/>${values.map((v,i)=>{const p=radarPoint(i,v);return `<circle cx="${p[0]}" cy="${p[1]}" r="4" fill="hsl(var(--teal))"/>`;}).join('')}`;
+        $('#radarSummary').innerHTML = D.dimensions.map((dim,i)=>`<div class="dimension-row"><label>${esc(dim.label)}</label><div class="bar"><span style="--value:${values[i]};--bar-color:${scoreColor(values[i])}"></span></div><output>${values[i]}</output></div>`).join('');
+        $('#rubricGrid').innerHTML = D.rubric.map(r=>`<div><strong>${esc(r.range)} · ${esc(r.verdict)}</strong>${esc(r.label)} — ${esc(r.detail)}</div>`).join('');
+        $('#heatmapTable').innerHTML = `<thead><tr><th>Feature</th>${D.dimensions.map(d=>`<th title="${esc(d.description)}">${esc(d.short)}</th>`).join('')}<th>Overall</th></tr></thead><tbody>${D.features.map(f=>`<tr><td><button class="text-button" data-feature="${f.id}">${esc(f.name)}</button></td>${D.dimensions.map(d=>`<td><span class="heat-cell" style="--value:${f.dimensions[d.id]}" title="${esc(d.label)}: ${f.dimensions[d.id]}/10 — ${esc(d.description)}">${f.dimensions[d.id]}</span></td>`).join('')}<td><strong>${f.score}</strong></td></tr>`).join('')}</tbody>`;
+        $('#dimensionCards').innerHTML = D.dimensions.map(d=>`<article class="detail-block"><h3>${esc(d.label)}</h3><p style="color:hsl(var(--muted));font-size:10px">${esc(d.description)}</p><p style="font-size:10px"><strong>10/10:</strong> ${esc(d.ten)}</p><p style="font-size:10px"><strong>5/10:</strong> ${esc(d.five)}</p></article>`).join('');
+      }
+      function renderEvidence() {
+        $('#checksBody').innerHTML = D.checks.map(c=>`<tr><td><strong>${esc(c.name)}</strong></td><td><code>${esc(c.command)}</code></td><td><span class="check-status ${c.status.startsWith('PASS')?'pass':c.status==='FAIL'?'fail':'unknown'}">${esc(c.status.replaceAll('_',' '))}</span></td><td>${esc(c.detail)}</td><td>${esc(c.scope)}</td></tr>`).join('');
+        $('#vulnGrid').innerHTML = D.vulnerabilities.map(v=>`<article class="vuln"><div>${badge(v.severity,v.severity==='HIGH'?'p0':v.severity==='MODERATE'?'p1':'neutral')} ${badge(v.production?'PRODUCTION':'TOOLING')}</div><h3>${esc(v.name)}</h3><small>${esc(v.range)}</small><p>${esc(v.impact)}</p><p><strong>Fix:</strong> ${esc(v.fix)}</p></article>`).join('');
+        $('#limitationsList').innerHTML = D.meta.limitations.map(item=>`<li>${esc(item)}</li>`).join('');
+      }
+      function renderRoadmap() {
+        const now = D.releaseGates.filter(g=>g.priority==='P0'); const next = D.releaseGates.filter(g=>g.priority==='P1');
+        const later = D.features.flatMap(f=>f.improvements.map(i=>({...i,feature:f}))).slice(0,6);
+        $('#roadmapGrid').innerHTML = `<section class="roadmap-column"><h3>${badge('NOW','p0')} Close release blockers</h3><p style="color:hsl(var(--muted));font-size:11px">${now.length} P0 gates. Nothing else should ship ahead of these.</p><div class="gate-list">${now.map(gateHtml).join('')}</div></section><section class="roadmap-column"><h3>${badge('NEXT','p1')} Harden operations</h3><p style="color:hsl(var(--muted));font-size:11px">${next.length} P1 gates. Build evidence and scale safety.</p><div class="gate-list">${next.map(gateHtml).join('')}</div></section><section class="roadmap-column"><h3>${badge('LATER','neutral')} Elevate to 10/10</h3><p style="color:hsl(var(--muted));font-size:11px">Feature-level improvements after the release foundation is stable.</p><div class="improvement-list">${later.map(i=>`<article class="improvement"><h4>${esc(i.feature.name)}</h4><p><strong>${esc(i.title)}</strong> — ${esc(i.detail)}</p><div class="acceptance"><strong>Accept:</strong> ${esc(i.acceptance)}</div></article>`).join('')}</div></section>`;
+        $('#definitionCards').innerHTML = [
+          ['Pilot-ready','All P0 gates closed; one operator; approved ranges; signed artifacts; clean verify; tested backup/restore.'],
+          ['Production-ready','P0/P1 gates closed; role separation; complete order/sample/report/bill chain; device/E2E/a11y evidence; measured scale budgets.'],
+          ['10/10 feature','No known release-blocking issue; complete edge states; accessible and resilient; trusted invariants; automated regression evidence.']
+        ].map(([title,detail])=>`<article class="detail-block"><h3>${esc(title)}</h3><p style="color:hsl(var(--muted));font-size:11px">${esc(detail)}</p></article>`).join('');
+      }
+      function openFeature(id) {
+        const f = featureById(id); if (!f) return; $('#dialogCategory').textContent=f.category; $('#dialogTitle').textContent=f.name; $('#dialogPlatforms').innerHTML=f.platforms.map(p=>`<span class="platform-tag">${esc(p)}</span>`).join(''); $('#dialogVerdict').innerHTML=badge(f.verdict,verdictClass(f.verdict)); $('#dialogScore').style.setProperty('--score',f.score); $('#dialogScore').style.setProperty('--score-color',scoreColor(f.score)); $('#dialogScore strong').textContent=`${f.score}/10`;
+        $('#dialogBody').innerHTML=`<p class="lede" style="font-size:13px">${esc(f.summary)}</p><div class="detail-grid"><div class="detail-block"><p class="mini-head">What is already strong</p><ul>${f.strengths.map(s=>`<li>${esc(s)}</li>`).join('')}</ul></div><div class="detail-block"><p class="mini-head">12 dimension scores</p>${dimensionRows(f)}</div></div><p class="mini-head">What is missing / not production-ready</p>${f.gaps.map(g=>`<article class="gap-detail"><div class="finding-head">${badge(g.severity,g.severity==='P0'?'p0':g.severity==='P1'?'p1':'p2')}${badge(dimById(g.dimension)?.label??g.dimension)}<span class="result-count">${esc(g.id)}</span></div><h4>${esc(g.title)}</h4><p>${esc(g.detail)}</p>${refsHtml(g.refs)}</article>`).join('')}<p class="mini-head" style="margin-top:20px">Verified remediations in this feature</p>${f.resolved.length?f.resolved.map(r=>`<article class="resolved-detail">${badge('VERIFIED','pass')}<h4>${esc(r.title)}</h4><p>${esc(r.detail)}</p>${refsHtml(r.refs)}</article>`).join(''):'<p style="color:hsl(var(--muted));font-size:11px">No verified remediation recorded for this feature.</p>'}<p class="mini-head" style="margin-top:20px">Suggested additions & improvements</p>${f.improvements.map((item,i)=>`<article class="improvement"><h4>${i+1}. ${esc(item.title)}</h4><p>${esc(item.detail)}</p><div class="acceptance"><strong>Acceptance:</strong> ${esc(item.acceptance)}</div></article>`).join('')}<button class="button ${selected.has(f.id)?'':'primary'}" data-compare="${f.id}" style="margin-top:16px">${selected.has(f.id)?'Remove from comparison':'Add to comparison'}</button>`;
+        const dialog=$('#featureDialog'); if(!dialog.open) dialog.showModal(); dialog.scrollTop=0;
+      }
+      function updateCompareTray() { $('#compareTray').classList.toggle('show',selected.size>0); $('#compareLabel').textContent=`${selected.size} selected · choose up to 3`; $('#openCompare').disabled=selected.size<2; renderFeatures(); }
+      function toggleCompare(id) { if(selected.has(id)) selected.delete(id); else { if(selected.size>=3){toast('Compare up to three features at a time.');return;} selected.add(id); } updateCompareTray(); }
+      function openCompare() {
+        if(selected.size<2){toast('Select at least two features to compare.');return;} const features=[...selected].map(featureById).filter(Boolean);
+        $('#compareTitle').textContent=`${features.map(f=>f.name).join(' vs ')}`;
+        $('#compareBody').innerHTML=`<div style="overflow-x:auto"><table class="compare-table"><thead><tr><th>Dimension</th>${features.map(f=>`<th>${esc(f.name)}</th>`).join('')}</tr></thead><tbody>${D.dimensions.map(d=>`<tr><td>${esc(d.label)}</td>${features.map(f=>`<td><span class="heat-cell" style="--value:${f.dimensions[d.id]}">${f.dimensions[d.id]}</span></td>`).join('')}</tr>`).join('')}<tr><td><strong>Overall</strong></td>${features.map(f=>`<td><strong>${f.score} · ${f.verdict}</strong></td>`).join('')}</tr><tr><td>P0 / P1</td>${features.map(f=>`<td>${f.gaps.filter(g=>g.severity==='P0').length} / ${f.gaps.filter(g=>g.severity==='P1').length}</td>`).join('')}</tr></tbody></table></div><div class="detail-grid">${features.map(f=>`<div class="detail-block"><h3>${esc(f.name)}</h3><p style="font-size:11px;color:hsl(var(--muted))">${esc(f.summary)}</p><button class="text-button" data-feature="${f.id}">Open full audit →</button></div>`).join('')}</div>`;
+        $('#compareDialog').showModal();
+      }
+      function setView(view,updateHash=true) {
+        if(!$(`#view-${view}`)) view='overview'; $$('.tab').forEach(tab=>tab.setAttribute('aria-selected',String(tab.dataset.view===view))); $$('.view').forEach(panel=>panel.hidden=panel.id!==`view-${view}`);
+        if(updateHash) history.replaceState(null,'',`#${view}`); window.scrollTo({top:0,behavior:'instant'});
+      }
+      function setTheme(theme) { document.documentElement.dataset.theme=theme; localStorage.setItem('pathomitra-audit-theme',theme); $('#themeToggle').setAttribute('aria-label',`Switch to ${theme==='dark'?'light':'dark'} theme`); }
+      function bind() {
+        const categories=[...new Set(D.features.map(f=>f.category))].sort(); categories.forEach(c=>$('#categoryFilter').insertAdjacentHTML('beforeend',`<option>${esc(c)}</option>`));
+        D.dimensions.forEach(d=>{ $('#dimensionFilter').insertAdjacentHTML('beforeend',`<option value="${d.id}">${esc(d.label)}</option>`); $('#findingDimension').insertAdjacentHTML('beforeend',`<option value="${d.id}">${esc(d.label)}</option>`); });
+        D.features.forEach(f=>$('#findingFeature').insertAdjacentHTML('beforeend',`<option value="${f.id}">${esc(f.name)}</option>`));
+        renderLifecycle(); renderSummary(); renderFeatures(); renderFindings(); renderPlatforms(); renderQuality(); renderEvidence(); renderRoadmap();
+        document.addEventListener('click',event=>{
+          const feature=event.target.closest('[data-feature]'); if(feature){openFeature(feature.dataset.feature);return;}
+          const compare=event.target.closest('[data-compare]'); if(compare){toggleCompare(compare.dataset.compare);if($('#featureDialog').open){$('#featureDialog').close();openFeature(compare.dataset.compare);}return;}
+          const tab=event.target.closest('[data-view]'); if(tab){setView(tab.dataset.view);return;}
+          const platform=event.target.closest('[data-platform]'); if(platform){setView('platforms');document.querySelector(`#platformCards [data-platform="${platform.dataset.platform}"]`)?.scrollIntoView({block:'center'});}
+        });
+        ['featureSearch','verdictFilter','categoryFilter','platformFilter','dimensionFilter','severityFilter'].forEach(id=>$(`#${id}`).addEventListener(id.includes('Search')?'input':'change',renderFeatures));
+        ['findingSearch','findingSeverity','findingDimension','findingFeature'].forEach(id=>$(`#${id}`).addEventListener(id.includes('Search')?'input':'change',renderFindings));
+        $('#resetFilters').addEventListener('click',()=>{ $('#featureSearch').value=''; $('#verdictFilter').value='all'; $('#categoryFilter').value='all'; $('#platformFilter').value='all'; $('#dimensionFilter').value='all'; $('#severityFilter').value='all'; renderFeatures(); });
+        $('#resetFindingFilters').addEventListener('click',()=>{ $('#findingSearch').value=''; $('#findingSeverity').value='all'; $('#findingDimension').value='all'; $('#findingFeature').value='all'; renderFindings(); });
+        $('#featureDialog').addEventListener('click',event=>{if(event.target===$('#featureDialog'))$('#featureDialog').close();});
+        $('#openCompare').addEventListener('click',openCompare); $('#closeCompare').addEventListener('click',()=>$('#compareDialog').close()); $('#clearCompare').addEventListener('click',()=>{selected.clear();updateCompareTray();});
+        $('#themeToggle').addEventListener('click',()=>setTheme(document.documentElement.dataset.theme==='dark'?'light':'dark'));
+        $('#downloadJson').addEventListener('click',()=>{const blob=new Blob([JSON.stringify(D,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download=`pathomitra-${D.meta.version}-production-readiness-audit.json`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('Audit JSON downloaded.');});
+        $('#printAudit').addEventListener('click',()=>{document.body.classList.add('print-all');window.print();setTimeout(()=>document.body.classList.remove('print-all'),500);});
+        $$('.tab').forEach((tab,index,tabs)=>tab.addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const next=event.key==='Home'?0:event.key==='End'?tabs.length-1:(index+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;tabs[next].focus();setView(tabs[next].dataset.view);}));
+        const hash=location.hash.slice(1); if(['overview','features','findings','quality','platforms','evidence','roadmap'].includes(hash))setView(hash,false);
+        const featureParam=new URLSearchParams(location.search).get('feature'); if(featureParam&&featureById(featureParam)){setView('features',false);openFeature(featureParam);}
+        const savedTheme=localStorage.getItem('pathomitra-audit-theme'); if(savedTheme==='light'||savedTheme==='dark')setTheme(savedTheme);
+      }
+      if(!D){document.getElementById('main-content').innerHTML='<div class="empty-state">Audit data could not be loaded.</div>';return;}
+      bind();
+    })();
+  </script>
+</body>
+</html>

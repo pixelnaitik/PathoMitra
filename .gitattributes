@@ -1,0 +1,30 @@
+# Normalize line endings: store LF in the repo.
+* text=auto eol=lf
+
+# Shell and Windows script line endings
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.sh text eol=lf
+gradlew text eol=lf
+
+# Binary assets — never touch line endings
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.svg text eol=lf
+*.pdf binary
+*.woff binary
+*.woff2 binary
+
+# Binary archives and fonts
+*.jar binary
+*.jks binary
+*.keystore binary
+*.p12 binary
+*.pfx binary
+*.ttf binary
+*.otf binary

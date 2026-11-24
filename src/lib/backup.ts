@@ -1,0 +1,594 @@
+/**
+ * Backup and restore of the on-device clinical database.
+ *
+ * The app is local-first by design: every patient, report and invoice lives in
+ * one encrypted SQLCipher file on one phone, `allowBackup="false"` keeps Android
+ * from copying it anywhere, and there is no cloud. Before this module a lost,
+ * crashed or reset device destroyed the lab's entire history with no recovery
+ * path at all — a single point of failure for medical records.
+ *
+ * A backup is therefore a JSON snapshot of every collection, written into the
+ * app's own storage folder so it can be listed and restored later, and shareable
+ * to Drive / a PC / the second workstation through the system sheet.
+ *
+ * It can also be **sealed**: pass a passphrase and the snapshot is written as an
+ * AES-256-GCM envelope (PBKDF2-SHA256 key derivation) under the same `.json` name,
+ * so the list, the picker and the share sheet need no special handling — and a
+ * copy that leaves the device on someone else's storage no longer carries readable
+ * patient data. Sealing is opt-*out* now, not opt-in: the passphrase is the only
+ * copy of the key, so losing it loses the snapshot, and that trade-off is spelled
+ * out in the UI rather than hidden in a tooltip. `lib/backup-crypto.ts`.
+ *
+ * Two things deliberately stay out of the file:
+ *
+ *   - The unlock credential. It is not in the database at all — it lives in the
+ *     keystore-backed secure store, which cannot be exported by design. A restore
+ *     brings the *records* back, not the password; the device keeps its own
+ *     account.
+ *   - Any illusion of confidentiality for a plaintext export. Sealed or not, it
+ *     contains patient data, so "send a copy to the cloud" is the user's
+ *     decision, never something the app does quietly.
+ *
+ * Restore is an upsert and never a delete: a snapshot can be merged onto a device
+ * that has recorded things since, and an older or partial file cannot silently
+ * destroy newer data.
+ */
+import type { EntityName } from '../data/types';
+import { ENTITY_NAMES } from '../data/entities';
+import {
+  deleteAppFile,
+  listAppFiles,
+  readAppTextFile,
+  renameAppFile,
+  shareAppFile,
+  writeAppTextFile,
+} from './native-files';
+import { initDataStore } from '../data';
+import { withRecoveryWrites } from '../data/write-guard';
+import { loadPriceList } from './price-list';
+import { captureError } from './telemetry';
+import { flushPendingSettings } from './settings-sync';
+import {
+  AuditEventSchema,
+  DoctorSchema,
+  InvoiceSchema,
+  OrderSchema,
+  PatientSchema,
+  PaymentLedgerSchema,
+  ReferralPayoutSchema,
+  ReportSchema,
+  SampleSchema,
+  UserSchema,
+} from './models';
+import {
+  isSealedPayload,
+  openPayload,
+  PassphraseRequiredError,
+  sealPayload,
+  type EncryptedBackupEnvelope,
+} from './backup-crypto';
+import { z } from 'zod';
+
+/** App-relative folder holding the snapshots. Keep it stable across releases. */
+const BACKUP_DIR = 'PathoMitra/Backups';
+
+/**
+ * Snapshots written before the PathoMitra rebrand live in `PathLab OS/Backups`.
+ * They are still listed, restored, shared and deleted — a lab's only copy of its
+ * data must not become unreachable because the app changed its name. Everything
+ * new is written to {@link BACKUP_DIR}.
+ */
+const LEGACY_BACKUP_DIR = 'PathLab OS/Backups';
+
+/** Resolve a snapshot name to the folder that actually holds it. */
+async function backupPathFor(fileName: string): Promise<string> {
+  for (const dir of [BACKUP_DIR, LEGACY_BACKUP_DIR]) {
+    if ((await listAppFiles(dir, '.json')).includes(fileName)) return `${dir}/${fileName}`;
+  }
+  // Not listed anywhere (just written, or a web build with no real filesystem):
+  // the current folder is the only sensible answer.
+  return `${BACKUP_DIR}/${fileName}`;
+}
+
+/**
+ * Collections written to a snapshot. `meta` is included so the store's own
+ * bookkeeping comes back with it; the unlock account is not a collection and so
+ * is never in here.
+ */
+const BACKUP_COLLECTIONS: readonly EntityName[] = ENTITY_NAMES;
+
+export const BACKUP_SCHEMA_VERSION = 1;
+export const MAX_BACKUP_BYTES = 64 * 1024 * 1024;
+export const MAX_DOCUMENTS_PER_COLLECTION = 50_000;
+
+export interface BackupCounts {
+  [collection: string]: number;
+}
+
+export interface BackupSummary {
+  /** File name inside the backup folder, when one exists. */
+  fileName?: string;
+  /** ISO timestamp of the snapshot, or the file name when it could not be read. */
+  createdAt: string;
+  counts: BackupCounts;
+  totalRecords: number;
+  /**
+   * Sealed with a passphrase, so the record counts are unknown until it is
+   * opened. Only ever `true` — a plaintext snapshot leaves it undefined.
+   */
+  encrypted?: boolean;
+}
+
+/**
+ * One stored document. `id` is required and everything else passes through, so a
+ * snapshot from an older build never fails validation over a field this build
+ * has stopped writing.
+ */
+function toBackupDoc(
+  id: string,
+  value: Record<string, unknown>,
+): { id: string } & Record<string, unknown> {
+  return { id, ...value };
+}
+
+const BackupDocumentSchema = z.object({ id: z.string().min(1) }).passthrough();
+
+const BackupFileSchema = z.object({
+  // Both names are accepted: every snapshot taken before the rebrand says
+  // `PathLab OS`, and refusing to read one would strand it.
+  app: z.enum(['PathoMitra', 'PathLab OS']),
+  kind: z.literal('backup'),
+  schemaVersion: z.number().int().min(1).max(BACKUP_SCHEMA_VERSION),
+  createdAt: z.string().min(1),
+  counts: z.record(z.string(), z.number().int().min(0)),
+  data: z.record(z.string(), z.array(BackupDocumentSchema).max(MAX_DOCUMENTS_PER_COLLECTION)),
+  checksum: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+});
+export type BackupFile = z.infer<typeof BackupFileSchema>;
+type BackupDocuments = { id: string } & Record<string, unknown>;
+
+/** Filename with a sortable timestamp, so the list reads newest-first. */
+function stamp(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}`;
+}
+
+export function backupFileName(createdAt: Date = new Date()): string {
+  return `pathomitra-backup-${stamp(createdAt)}.json`;
+}
+
+/**
+ * A snapshot name that is not already on the device.
+ *
+ * `stamp` only resolves to the minute and the write below is a plain replace,
+ * so a second "Back up now" inside the same minute used to overwrite the
+ * snapshot it had just made — and for a lab whose backup folder may hold the
+ * only copy of its records, that is data loss with a success toast on it. The
+ * name is stepped forward instead (`…-1830-2.json`), so every tap of the button
+ * leaves a file behind.
+ */
+async function uniqueBackupFileName(createdAt: Date): Promise<string> {
+  const stem = backupFileName(createdAt).replace(/\.json$/, '');
+  // `listAppFiles` answers `[]` for a folder that was never created, so the
+  // very first backup on a fresh install takes this path without special casing.
+  const taken = new Set(await listAppFiles(BACKUP_DIR, '.json'));
+  if (!taken.has(`${stem}.json`)) return `${stem}.json`;
+  for (let suffix = 2; suffix <= 99; suffix++) {
+    const candidate = `${stem}-${suffix}.json`;
+    if (!taken.has(candidate)) return candidate;
+  }
+  throw new Error(
+    'Ninety-nine snapshots already exist for that minute. Wait a moment and take the backup again.',
+  );
+}
+
+function summarise(backup: BackupFile, fileName?: string): BackupSummary {
+  return {
+    fileName,
+    createdAt: backup.createdAt,
+    counts: backup.counts,
+    totalRecords: Object.values(backup.counts).reduce((sum, n) => sum + n, 0),
+  };
+}
+
+async function checksumOf(backup: Omit<BackupFile, 'checksum'>): Promise<string> {
+  const bytes = new TextEncoder().encode(JSON.stringify(backup));
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/** Take one consistent transactional snapshot of every collection. */
+export async function buildBackup(): Promise<BackupFile> {
+  const repo = await initDataStore();
+  const data: Record<string, BackupDocuments[]> = {};
+  const counts: BackupCounts = {};
+  await withRecoveryWrites(() => repo.transaction(async tx => {
+    for (const collection of BACKUP_COLLECTIONS) {
+      const docs = await tx.list(collection);
+      data[collection] = docs.map(doc => toBackupDoc(doc.id, doc.data()));
+      counts[collection] = docs.length;
+    }
+  }));
+  const backup = {
+    app: 'PathoMitra' as const,
+    kind: 'backup' as const,
+    schemaVersion: BACKUP_SCHEMA_VERSION,
+    createdAt: new Date().toISOString(),
+    counts,
+    data,
+  };
+  return { ...backup, checksum: await checksumOf(backup) };
+}
+
+/**
+ * Write a snapshot into the app's backup folder.
+ *
+ * @param options.passphrase seals the file (AES-256-GCM). Omit it, or pass an
+ *   empty string, and the snapshot is written readable — the explicit opt-out for
+ *   a lab that needs to open the file on another system without the app.
+ * @returns where it went, plus the file name for {@link shareBackup}.
+ */
+export async function createBackup(
+  options: { passphrase?: string } = {},
+): Promise<{ summary: BackupSummary; fileName: string }> {
+  await withRecoveryWrites(() => flushPendingSettings());
+  const backup = await buildBackup();
+  const fileName = await uniqueBackupFileName(new Date(backup.createdAt));
+  const passphrase = options.passphrase ?? '';
+  const payload = passphrase
+    ? await sealPayload(JSON.stringify(backup), passphrase)
+    : JSON.stringify(backup, null, 2);
+  const relativePath = `${BACKUP_DIR}/${fileName}`;
+  const temporaryPath = `${BACKUP_DIR}/${fileName.replace(/\.json$/, '.tmp.json')}`;
+  try {
+    await writeAppTextFile(temporaryPath, payload);
+    if (await readAppTextFile(temporaryPath) !== payload) throw new Error('temporary file verification failed');
+    await renameAppFile(temporaryPath, relativePath);
+    if (await readAppTextFile(relativePath) !== payload) throw new Error('final file verification failed');
+  } catch (error) {
+    await deleteAppFile(temporaryPath).catch(() => {});
+    await deleteAppFile(relativePath).catch(() => {});
+    throw new Error('Backup verification failed: the saved file does not match the snapshot.', { cause: error });
+  }
+  return {
+    summary: { ...summarise(backup, fileName), ...(passphrase ? { encrypted: true } : {}) },
+    fileName,
+  };
+}
+
+/** Hand a stored snapshot to the system share sheet, so a copy can leave. */
+export async function shareBackup(fileName: string): Promise<void> {
+  const summary = await readBackup(fileName);
+  await shareAppFile(
+    await backupPathFor(fileName),
+    fileName,
+    'PathoMitra backup',
+    summary.encrypted
+      ? 'Encrypted backup — needs the passphrase to restore'
+      : `${summary.totalRecords} records, taken ${summary.createdAt}`,
+  );
+}
+
+/**
+ * Snapshots on the device, newest first.
+ *
+ * Only the *name* is known here: opening every file to read its record counts
+ * would serialise and parse the whole database on each visit to Settings, and
+ * the panel lists names, not counts. A name is also not a date the user can
+ * trust once a file has been copied around — so `shareBackup` and the restore
+ * path re-read the file itself, and that is where the record count and the
+ * sealed/plaintext distinction come from. A file that cannot be parsed is still
+ * listed, because the user may well want to delete it.
+ */
+export async function listBackups(): Promise<BackupSummary[]> {
+  const listings = await Promise.all(
+    [BACKUP_DIR, LEGACY_BACKUP_DIR].map(dir => listAppFiles(dir, '.json')),
+  );
+  // Newest-first across both folders; the timestamped name sorts lexically.
+  const names = [...new Set(listings.flat())].sort((a, b) => b.localeCompare(a));
+  return names.map(name => ({
+    fileName: name,
+    createdAt: name,
+    counts: {},
+    totalRecords: 0,
+  }));
+}
+
+async function readBackup(fileName: string): Promise<BackupSummary> {
+  const raw = await readAppTextFile(await backupPathFor(fileName));
+  if (isSealedPayload(raw)) {
+    // Describing a sealed file needs no passphrase: the envelope carries when it
+    // was sealed. The counts stay hidden until it is actually opened.
+    const envelope = JSON.parse(raw) as EncryptedBackupEnvelope;
+    return {
+      fileName,
+      createdAt: envelope.createdAt,
+      counts: {},
+      totalRecords: 0,
+      encrypted: true,
+    };
+  }
+  return summarise(await parseBackup(raw), fileName);
+}
+
+/**
+ * Turn file text into a validated snapshot, opening the seal first if there is
+ * one. Throws {@link PassphraseRequiredError} when a sealed file meets no
+ * passphrase, so the caller can ask for one instead of rejecting a file that is
+ * perfectly valid.
+ */
+async function openBackup(raw: string, passphrase?: string): Promise<BackupFile> {
+  if (!isSealedPayload(raw)) return parseBackup(raw);
+  if (!passphrase) throw new PassphraseRequiredError();
+  return parseBackup(await openPayload(raw, passphrase));
+}
+
+/** Validate a snapshot before a single row is written. */
+export async function parseBackup(raw: string): Promise<BackupFile> {
+  if (new TextEncoder().encode(raw).byteLength > MAX_BACKUP_BYTES) throw new Error('Backup file exceeds the 64 MB safety limit.');
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    throw new Error('That file is not valid JSON, so it cannot be a PathoMitra backup.');
+  }
+  const result = BackupFileSchema.safeParse(json);
+  if (!result.success) {
+    throw new Error(
+      'This is not a PathoMitra backup file, or it came from a newer version. ' +
+        result.error.issues
+          .slice(0, 2)
+          .map(issue => `${issue.path.join('.')}: ${issue.message}`)
+          .join('; '),
+    );
+  }
+  const backup = result.data;
+  const total = Object.values(backup.data).reduce((sum, docs) => sum + docs.length, 0);
+  if (total > MAX_DOCUMENTS_PER_COLLECTION * BACKUP_COLLECTIONS.length) throw new Error('Backup contains too many documents.');
+  if (backup.checksum) {
+    const { checksum, ...unsigned } = backup;
+    const expected = await checksumOf(unsigned);
+    if (checksum !== expected) throw new Error('Backup checksum mismatch: the snapshot was modified or corrupted.');
+  }
+  return backup;
+}
+
+
+export interface RestoreResult extends BackupSummary {
+  /** Collections in the file that this build does not recognise. */
+  skipped: string[];
+}
+
+/**
+ * Turn the validated snapshot into a write plan, rejecting anything that must
+ * not reach the store. Runs entirely before the first write so a malformed file
+ * cannot leave a half-applied database behind.
+ */
+interface RestorePlanStep {
+  entity: EntityName;
+  docs: BackupDocuments[];
+}
+
+const validators: Partial<Record<EntityName, z.ZodType>> = {
+  users: UserSchema,
+  patients: PatientSchema,
+  doctors: DoctorSchema,
+  orders: OrderSchema,
+  samples: SampleSchema,
+  reports: ReportSchema,
+  invoices: InvoiceSchema,
+  payments: PaymentLedgerSchema,
+  referralPayouts: ReferralPayoutSchema,
+  auditEvents: AuditEventSchema,
+};
+
+function planRestore(backup: BackupFile): { steps: RestorePlanStep[]; skipped: string[] } {
+  const known = new Set<string>(BACKUP_COLLECTIONS);
+  const skipped: string[] = [];
+  const steps: RestorePlanStep[] = [];
+  for (const [collection, docs] of Object.entries(backup.data)) {
+    if (!known.has(collection)) { skipped.push(collection); continue; }
+    if (backup.counts[collection] !== docs.length) {
+      throw new Error(`Restore aborted before any change: "${collection}" count does not match its documents.`);
+    }
+    const ids = new Set<string>();
+    for (const doc of docs) {
+      if (typeof doc.id !== 'string' || doc.id.length === 0 || ids.has(doc.id)) {
+        throw new Error(`Restore aborted before any change: "${collection}" has a missing or duplicate id.`);
+      }
+      ids.add(doc.id);
+      const validator = validators[collection as EntityName];
+      const parsed = validator?.safeParse(doc);
+      if (parsed && !parsed.success) {
+        throw new Error(`Restore aborted before any change: invalid ${collection}/${doc.id}: ${parsed.error.issues[0]?.message ?? 'schema mismatch'}.`);
+      }
+      if (collection === 'patients' && !String(doc.name ?? '').trim()) throw new Error(`Restore aborted before any change: patient ${doc.id} has no name.`);
+      if (collection === 'reports' && (!['draft', 'final'].includes(String(doc.status)) || !String(doc.patientId ?? '').trim())) throw new Error(`Restore aborted before any change: report ${doc.id} has no valid patient or status.`);
+    }
+    steps.push({ entity: collection as EntityName, docs });
+  }
+  const idsByEntity = new Map(steps.map(step => [step.entity, new Set(step.docs.map(doc => doc.id))]));
+  const references: Array<[EntityName, string, EntityName]> = [
+    ['reports', 'patientId', 'patients'], ['reports', 'orderId', 'orders'],
+    ['orders', 'patientId', 'patients'], ['samples', 'patientId', 'patients'], ['samples', 'orderId', 'orders'],
+    ['invoices', 'patientId', 'patients'], ['invoices', 'orderId', 'orders'], ['invoices', 'reportId', 'reports'],
+    ['payments', 'invoiceId', 'invoices'], ['referralPayouts', 'doctorId', 'doctors'],
+  ];
+  for (const step of steps) {
+    for (const doc of step.docs) {
+      for (const [from, field, to] of references) {
+        if (from !== step.entity) continue;
+        const target = String(doc[field] ?? '');
+        const targets = idsByEntity.get(to);
+        if (target && targets && !targets.has(target)) throw new Error(`Restore aborted before any change: ${step.entity}/${doc.id} references missing ${to}/${target}.`);
+      }
+    }
+  }
+  return { steps, skipped };
+}
+
+export interface RestoreConflict {
+  entity: EntityName;
+  id: string;
+  currentUpdatedAt: string;
+  backupUpdatedAt: string;
+}
+
+export interface RestoreInspection {
+  counts: BackupCounts;
+  totalRecords: number;
+  skipped: string[];
+  conflicts: RestoreConflict[];
+}
+
+export class RestoreConflictError extends Error {
+  constructor(public readonly conflicts: RestoreConflict[]) {
+    super(`${conflicts.length} newer or undated record${conflicts.length === 1 ? '' : 's'} would be overwritten. Review the conflicts and retry with explicit overwrite approval.`);
+    this.name = 'RestoreConflictError';
+  }
+}
+
+function recordTime(doc: BackupDocuments): number {
+  const value = doc.updatedAt ?? doc.createdAt ?? doc.at ?? doc.paidAt;
+  const parsed = Date.parse(String(value ?? ''));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export async function inspectBackup(backup: BackupFile): Promise<RestoreInspection> {
+  const repo = await initDataStore();
+  const { steps, skipped } = planRestore(backup);
+  const conflicts: RestoreConflict[] = [];
+  for (const step of steps) {
+    const current = new Map((await repo.list(step.entity)).map(doc => [doc.id, doc.data()]));
+    for (const doc of step.docs) {
+      const existing = current.get(doc.id);
+      if (!existing || JSON.stringify({ id: doc.id, ...existing }) === JSON.stringify(doc)) continue;
+      const currentTime = recordTime(existing as BackupDocuments);
+      const backupTime = recordTime(doc);
+      if (currentTime > backupTime || currentTime === 0 || backupTime === 0) {
+        conflicts.push({ entity: step.entity, id: doc.id, currentUpdatedAt: String(existing.updatedAt ?? existing.createdAt ?? ''), backupUpdatedAt: String(doc.updatedAt ?? doc.createdAt ?? '') });
+      }
+    }
+  }
+  return {
+    counts: Object.fromEntries(steps.map(step => [step.entity, step.docs.length])),
+    totalRecords: steps.reduce((sum, step) => sum + step.docs.length, 0),
+    skipped,
+    conflicts,
+  };
+}
+
+/**
+ * Merge a snapshot into the local store, upserting by document id.
+ *
+ * Everything is validated first (see {@link planRestore}) so a malformed file
+ * never mutates the database. The writes then run inside a single store
+ * transaction. On the native store that is a real SQLCipher transaction, and on
+ * the desktop it is one atomic main-process write (`DesktopRepository.transaction`
+ * → `bridge.db.commit`, P0.4) — so a failure part-way through rolls every record
+ * back and the pre-restore data is left exactly as it was: the restore either
+ * fully applies or fully does not. The browser/localStorage adapter cannot offer
+ * that (it is a sequential upsert) and says so in `webRepository.ts`; it is a
+ * development store, never the one a lab's records live in.
+ * Because restore is an *upsert and never a delete*, the previous dataset also
+ * survives a snapshot later judged bad, and a retried restore converges rather
+ * than duplicating. The success count is reported only for a completed
+ * transaction; a mid-write failure throws instead of returning a partial count.
+ */
+export async function restoreBackup(
+  backup: BackupFile,
+  options: { overwriteConflicts?: boolean } = {},
+): Promise<RestoreResult> {
+  const repo = await initDataStore();
+  const inspection = await inspectBackup(backup);
+  if (inspection.conflicts.length && !options.overwriteConflicts) throw new RestoreConflictError(inspection.conflicts);
+  const { steps, skipped } = planRestore(backup);
+  const safetySnapshot = await buildBackup();
+
+  const counts: BackupCounts = {};
+  let restored = 0;
+
+  try {
+    await withRecoveryWrites(() => repo.transaction(async tx => {
+    for (const { entity, docs } of steps) {
+      for (const doc of docs) {
+        const { id, ...value } = doc;
+        await tx.set(entity, id, value);
+        restored += 1;
+      }
+      counts[entity] = docs.length;
+    }
+    }));
+  } catch (error) {
+    await withRecoveryWrites(() => repo.transaction(async tx => {
+      for (const step of planRestore(safetySnapshot).steps) {
+        for (const doc of step.docs) {
+          const { id, ...value } = doc;
+          await tx.set(step.entity, id, value);
+        }
+      }
+    })).catch(() => {});
+    throw error;
+  }
+
+  // Anything cached from the store has to be re-read: `meta/price-list` is in
+  // the snapshot, so a restored lab would otherwise keep billing from the prices
+  // it had before the restore — silently the wrong tariff, with no error.
+  await loadPriceList({ force: true });
+
+  return { createdAt: backup.createdAt, counts, totalRecords: restored, skipped };
+}
+
+/** Restore the named snapshot from the device's backup folder. */
+export async function restoreBackupByName(
+  fileName: string,
+  passphrase?: string,
+  options: { overwriteConflicts?: boolean } = {},
+): Promise<RestoreResult> {
+  const raw = await readAppTextFile(await backupPathFor(fileName));
+  return restoreBackup(await openBackup(raw, passphrase), options);
+}
+
+export async function inspectBackupByName(fileName: string, passphrase?: string): Promise<RestoreInspection> {
+  return inspectBackup(await openBackup(await readAppTextFile(await backupPathFor(fileName)), passphrase));
+}
+
+/** Restore from text the user supplied through a browser file picker. */
+export async function restoreBackupFromText(
+  raw: string,
+  passphrase?: string,
+  options: { overwriteConflicts?: boolean } = {},
+): Promise<RestoreResult> {
+  return restoreBackup(await openBackup(raw, passphrase), options);
+}
+
+export async function inspectBackupFromText(raw: string, passphrase?: string): Promise<RestoreInspection> {
+  return inspectBackup(await openBackup(raw, passphrase));
+}
+
+/** Remove one snapshot. Used by the "delete old backups" housekeeping. */
+export async function deleteBackup(fileName: string): Promise<void> {
+  try {
+    // Routed through the same platform split as every other app-file action:
+    // the desktop shell deletes via the bridge (the snapshots live in the
+    // main process's userData, which the Capacitor plugin cannot see), the
+    // APK and the web build through the filesystem they wrote to.
+    await deleteAppFile(await backupPathFor(fileName));
+  } catch (err) {
+    captureError(err, { scope: 'backup/delete', file: fileName });
+    throw err;
+  }
+}
+
+/**
+ * How much data there is to lose, for the "back up soon" nudge. Counting rows is
+ * far cheaper than serialising them.
+ */
+export async function countRecords(): Promise<number> {
+  const repo = await initDataStore();
+  let total = 0;
+  for (const collection of ['patients', 'reports', 'doctors', 'invoices'] as const) {
+    total += await repo.count(collection);
+  }
+  return total;
+}

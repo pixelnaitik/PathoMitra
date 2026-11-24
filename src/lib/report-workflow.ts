@@ -1,0 +1,322 @@
+/**
+ * The report issuance / amendment workflow, expressed as pure domain rules.
+ *
+ * Why this lives here rather than in the React screen: the remaining dangerous
+ * clinical guarantee in the app — that an *issued* report can never be silently
+ * overwritten — used to be decided by whichever button a screen happened to
+ * render. A second entry point (or a future screen) could walk straight past it.
+ * The invariants belong in one place every write path must go through, so they
+ * hold regardless of UI. `lib/models.ts` still owns the document shape; this owns
+ * the *rules* about changing it.
+ */
+import { toReportDoc, toReportUpdateDoc, type ReportRecord, type ReportStatus } from './models';
+import { expandTestSelection, findTestInfo } from './pathology-tests';
+import { validateReportResults } from './result-validation';
+import { can } from './permissions';
+import type { Role } from './models';
+
+/** The mutable clinical content of a report (everything except status/version). */
+export interface ReportContent {
+  orderId?: string;
+  sampleIds?: string[];
+  patientId: string;
+  patientName: string;
+  resultData: Record<string, unknown>;
+  signature: string;
+  createdAt: string;
+  createdBy: string;
+  testType?: string;
+  testSelection?: string[];
+  issuanceSnapshot?: ReportRecord['issuanceSnapshot'];
+  issuanceSignature?: ReportRecord['issuanceSignature'];
+  verification?: ReportRecord['verification'];
+  criticalReview?: ReportRecord['criticalReview'];
+}
+
+/** A stored report as the write layer needs to see it. */
+export interface StoredReport extends ReportContent {
+  id: string;
+  status: ReportStatus;
+  version?: number;
+  updatedAt?: string;
+}
+
+/** Expands an ordered panel to its member tests (supplied to keep this pure). */
+export type ExpandNames = (names: readonly string[]) => string[];
+
+/** One step of the write plan — the store-agnostic shape a caller commits. */
+export type ReportWriteOp =
+  | { entity: 'reports'; id: string; value: Record<string, unknown> }
+  | { entity: 'reportVersions'; id: string; value: Record<string, unknown> };
+
+export interface ReportWritePlan {
+  ok: boolean;
+  /** Ordered operations to run as one unit when `ok`. Empty when rejected/no-op. */
+  ops: ReportWriteOp[];
+  error?: string;
+  /** This write amends an already-issued report (a prior version is retained). */
+  amended?: boolean;
+  /** This write promotes/creates a final report. */
+  issuing?: boolean;
+  nextVersion?: number;
+  verification?: ReportRecord['verification'];
+  criticalReview?: ReportRecord['criticalReview'];
+}
+
+/** A recorded value is a non-empty string, a finite number, a boolean, or an object. */
+function hasValue(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (typeof value === 'number') return Number.isFinite(value);
+  return true;
+}
+
+/**
+ * The ordered tests (panels expanded to members) that still have no value.
+ *
+ * A blank string is *not* a result — the editor inserts them only to satisfy the
+ * document shape. This is an *advisory* read, not a gate: since 2026-10-15 the
+ * lab may issue a report with tests left blank (a panel where only some members
+ * were done is normal practice), so the composer uses this to tell the operator
+ * how many lines will print empty. It never blocks a save.
+ */
+export function findMissingResults(content: ReportContent, expandNames: ExpandNames): string[] {
+  const leaves = expandNames(content.testSelection ?? []);
+  return leaves.filter(name => !hasValue(content.resultData[name]));
+}
+
+/**
+ * True when the editable content differs from what is stored.
+ *
+ * "Changed" is deliberately about the clinical payload (results + what was
+ * ordered), not metadata: saving an issued report with nothing different must not
+ * mint a new version or fire an amendment alert.
+ */
+export function isReportContentChanged(existing: StoredReport, next: ReportContent): boolean {
+  const existingLeaves = Object.keys(existing.resultData);
+  const nextLeaves = Object.keys(next.resultData);
+  if (existingLeaves.length !== nextLeaves.length) return true;
+  for (const key of nextLeaves) {
+    if (!hasValue(existing.resultData[key]) !== !hasValue(next.resultData[key])) return true;
+    if (String(existing.resultData[key] ?? '') !== String(next.resultData[key] ?? '')) return true;
+  }
+  const a = existing.testSelection ?? [];
+  const b = next.testSelection ?? [];
+  if (a.length !== b.length) return true;
+  if (a.some((name, i) => name !== b[i])) return true;
+  return JSON.stringify(existing.issuanceSnapshot ?? null) !== JSON.stringify(next.issuanceSnapshot ?? null);
+}
+
+const priorSnapshotId = (reportId: string, version: number): string => `${reportId}__v${version}`;
+
+/** A complete, attributable record of the version being replaced. */
+function buildPriorSnapshot(
+  existing: StoredReport,
+  existingVersion: number,
+  nextVersion: number,
+  reason: string,
+  operator: string,
+  now: string,
+): Record<string, unknown> {
+  return {
+    reportId: existing.id,
+    patientId: existing.patientId,
+    version: existingVersion,
+    ...toReportDoc({ ...existing, status: 'final', version: existingVersion }),
+    supersededBy: nextVersion,
+    supersededAt: now,
+    supersededByOperator: operator,
+    supersededReason: reason,
+    capturedAt: now,
+    capturedBy: operator,
+  };
+}
+
+/**
+ * Decide — and gate — a single report write.
+ *
+ * Rules, in order of severity:
+ *  - An issued (`final`) report cannot be converted back to a `draft`.
+ *  - Editing an issued report requires a reason and *retains the prior version*
+ *    (a `reportVersions` snapshot written before the live row changes), so no
+ *    operator can overwrite the only stored copy of what was handed out.
+ *  - Blank results never block a write, draft or final. The old "fill every
+ *    ordered test before issuing" rule was removed on owner instruction
+ *    (2026-10-15): a lab routinely issues a panel with members not done, and
+ *    blocking it forced fake values into clinical records. The composer still
+ *    *reports* the blanks via `findMissingResults` — information, not a gate.
+ *
+ * The `history → report` operation order is intentional: on a store without a
+ * cross-collection transaction (the desktop adapter), the prior copy is durably
+ * saved before the live row is touched, so the sole previous version is never
+ * lost even if the second step fails.
+ */
+export function planReportWrite(args: {
+  existing: StoredReport | null;
+  /** Required when `existing` is null — the id the caller generated for a new report. */
+  newId?: string;
+  next: ReportContent & { status: ReportStatus };
+  reason?: string;
+  /** Required acknowledgement when a configured critical screen is exceeded. */
+  criticalOverrideReason?: string;
+  /** Independent pathologist who verified this issued version. */
+  reviewer?: { name: string; role: 'pathologist'; note?: string };
+  operator: string;
+  /** Readable operator name used for independent-reviewer comparison. */
+  operatorName?: string;
+  actor?: { uid: string; role: Role };
+  now: string;
+}): ReportWritePlan {
+  const { existing, next, operator, now } = args;
+  if (args.actor && !can(args.actor.role, next.status === 'final' ? 'issueReports' : 'enterResults')) {
+    return { ok: false, ops: [], error: 'The signed-in operator role cannot perform this report action.' };
+  }
+  let criticalReview: ReportRecord['criticalReview'];
+  let verification: ReportRecord['verification'];
+  if (next.status === 'final') {
+    const reviewerName = args.reviewer?.name.trim() ?? '';
+    if (!reviewerName || reviewerName.toLowerCase() === (args.operatorName ?? operator).trim().toLowerCase()) {
+      return {
+        ok: false,
+        ops: [],
+        error: 'An independent pathologist reviewer, different from the issuing operator, is required.',
+      };
+    }
+    verification = {
+      reviewedBy: reviewerName,
+      role: 'pathologist',
+      reviewedAt: now,
+      ...(args.reviewer?.note?.trim() ? { note: args.reviewer.note.trim() } : {}),
+    };
+    if (!next.patientId || !next.patientName.trim() || next.patientName.trim() === 'Unknown') {
+      return { ok: false, ops: [], error: 'An issued report requires a registered patient.' };
+    }
+    if (!next.testSelection || next.testSelection.length === 0) {
+      return { ok: false, ops: [], error: 'An issued report requires at least one ordered test.' };
+    }
+    if (!next.issuanceSnapshot) {
+      return { ok: false, ops: [], error: 'An issued report requires an immutable clinical snapshot.' };
+    }
+    const validation = validateReportResults(
+      expandTestSelection(next.testSelection),
+      next.resultData,
+      findTestInfo,
+    );
+    if (!validation.valid) {
+      return {
+        ok: false,
+        ops: [],
+        error: `Result validation failed: ${validation.errors
+          .slice(0, 3)
+          .map(item => `${item.test}: ${item.message}`)
+          .join('; ')}`,
+      };
+    }
+    const criticalWarnings = validation.warnings.filter(item => item.critical);
+    if (criticalWarnings.length > 0) {
+      const reason = args.criticalOverrideReason?.trim();
+      if (!reason) {
+        return {
+          ok: false,
+          ops: [],
+          error:
+            'A result exceeds the configured critical screening margin. Record a clinical review reason before issue.',
+        };
+      }
+      criticalReview = {
+        reason,
+        reviewedBy: operator,
+        reviewedAt: now,
+        tests: criticalWarnings.map(item => item.test),
+      };
+    }
+  }
+  const governedNext = {
+    ...next,
+    ...(verification ? { verification } : {}),
+    ...(criticalReview ? { criticalReview } : {}),
+  };
+  const id = existing?.id ?? args.newId;
+  if (!id) {
+    return { ok: false, ops: [], error: 'A new report needs an id before it can be written.' };
+  }
+
+  // Brand-new report.
+  if (!existing) {
+    const value = toReportDoc({ ...governedNext, version: 1 });
+    return {
+      ok: true,
+      ops: [{ entity: 'reports', id, value }],
+      issuing: next.status === 'final',
+      ...(verification ? { verification } : {}),
+      ...(criticalReview ? { criticalReview } : {}),
+    };
+  }
+
+  const existingVersion = Math.max(1, Number(existing.version) || 1);
+
+  // Amending an already-issued report.
+  if (existing.status === 'final') {
+    if (next.status === 'draft') {
+      return {
+        ok: false,
+        ops: [],
+        error: 'An issued report cannot be turned back into a draft. Amend it instead.',
+      };
+    }
+    if (!isReportContentChanged(existing, next)) {
+      return { ok: true, ops: [], amended: false }; // nothing to persist
+    }
+    const reason = (args.reason ?? '').trim();
+    if (!reason) {
+      return {
+        ok: false,
+        ops: [],
+        error: 'An amendment to an issued report must state a reason.',
+      };
+    }
+    const nextVersion = existingVersion + 1;
+    return {
+      ok: true,
+      amended: true,
+      nextVersion,
+      ...(verification ? { verification } : {}),
+      ...(criticalReview ? { criticalReview } : {}),
+      ops: [
+        {
+          entity: 'reportVersions',
+          id: priorSnapshotId(existing.id, existingVersion),
+          value: buildPriorSnapshot(existing, existingVersion, nextVersion, reason, operator, now),
+        },
+        {
+          entity: 'reports',
+          id: existing.id,
+          value: {
+            ...toReportUpdateDoc({ ...governedNext, version: existingVersion }, existingVersion),
+            updatedBy: operator,
+            updatedAt: now,
+            amendReason: reason,
+          },
+        },
+      ],
+    };
+  }
+
+  // Editing a draft (optionally promoting it to final).
+  const nextVersion = existingVersion + 1;
+  const value: Record<string, unknown> = {
+    ...toReportUpdateDoc({ ...governedNext, version: existingVersion }, existingVersion),
+    updatedBy: operator,
+    updatedAt: now,
+  };
+  const reason = (args.reason ?? '').trim();
+  if (reason) value.amendReason = reason;
+  return {
+    ok: true,
+    issuing: next.status === 'final',
+    nextVersion,
+    ...(verification ? { verification } : {}),
+    ...(criticalReview ? { criticalReview } : {}),
+    ops: [{ entity: 'reports', id: existing.id, value }],
+  };
+}

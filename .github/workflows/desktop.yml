@@ -1,0 +1,30 @@
+name: Desktop
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  windows-shell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - run: npm run lint:ci
+      - run: npm run test
+      - run: npm run desktop:build-renderer
+      - run: npm run desktop:bundle-main
+      - run: node scripts/check-desktop-assets.mjs
+      - run: npx playwright install chromium
+      - run: npm run test:e2e:desktop
+      - run: npm run desktop:msi:test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-desktop-test
+          path: release-desktop/*.msi
+          if-no-files-found: error

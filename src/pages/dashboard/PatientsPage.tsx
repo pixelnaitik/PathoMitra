@@ -1,0 +1,1492 @@
+import React, { useState, useEffect, useMemo, useRef, useDeferredValue } from 'react';
+import { motion } from 'motion/react';
+import {
+  collection,
+  query,
+  orderBy,
+  onSnapshot,
+  addDoc,
+  doc,
+  updateDoc,
+  where,
+  getDocs,
+  getDoc,
+  db,
+} from '../../data/fs';
+import { archivePatient } from '../../lib/cascades';
+import { getRepository } from '../../data';
+import {
+  registerPatient,
+  findProbableDuplicates,
+  normalisePhone,
+  validatePatientForm,
+  type ProbableDuplicate,
+} from '../../lib/patient-registry';
+import { useCollectionList, type ListFilter } from '../../hooks/useCollectionList';
+import { createdAtRangeFilters } from '../../lib/date-range';
+import {
+  readPatients,
+  readPatient,
+  readInvoices,
+  toPatientUpdateDoc,
+  operatorStamp,
+  dueOf,
+  toPatientDueDoc,
+  type PatientDueInput,
+  type PatientRecord,
+  type DoctorRecord,
+  type InvoiceRecord,
+} from '../../lib/models';
+import { invoicesForPatient, outstandingForPatient, raiseInvoice } from '../../lib/invoices';
+import { downloadCsv, toCsv, type CsvColumn } from '../../lib/export-csv';
+import { handleFirestoreError, OperationType } from '../../lib/firestore-errors';
+import {
+  Search,
+  Wallet,
+  Plus,
+  UserPlus,
+  FileSpreadsheet,
+  Loader2,
+  Trash2,
+  Edit2,
+  X,
+  ChevronDown,
+  ChevronUp,
+  ReceiptText,
+} from 'lucide-react';
+import {
+  billLinesFrom,
+  formatMoney,
+  getPriceList,
+  isOrderable,
+  loadPriceList,
+  PRICE_LIST_UPDATED_EVENT,
+  type PriceList,
+} from '../../lib/price-list';
+import { buildInvoicePdf, outputInvoicePdf } from '../../lib/invoice-pdf';
+import { readSettings } from '../../lib/settings';
+import { PrintDialog, type PrintJob } from '../../components/PrintDialog';
+import { cn } from '../../lib/utils';
+import { listStaggerProps } from '../../lib/motion';
+import { useAuth } from '../../contexts/AuthContext';
+import {
+  Button,
+  Card,
+  IconButton,
+  Sheet,
+  ConfirmSheet,
+  StatusPill,
+  SearchField,
+  Field,
+  TextInput,
+  TextArea,
+  Select,
+  ListGroup,
+  ListRow,
+  EmptyState,
+  CalendarRangePicker,
+  Skeleton,
+  toIsoDay,
+  useToast,
+} from '../../components/ui';
+
+import {
+  getPathologyTests,
+  getSearchableTests,
+  searchPathologyTests,
+} from '../../lib/pathology-tests';
+import { DEFAULT_DOCTORS } from '../../lib/doctors';
+import { doctorMatchesQuery, doctorNameKey } from '../../lib/doctor-registry';
+import { PatientDetailSheet } from '../../components/PatientDetailSheet';
+
+/**
+ * A stable fingerprint of an order's *billable shape*.
+ *
+ * Two orders match when they charge the same names, whatever order the counter
+ * tapped them in — the same set that makes the same bill. Used to spot an
+ * existing bill before raising another, so reprinting cannot double-bill.
+ */
+function orderSignature(names: readonly string[]): string {
+  return [...new Set(names.map(name => name.trim()).filter(Boolean))].sort().join('\u0000');
+}
+
+/** Uppercase group label for one block of the registration form (desktop columns). */
+function FormHeading({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-on-surface-variant">
+      {children}
+    </p>
+  );
+}
+
+/**
+ * A bill line the lab has not set a tariff for, marked where it was ordered.
+ *
+ * The mark lives on the chip and in the charge summary rather than in a sentence
+ * under them: an unpriced order is routine while a tariff sheet is being typed
+ * out, and the thing worth being loud about is the ₹0 that reaches paper without
+ * a label. It never does — `billLinesFrom` flags the line and `invoice-pdf`
+ * prints "not priced" in the rate column (billing rule 6).
+ */
+function NotPricedTag({ className }: { className?: string }) {
+  return (
+    <span
+      className={cn(
+        'shrink-0 rounded-full bg-warning-container px-1.5 py-px text-[9px] font-bold uppercase tracking-[0.04em] text-on-warning-container',
+        className,
+      )}
+    >
+      not priced
+    </span>
+  );
+}
+
+export default function PatientsPage({
+  initialAction,
+  initialPatientId,
+  clearPatientAction,
+  clearAction,
+}: {
+  initialAction?: string | null;
+  initialPatientId?: string | null;
+  clearPatientAction?: () => void;
+  clearAction?: () => void;
+}) {
+  const { role, user } = useAuth();
+  const toast = useToast();
+  const [doctors, setDoctors] = useState<any[]>([]);
+  const [searchTerm, setSearchTerm] = useState('');
+  /** "Only the ones who owe us" — the counter's view of the same list. */
+  const [duesOnly, setDuesOnly] = useState(false);
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingPatient, setEditingPatient] = useState<any>(null);
+  const [selectedPatient, setSelectedPatient] = useState<PatientRecord | null>(null);
+
+  useEffect(() => {
+    if (initialAction !== 'add') return;
+    queueMicrotask(() => setIsModalOpen(true));
+    clearAction?.();
+  }, [initialAction, clearAction]);
+
+  useEffect(() => {
+    if (!initialPatientId) return;
+    let active = true;
+    void getDoc(doc(db, 'patients', initialPatientId))
+      .then(snapshot => {
+        if (!active || !snapshot.exists()) return;
+        setSelectedPatient(readPatient(snapshot.id, snapshot.data()));
+        clearPatientAction?.();
+      })
+      .catch(error => handleFirestoreError(error, OperationType.GET, 'patients'));
+    return () => { active = false; };
+  }, [initialPatientId, clearPatientAction]);
+
+  const [testSearchQuery, setTestSearchQuery] = useState('');
+  const [isTestDropdownOpen, setIsTestDropdownOpen] = useState(false);
+  const [testActiveIdx, setTestActiveIdx] = useState(0);
+  const testListRef = useRef<HTMLDivElement>(null);
+  const [isDoctorDropdownOpen, setIsDoctorDropdownOpen] = useState(false);
+  const [isAddingDoctor, setIsAddingDoctor] = useState(false);
+  const [patientToDelete, setPatientToDelete] = useState<any>(null);
+
+  /**
+   * The live tariff, so the registration sheet can price an order while it is
+   * being built. Re-read on the update event: a price changed in Settings must
+   * show here without a reload, or the counter quotes one total and the bill
+   * prints another.
+   */
+  const [priceList, setPriceList] = useState<PriceList>(() => getPriceList());
+  const [billJob, setBillJob] = useState<PrintJob | null>(null);
+  const [billingId, setBillingId] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const apply = () => {
+      if (!cancelled) setPriceList(getPriceList());
+    };
+    void loadPriceList().then(apply, apply);
+    window.addEventListener(PRICE_LIST_UPDATED_EVENT, apply);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(PRICE_LIST_UPDATED_EVENT, apply);
+    };
+  }, []);
+
+  /**
+   * Raise (or reuse) the bill for a patient and print it.
+   *
+   * Reuse first: an order that already has an unpaid bill with the same lines gets
+   * that bill reprinted rather than a second one. Tapping "print bill" twice must
+   * not double-bill a patient, and the second document is the one that causes the
+   * dispute.
+   */
+  const printBill = async (patient: PatientRecord) => {
+    setBillingId(patient.id);
+    try {
+      const names = patient.testSelection ?? [];
+      if (names.length === 0) {
+        toast.error(`${patient.name} has no tests on the order — nothing to bill.`);
+        return;
+      }
+      const existing = await invoicesForPatient(patient.id);
+      const signature = orderSignature(names);
+      const match = existing.find(
+        inv =>
+          inv.status === 'pending' &&
+          orderSignature(inv.items.map(item => item.name)) === signature,
+      );
+      const invoice =
+        match ??
+        (await raiseInvoice({
+          patient,
+          testSelection: names,
+          doctors: doctors as DoctorRecord[],
+          issuedBy: operatorStamp(user),
+        }));
+
+      const built = await buildInvoicePdf({
+        invoice,
+        patient,
+        settings: readSettings(),
+      });
+      const { printJob, message } = await outputInvoicePdf(
+        built,
+        `Bill ${invoice.invoiceNo || invoice.id}.pdf`,
+        'print',
+        `Bill ${invoice.invoiceNo || invoice.id} — ${patient.name}`,
+      );
+      if (printJob) setBillJob(printJob);
+      else if (message) toast.info(message);
+      else if (match) toast.info(`Reprinted the existing bill ${invoice.invoiceNo}.`);
+    } catch (err) {
+      console.error('Bill failed:', err);
+      toast.error(err instanceof Error ? err.message : 'Could not raise the bill.');
+    } finally {
+      setBillingId(null);
+    }
+  };
+
+  const [formData, setFormData] = useState({
+    name: '',
+    age: '',
+    gender: 'male',
+    phone: '',
+    doctorName: '',
+    doctorId: '',
+    address: '',
+    testSelection: [] as string[],
+  });
+
+  /**
+   * Selected panels (CBC, URINE ANALYSIS, LIPID PROFILE …) render as ONE chip
+   * with a member count, expandable on demand — the stored selection still
+   * carries every member (reports, results and billing read that list), so
+   * this is a display fold, not a data change. Without it a single CBC filled
+   * twenty chips and the sheet scrolled forever.
+   */
+  const [expandedGroups, setExpandedGroups] = useState<string[]>([]);
+
+  /**
+   * What the current order would cost, computed by the same function the bill
+   * itself uses. A preview that uses different arithmetic from the document is
+   * how a counter ends up apologising for a higher number on the paper.
+   */
+  const orderPreview = useMemo(() => {
+    const items = billLinesFrom(formData.testSelection, priceList);
+    const subtotal = items.reduce((sum, item) => sum + item.lineTotal, 0);
+    return {
+      items,
+      total: Math.round(subtotal * 100) / 100,
+      unpriced: items.filter(item => item.unpriced).map(item => item.name),
+    };
+  }, [formData.testSelection, priceList]);
+
+  /** Bill lines with no rate, keyed by name so a chip can flag itself. */
+  const unpricedSet = useMemo(() => new Set(orderPreview.unpriced), [orderPreview]);
+
+  const testChips = useMemo(() => {
+    const catalogue = getPathologyTests();
+    const selected = formData.testSelection;
+    const groups = selected
+      .map(name => catalogue.find(t => t.name === name && t.isGroup && t.includedTests?.length))
+      .filter((t): t is NonNullable<typeof t> => Boolean(t));
+    const memberOf = new Map<string, string>();
+    for (const group of groups) {
+      for (const member of group.includedTests ?? []) memberOf.set(member, group.name);
+    }
+    return {
+      groups: groups.map(group => ({
+        name: group.name,
+        members: (group.includedTests ?? []).filter(m => selected.includes(m)),
+      })),
+      singles: selected.filter(t => !memberOf.has(t) && !groups.some(g => g.name === t)),
+    };
+  }, [formData.testSelection]);
+
+  /** One chip per thing the counter added (a profile folds its own members). */
+  const chipCount = testChips.groups.length + testChips.singles.length;
+
+  // Registration range is evaluated by Firestore, so the page window already
+  // holds what the filter asks for instead of filtering whatever was loaded.
+  // The bounds are the local day's first and last millisecond — matching the
+  // `toIsoDay` grouping the calendar dots use — not UTC midnight.
+  const patientFilters = useMemo<ListFilter[]>(() => {
+    const list: ListFilter[] = [];
+    const { since, until } = createdAtRangeFilters(fromDate, toDate);
+    if (since) list.push({ field: 'createdAt', op: '>=', value: since });
+    if (until) list.push({ field: 'createdAt', op: '<=', value: until });
+    return list;
+  }, [fromDate, toDate]);
+
+  // Live first page + cursor-loaded older pages, replacing the subscription that
+  // used to keep every patient ever registered in memory.
+  const patientsList = useCollectionList({
+    path: 'patients',
+    map: readPatients,
+    pageSize: 25,
+    filters: patientFilters,
+    onError: error => handleFirestoreError(error, OperationType.GET, 'patients'),
+  });
+  const patients = patientsList.items;
+  const invoicesList = useCollectionList<InvoiceRecord>({
+    path: 'invoices',
+    map: readInvoices,
+    pageSize: 25,
+    onError: error => handleFirestoreError(error, OperationType.GET, 'invoices'),
+  });
+  const balanceByPatient = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const invoice of invoicesList.allItems) {
+      if (invoice.status === 'void') continue;
+      totals.set(invoice.patientId, (totals.get(invoice.patientId) ?? 0) + Math.max(0, invoice.amount - invoice.paidAmount));
+    }
+    return totals;
+  }, [invoicesList.allItems]);
+  const dueFor = (patient: PatientRecord) => dueOf(patient, balanceByPatient.get(patient.id) ?? 0);
+
+  const activePatientDates = useMemo(() => {
+    // Local day, matching the calendar grid the dots are painted into.
+    return new Set(patients.filter(p => p.createdAt).map(p => toIsoDay(new Date(p.createdAt))));
+  }, [patients]);
+
+  useEffect(() => {
+    const qDocs = query(collection(db, 'doctors'), orderBy('createdAt', 'desc'));
+    const unsubDocs = onSnapshot(
+      qDocs,
+      snapshot => {
+        setDoctors(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      },
+      error => {
+        handleFirestoreError(error, OperationType.GET, 'doctors');
+      },
+    );
+
+    return () => {
+      unsubDocs();
+    };
+  }, []);
+
+  const addNewDoctor = async (name: string) => {
+    if (!name.trim()) return;
+    setIsAddingDoctor(true);
+    try {
+      const ref = await addDoc(collection(db, 'doctors'), {
+        name: name.trim(),
+        createdAt: new Date().toISOString(),
+      });
+      setFormData(prev => ({ ...prev, doctorName: name.trim(), doctorId: ref.id }));
+      setIsDoctorDropdownOpen(false);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'doctors');
+    } finally {
+      setIsAddingDoctor(false);
+    }
+  };
+
+  const [formError, setFormError] = useState('');
+
+  /**
+   * A parked duplicate warning: the form is valid, but something already in the
+   * store looks like the same person. The operator answers it, and a confirmed
+   * registration continues into `savePatient`.
+   */
+  const [duplicateCheck, setDuplicateCheck] = useState<ProbableDuplicate[] | null>(null);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setFormError('');
+
+    const invalid = validatePatientForm(formData);
+    if (invalid) {
+      setFormError(invalid);
+      return;
+    }
+
+    // A second record for the same patient is the one mistake that cannot be
+    // undone later by editing a field — it splits one person's history in two,
+    // and each half looks complete on its own. Check the full register so an
+    // older patient cannot bypass the guard simply because 500 newer rows exist.
+    if (!editingPatient) {
+      const allPatients = await getDocs(query(collection(db, 'patients')));
+      const matches = findProbableDuplicates(formData, readPatients(allPatients.docs));
+      if (matches.length > 0) {
+        setDuplicateCheck(matches);
+        return;
+      }
+    }
+
+    await savePatient();
+  };
+
+  /** The write itself, once the form is valid and any duplicate warning was answered. */
+  const savePatient = async () => {
+    const path = 'patients';
+    setFormError('');
+    try {
+      if (editingPatient) {
+        await getRepository().transaction(async tx => {
+          await tx.set('patients', editingPatient.id, toPatientUpdateDoc(formData));
+
+          // Sync the ordered-panel list onto the patient's DRAFTS only.
+          // Issued reports remain immutable without a deliberate amendment.
+          const q = query(
+            collection(db, 'reports'),
+            where('patientId', '==', editingPatient.id),
+            where('status', '==', 'draft'),
+          );
+          const querySnapshot = await getDocs(q);
+          for (const reportDoc of querySnapshot.docs) {
+            const currentReport = reportDoc.data();
+            await tx.update('reports', reportDoc.id, {
+              testSelection: formData.testSelection,
+              version: (Number(currentReport.version) || 1) + 1,
+              updatedBy: operatorStamp(user),
+              updatedAt: new Date().toISOString(),
+            });
+          }
+        });
+      } else {
+        await registerPatient(formData);
+      }
+      setIsModalOpen(false);
+      resetForm();
+      setDuplicateCheck(null);
+      toast.success(
+        editingPatient ? `${formData.name}'s record updated.` : `${formData.name} registered.`,
+      );
+    } catch (err) {
+      setFormError('Failed to save patient.');
+      try {
+        handleFirestoreError(err, OperationType.WRITE, path);
+      } catch (e) {
+        // Logged
+      }
+    }
+  };
+
+  const resetForm = () => {
+    setFormData({
+      name: '',
+      age: '',
+      gender: 'male',
+      phone: '',
+      doctorName: '',
+      doctorId: '',
+      address: '',
+      testSelection: [],
+    });
+    setExpandedGroups([]);
+    setEditingPatient(null);
+    setFormError('');
+  };
+
+  // Name, registration number, phone digits and age are all matchable, and every
+  // word typed has to appear somewhere on the record — "rao asha" finds Asha Rao.
+  // Searching only the name is what made a staff member read a patient number out
+  // to a colleague instead of looking it up.
+  const deferredSearch = useDeferredValue(searchTerm.trim().toLowerCase());
+  const dueCount = useMemo(() => patients.filter(p => dueFor(p) > 0).length, [patients, balanceByPatient]);
+  const filteredPatients = useMemo(() => {
+    // Dues first: the search then narrows whatever is left, so "sharma" inside
+    // "with dues" finds the owing Sharmas rather than every Sharma.
+    const owing = duesOnly ? patients.filter(p => dueFor(p) > 0) : patients;
+    if (!deferredSearch) return owing;
+    const terms = deferredSearch.split(/\s+/).filter(Boolean);
+    return owing.filter(p => {
+      const haystack = [
+        p.name,
+        p.id,
+        p.phone ?? '',
+        normalisePhone(p.phone),
+        String(p.age ?? ''),
+        p.doctorName ?? '',
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return terms.every(term => haystack.includes(term));
+    });
+  }, [patients, deferredSearch, duesOnly, balanceByPatient]);
+
+  const searching = deferredSearch.length > 0 && filteredPatients.length === 0;
+  // The old 250-record walk ceiling is gone on purpose: the local store already
+  // holds the whole collection in memory, so walking further costs a re-slice and
+  // nothing else — while the cap silently guaranteed that an older patient could
+  // never be found by search at all.
+  const scanning = searching && patientsList.hasMore;
+
+  useEffect(() => {
+    if (!scanning || patientsList.loadingMore) return;
+    void patientsList.loadMore();
+  }, [scanning, patientsList]);
+
+  /**
+   * Record (or clear, with 0) the due on a patient.
+   *
+   * The amount is typed and the phone is typed, and `toPatientDueDoc` refuses the
+   * pair when the number does not agree with the record — two patients can share a
+   * name, and a debt written on the wrong one is very hard to see later. Resolves to
+   * the failure message instead of throwing, so the sheet can keep the half-typed
+   * form open and say what it objected to.
+   */
+  const saveDue = async (
+    patient: PatientRecord,
+    input: Omit<PatientDueInput, 'actor'>,
+  ): Promise<string | null> => {
+    try {
+      const outstanding = outstandingForPatient(await invoicesForPatient(patient.id));
+      const patch = toPatientDueDoc({ ...input, actor: operatorStamp(user), outstanding }, patient);
+      await updateDoc(doc(db, 'patients', patient.id), patch);
+      const amount = Number(patch.dueAmount ?? 0);
+      toast.success(
+        amount > 0
+          ? `${patient.name}: due recorded as ${formatMoney(amount)}.`
+          : `${patient.name}: due cleared.`,
+      );
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : 'The due was not saved.';
+    }
+  };
+
+  const CSV_COLUMNS: CsvColumn<PatientRecord>[] = [
+    { label: 'Patient ID', value: p => p.id },
+    { label: 'Name', value: p => p.name },
+    { label: 'Age', value: p => p.age },
+    { label: 'Gender', value: p => p.gender },
+    { label: 'Phone', value: p => p.phone || '' },
+    { label: 'Doctor', value: p => p.doctorName || '' },
+    { label: 'Registered', value: p => p.createdAt },
+    { label: 'Due', value: p => (dueFor(p) > 0 ? dueFor(p) : '') },
+    { label: 'Due note', value: p => (dueFor(p) > 0 ? (p.dueNote ?? '') : '') },
+  ];
+
+  const exportFilteredCsv = async () => {
+    const term = deferredSearch.split(/\s+/).filter(Boolean);
+    const exportRows = patientsList.allItems.filter(patient => {
+      if (duesOnly && dueFor(patient) <= 0) return false;
+      if (term.length === 0) return true;
+      const haystack = [patient.name, patient.id, patient.phone ?? '', normalisePhone(patient.phone), String(patient.age ?? ''), patient.doctorName ?? ''].filter(Boolean).join(' ').toLowerCase();
+      return term.every(word => haystack.includes(word));
+    });
+    if (exportRows.length === 0) {
+      toast.warning('Nothing to export — widen the filter first.');
+      return;
+    }
+    try {
+      const message = await downloadCsv(
+        `pathomitra-patients-${toIsoDay(new Date())}.csv`,
+        toCsv(CSV_COLUMNS, exportRows),
+        { actor: operatorStamp(user), rowCount: exportRows.length, filters: { duesOnly } },
+      );
+      toast.success(message ?? `Exported ${exportRows.length} patients to CSV.`);
+    } catch (err) {
+      console.error('Error writing the CSV export:', err);
+      toast.error('Could not write the CSV on this device.');
+    }
+  };
+
+  const filteredAvailableTests = useMemo(
+    () =>
+      searchPathologyTests(
+        testSearchQuery,
+        getSearchableTests(formData.testSelection, testSearchQuery),
+      ).filter(test => isOrderable(test.name, priceList)),
+    [formData.testSelection, priceList, testSearchQuery],
+  );
+  // Clamp where it is read so narrowing the list can never strand the highlight
+  // past the end — avoids a reset-in-effect (which would cascade a render).
+  const activeTestIdx = filteredAvailableTests.length
+    ? Math.min(testActiveIdx, filteredAvailableTests.length - 1)
+    : 0;
+
+  // Arrow-key navigation must keep the highlighted test visible.
+  useEffect(() => {
+    if (!isTestDropdownOpen) return;
+    const el = testListRef.current?.children[activeTestIdx] as HTMLElement | undefined;
+    if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' });
+  }, [activeTestIdx, isTestDropdownOpen]);
+
+  const handleTestKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!isTestDropdownOpen) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        setIsTestDropdownOpen(true);
+      }
+      return;
+    }
+    if (e.key === 'Escape') {
+      setIsTestDropdownOpen(false);
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setTestActiveIdx(Math.min(activeTestIdx + 1, filteredAvailableTests.length - 1));
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setTestActiveIdx(Math.max(activeTestIdx - 1, 0));
+      return;
+    }
+    if (e.key === 'Enter') {
+      const picked = filteredAvailableTests[activeTestIdx];
+      if (picked) {
+        e.preventDefault();
+        addTest(picked.name);
+      }
+    }
+  };
+
+  const addTest = (test: string) => {
+    const testInfo = getPathologyTests().find(t => t.name === test);
+    let testsToAdd = [test];
+    if (testInfo?.isGroup && testInfo.includedTests) {
+      testsToAdd = [test, ...testInfo.includedTests];
+    }
+
+    // Auto-add Direct and Indirect Bilirubin when Total Serum Bilirubin is selected
+    if (test === 'Total Serum Bilirubin') {
+      testsToAdd = ['Total Serum Bilirubin', 'Direct Bilirubin', 'Indirect Bilirubin'];
+    }
+
+    setFormData(prev => {
+      const newAdditions = testsToAdd.filter(t => !prev.testSelection.includes(t));
+      return {
+        ...prev,
+        testSelection: [...prev.testSelection, ...newAdditions],
+      };
+    });
+    setTestSearchQuery('');
+    setIsTestDropdownOpen(false);
+  };
+
+  const removeTest = (test: string) => {
+    const testInfo = getPathologyTests().find(t => t.name === test);
+    let toRemove = [test];
+    if (testInfo?.isGroup && testInfo.includedTests) {
+      toRemove = [...toRemove, ...testInfo.includedTests];
+    }
+    setFormData(prev => ({
+      ...prev,
+      testSelection: prev.testSelection.filter(t => !toRemove.includes(t)),
+    }));
+  };
+
+  /**
+   * Suggestions: the lab's own register first, then the seeded list, folded on
+   * `doctorNameKey` so one doctor cannot appear as `DR MANOJ KUMAR`,
+   * `DR.MANOJ KUMAR` and `Dr. Manoj Kumar (MBBS)` in the same dropdown. Choosing a
+   * suggestion still stores the name string (a patient carries `doctorName`, not a
+   * doctor id), which is exactly why the spelling has to be stable here rather than
+   * patched up at read time.
+   */
+  const allDoctors = React.useMemo(() => {
+    const byKey = new Map<string, { id: string; name: string }>();
+    for (const doctor of doctors) {
+      const key = doctorNameKey(doctor.name);
+      if (key && !byKey.has(key)) byKey.set(key, { id: doctor.id, name: doctor.name });
+    }
+    for (const name of DEFAULT_DOCTORS) {
+      const key = doctorNameKey(name);
+      if (key && !byKey.has(key)) byKey.set(key, { id: `default_${name}`, name });
+    }
+    return [...byKey.values()];
+  }, [doctors]);
+
+  const filteredDoctorsDropdown = allDoctors.filter(doctor =>
+    doctorMatchesQuery(doctor.name, formData.doctorName),
+  );
+
+  const showAddDoctorButton =
+    formData.doctorName.trim().length > 0 &&
+    !allDoctors.some(d => d.name.toLowerCase() === formData.doctorName.trim().toLowerCase());
+
+  const openEditForm = (patient: any) => {
+    setEditingPatient(patient);
+    setFormData({
+      name: patient.name || '',
+      age: patient.age ? patient.age.toString() : '',
+      gender: patient.gender || 'male',
+      phone: patient.phone || '',
+      doctorName: patient.doctorName || '',
+      doctorId: patient.doctorId ?? doctors.find(d => doctorNameKey(d.name) === doctorNameKey(patient.doctorName ?? ''))?.id ?? '',
+      address: patient.address || '',
+      testSelection: patient.testSelection || [],
+    });
+    setIsModalOpen(true);
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col md:flex-row justify-between gap-4">
+        <div className="flex flex-col sm:flex-row flex-1 max-w-lg items-stretch gap-2">
+          <SearchField
+            className="flex-1"
+            placeholder="Search patients by name..."
+            value={searchTerm}
+            onChange={e => setSearchTerm(e.target.value)}
+            onClear={() => setSearchTerm('')}
+            aria-label="Search patients by name"
+          />
+
+          <CalendarRangePicker
+            fromDate={fromDate}
+            toDate={toDate}
+            activeDates={activePatientDates}
+            onChange={({ fromDate: from, toDate: to }) => {
+              setFromDate(from);
+              setToDate(to);
+            }}
+            className="z-30 w-full sm:w-60"
+          />
+        </div>
+        <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto shrink-0">
+          <Button
+            variant={duesOnly ? 'brand' : 'outline'}
+            size="sm"
+            aria-pressed={duesOnly}
+            onClick={() => setDuesOnly(value => !value)}
+            title="Show only the patients carrying a recorded due"
+          >
+            <Wallet className="mr-2 h-4 w-4" aria-hidden="true" />
+            With dues{dueCount > 0 ? ` (${dueCount})` : ''}
+          </Button>
+          <Button variant="outline" size="sm" onClick={exportFilteredCsv}>
+            <FileSpreadsheet className="mr-2 h-4 w-4" aria-hidden="true" />
+            Export CSV
+          </Button>
+          {role !== 'guest' && (
+            <Button variant="brand" size="sm" shine onClick={() => setIsModalOpen(true)}>
+              <UserPlus className="mr-1.5 h-4 w-4" />
+              Register Patient
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {patientsList.loading && (
+        <Card pad="none">
+          <div className="p-6 space-y-4" aria-busy="true" aria-label="Loading patients">
+            {Array.from({ length: 5 }).map((_, idx) => (
+              <div key={idx} className="flex items-center gap-4">
+                <Skeleton className="h-10 w-10 rounded-full" />
+                <Skeleton className="h-4 flex-1" />
+                <Skeleton className="h-4 w-24" />
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {patientsList.error && (
+        <div role="alert" className="rounded-xl border border-error/30 bg-error-container px-4 py-3 text-sm text-on-error-container">
+          Patient records could not be loaded — {patientsList.error}. This is not an empty register.
+        </div>
+      )}
+
+      {scanning && (
+        <p
+          role="status"
+          className="flex items-center justify-center gap-2 py-4 text-sm font-semibold text-on-surface-variant"
+        >
+          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+          Searching older records…
+        </p>
+      )}
+
+      {!patientsList.loading && !scanning && !patientsList.error && filteredPatients.length === 0 ? (
+        <Card pad="none">
+          <EmptyState
+            icon={<UserPlus className="h-7 w-7" />}
+            title={deferredSearch ? `No patient matches “${searchTerm.trim()}”` : 'No patients yet'}
+            description={
+              deferredSearch
+                ? 'Nothing matched in the loaded records. Clear the filter, or widen the registration range.'
+                : 'Register your first patient to start issuing reports.'
+            }
+            action={
+              deferredSearch ? (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setSearchTerm('');
+                    setFromDate('');
+                    setToDate('');
+                  }}
+                >
+                  Clear filters
+                </Button>
+              ) : undefined
+            }
+          />
+        </Card>
+      ) : filteredPatients.length > 0 ? (
+        <>
+          <Card pad="none" className="hidden md:block overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="bg-surface-container-low/60 border-b border-outline-variant/40">
+                    <th className="px-6 py-3.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-on-surface-variant">
+                      Name
+                    </th>
+                    <th className="px-6 py-3.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-on-surface-variant">
+                      Age / Gender
+                    </th>
+                    <th className="px-6 py-3.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-on-surface-variant">
+                      Registered
+                    </th>
+                    <th className="px-6 py-3.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-on-surface-variant text-right">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-outline-variant/40">
+                  {filteredPatients.map((patient, idx) => (
+                    <motion.tr
+                      key={patient.id}
+                      {...listStaggerProps(idx)}
+                      aria-selected={selectedPatient?.id === patient.id}
+                      className={cn(
+                        'cursor-pointer transition-colors hover:bg-surface-container-low',
+                        selectedPatient?.id === patient.id &&
+                          'bg-accent/8 ring-1 ring-inset ring-accent/40',
+                      )}
+                      onClick={() => setSelectedPatient(patient)}
+                    >
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-accent/12 text-accent font-bold">
+                            {patient.name[0]}
+                          </div>
+                          <span className="font-semibold text-on-surface">{patient.name}</span>
+                          {dueFor(patient) > 0 && (
+                            <StatusPill tone="error">Due {formatMoney(dueFor(patient))}</StatusPill>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-2">
+                          <StatusPill tone="neutral">{patient.age}y</StatusPill>
+                          <StatusPill tone="accent" className="capitalize">
+                            {patient.gender}
+                          </StatusPill>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 text-sm text-on-surface-variant">
+                        {new Date(patient.createdAt).toLocaleDateString('en-IN')}
+                      </td>
+                      <td className="px-6 py-4 text-right">
+                        <div className="flex justify-end gap-1">
+                          {role !== 'guest' && (
+                            <>
+                              <button
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  void printBill(patient);
+                                }}
+                                aria-label={`Print bill for ${patient.name}`}
+                                title="Raise and print this patient's bill"
+                                className="rounded-full p-2 text-on-surface-variant transition-colors hover:bg-accent/12 hover:text-accent"
+                              >
+                                {billingId === patient.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <ReceiptText className="h-4 w-4" />
+                                )}
+                              </button>
+                              <button
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  openEditForm(patient);
+                                }}
+                                aria-label={`Edit ${patient.name}`}
+                                className="rounded-full p-2 text-on-surface-variant transition-colors hover:bg-accent/12 hover:text-accent"
+                              >
+                                <Edit2 className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  setPatientToDelete(patient);
+                                }}
+                                aria-label={`Delete ${patient.name}`}
+                                className="rounded-full p-2 text-on-surface-variant transition-colors hover:bg-error-container hover:text-error"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </motion.tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          {/* Mobile inset list — edit/delete actions, staggered entrance.
+              The row is a primary button (name / history opens the detail
+              sheet) plus sibling action buttons (Edit, Delete). Previously
+              the whole row was a fake `role="button"` wrapper and the two
+              action buttons sat inside it: invalid nesting, awkward Tab
+              order, and TalkBack announced the wrapper as a single control
+              rather than naming the patient, then each action separately
+              (UI-P0-04). */}
+          <div className="md:hidden">
+            <ListGroup>
+              {filteredPatients.map((patient, pIdx) => (
+                <motion.div
+                  key={patient.id}
+                  {...listStaggerProps(pIdx)}
+                  className={cn(
+                    'transition-colors',
+                    selectedPatient?.id === patient.id && 'bg-accent/8',
+                  )}
+                >
+                  <ListRow
+                    leading={
+                      <span className="flex h-10 w-10 items-center justify-center rounded-full bg-accent/12 text-[15px] font-bold text-accent">
+                        {patient.name[0]}
+                      </span>
+                    }
+                    title={patient.name}
+                    subtitle={
+                      <>
+                        {`${patient.age}y · ${patient.gender} · ${new Date(patient.createdAt).toLocaleDateString('en-IN')}`}
+                        {dueFor(patient) > 0 && (
+                          <span className="mt-1 block text-[12px] font-bold text-error">
+                            Due {formatMoney(dueFor(patient))}
+                          </span>
+                        )}
+                      </>
+                    }
+                    primaryLabel={`View ${patient.name}'s history`}
+                    onClick={() => setSelectedPatient(patient)}
+                    trailing={
+                      role !== 'guest' ? (
+                        <>
+                          <IconButton
+                            label={`Print bill for ${patient.name}`}
+                            size="sm"
+                            className="text-on-surface-variant hover:bg-accent/12 hover:text-accent"
+                            onClick={e => {
+                              e.stopPropagation();
+                              void printBill(patient);
+                            }}
+                          >
+                            {billingId === patient.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <ReceiptText className="h-4 w-4" />
+                            )}
+                          </IconButton>
+                          <IconButton
+                            label={`Edit ${patient.name}`}
+                            size="sm"
+                            className="text-on-surface-variant hover:bg-accent/12 hover:text-accent"
+                            onClick={e => {
+                              e.stopPropagation();
+                              openEditForm(patient);
+                            }}
+                          >
+                            <Edit2 className="w-4 h-4" />
+                          </IconButton>
+                          <IconButton
+                            label={`Delete ${patient.name}`}
+                            size="sm"
+                            className="text-on-surface-variant hover:bg-error-container hover:text-error"
+                            onClick={e => {
+                              e.stopPropagation();
+                              setPatientToDelete(patient);
+                            }}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </IconButton>
+                        </>
+                      ) : undefined
+                    }
+                  />
+                </motion.div>
+              ))}
+            </ListGroup>
+          </div>
+        </>
+      ) : null}
+
+      {/* Older pages load on demand; a search walks through all of them, because
+          the local store already holds the whole collection in memory. */}
+      {!patientsList.loading && patientsList.hasMore && (
+        <div className="flex flex-wrap items-center justify-center gap-3">
+          <Button
+            variant="outline"
+            loading={patientsList.loadingMore}
+            onClick={() => void patientsList.loadMore()}
+          >
+            {deferredSearch ? 'Keep searching older records' : 'Load older records'}
+          </Button>
+          <span className="text-xs text-on-surface-variant">
+            {patients.length} patients loaded in this session
+          </span>
+        </div>
+      )}
+
+      {!patientsList.loading && !patientsList.hasMore && deferredSearch && (
+        <p className="text-center text-xs text-on-surface-variant">
+          {patients.length} patient{patients.length === 1 ? '' : 's'} searched — nothing matched
+          that. Try fewer letters, or part of a patient number.
+        </p>
+      )}
+
+      {/*
+       * Register / edit patient sheet. On a PC this is a two-column work surface
+       * — who the patient is on the left, what they are being tested for on the
+       * right — because the counter types a registration on the desktop and a
+       * single 448 px column turned it into a long scroll with the order picker
+       * off-screen. Below `fold` the same markup collapses back to the stacked
+       * bottom sheet, and the reading order is unchanged either way: identity →
+       * tests → address.
+       */}
+      <Sheet
+        open={isModalOpen}
+        onClose={() => {
+          setIsModalOpen(false);
+          resetForm();
+        }}
+        title={editingPatient ? 'Edit patient' : 'Register patient'}
+        description={
+          editingPatient
+            ? 'Correct the record. The tests listed here are what the next bill is raised from.'
+            : 'Who the patient is, who referred them, and what the lab has been asked to do.'
+        }
+        width="xl"
+        className="sm:max-w-[min(1120px,94vw)]"
+        footer={
+          <div className="flex gap-3 fold:justify-end">
+            <Button
+              variant="primary"
+              size="lg"
+              fullWidth
+              className="fold:w-auto fold:px-8"
+              onClick={() => {
+                setIsModalOpen(false);
+                resetForm();
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              form="patient-form"
+              variant="brand"
+              size="lg"
+              fullWidth
+              className="fold:w-auto fold:px-8"
+            >
+              {editingPatient ? 'Save Changes' : 'Register'}
+            </Button>
+          </div>
+        }
+      >
+        <form
+          id="patient-form"
+          onSubmit={handleSubmit}
+          className="grid grid-cols-1 gap-4 py-1 fold:grid-cols-2 fold:gap-x-6 fold:gap-y-5"
+        >
+          {formError && (
+            <div
+              role="alert"
+              className="rounded-xl bg-error-container px-4 py-3 text-sm font-semibold text-on-error-container fold:col-span-2"
+            >
+              {formError}
+            </div>
+          )}
+
+          {/* ---------- Left: the patient ---------- */}
+          <div className="min-w-0 space-y-4">
+            <FormHeading>Patient details</FormHeading>
+            <Field label="Full Name" required>
+              <TextInput
+                type="text"
+                value={formData.name}
+                onChange={e => setFormData({ ...formData, name: e.target.value })}
+                placeholder="Patient Name"
+                autoComplete="off"
+              />
+            </Field>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Age" required>
+                <TextInput
+                  type="number"
+                  inputMode="numeric"
+                  value={formData.age}
+                  onChange={e => setFormData({ ...formData, age: e.target.value })}
+                  placeholder="Age"
+                />
+              </Field>
+              <Field label="Gender">
+                <Select
+                  value={formData.gender}
+                  onChange={e => setFormData({ ...formData, gender: e.target.value })}
+                >
+                  <option value="male">Male</option>
+                  <option value="female">Female</option>
+                  <option value="other">Other</option>
+                </Select>
+              </Field>
+            </div>
+
+            <Field label="Referred By (Doctor Name)">
+              <div className="relative">
+                <Search className="absolute left-3.5 top-1/2 z-10 h-4 w-4 -translate-y-1/2 text-on-surface-variant" />
+                <TextInput
+                  type="text"
+                  value={formData.doctorName}
+                  onChange={e => {
+                    setFormData({ ...formData, doctorName: e.target.value, doctorId: '' });
+                    setIsDoctorDropdownOpen(true);
+                  }}
+                  onFocus={() => setIsDoctorDropdownOpen(true)}
+                  onBlur={() => setTimeout(() => setIsDoctorDropdownOpen(false), 200)}
+                  className="pl-10"
+                  placeholder="Search or add doctor (e.g. Dr. Rahul Pande)"
+                />
+
+                {isDoctorDropdownOpen && (
+                  <div className="absolute z-50 w-full mt-1 bg-surface-container-lowest border border-[var(--elevated-border)] rounded-2xl shadow-float max-h-48 overflow-y-auto top-full left-0">
+                    {filteredDoctorsDropdown.length > 0
+                      ? filteredDoctorsDropdown.map(docItem => (
+                          <button
+                            key={docItem.id}
+                            type="button"
+                            onMouseDown={e => {
+                              e.preventDefault();
+                              setFormData({ ...formData, doctorName: docItem.name, doctorId: docItem.id.startsWith('default_') ? '' : docItem.id });
+                              setIsDoctorDropdownOpen(false);
+                            }}
+                            className="w-full text-left px-4 py-3 text-sm font-medium text-on-surface hover:bg-surface-container-low transition-colors border-b border-outline-variant/40 last:border-0"
+                          >
+                            {docItem.name}
+                          </button>
+                        ))
+                      : !showAddDoctorButton && (
+                          <div className="px-4 py-3 text-sm text-on-surface-variant text-center border-b border-outline-variant/40 last:border-0">
+                            No matching doctors found.
+                          </div>
+                        )}
+
+                    {showAddDoctorButton && (
+                      <button
+                        type="button"
+                        onMouseDown={e => {
+                          e.preventDefault();
+                          addNewDoctor(formData.doctorName);
+                        }}
+                        disabled={isAddingDoctor}
+                        className="w-full text-left px-4 py-3 text-sm font-bold text-accent hover:bg-accent/12 transition-colors flex items-center gap-2"
+                      >
+                        <Plus className="w-4 h-4" />
+                        {isAddingDoctor
+                          ? 'Adding...'
+                          : `Add "${formData.doctorName}" as new doctor`}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </Field>
+          </div>
+
+          {/* ---------- Right: the order ---------- */}
+          <div className="min-w-0 rounded-3xl border border-outline-variant/40 bg-surface-container/40 p-4 sm:p-5 fold:col-start-2 fold:row-start-1 fold:row-span-2">
+            <div className="flex items-center justify-between gap-3">
+              <FormHeading>Test Selection</FormHeading>
+              {chipCount > 0 && (
+                <span className="shrink-0 text-[11px] font-semibold tabular-nums text-on-surface-variant">
+                  {chipCount} added
+                </span>
+              )}
+            </div>
+            <div className="space-y-2">
+              {formData.testSelection.length > 0 ? (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {testChips.groups.map(group => {
+                    const open = expandedGroups.includes(group.name);
+                    return (
+                      <React.Fragment key={group.name}>
+                        <span className="flex items-center gap-0.5 rounded-full bg-primary/12 py-0.5 pr-1 text-xs font-bold text-primary">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedGroups(prev =>
+                                prev.includes(group.name)
+                                  ? prev.filter(n => n !== group.name)
+                                  : [...prev, group.name],
+                              )
+                            }
+                            aria-expanded={open}
+                            className="flex items-center gap-1 rounded-full py-0.5 pl-2.5 pr-1 transition-colors hover:bg-primary/10"
+                          >
+                            {group.name}
+                            <span className="rounded-full bg-primary/15 px-1.5 py-px text-[10px] font-semibold leading-tight">
+                              {group.members.length}
+                            </span>
+                            {open ? (
+                              <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
+                            ) : (
+                              <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+                            )}
+                          </button>
+                          {unpricedSet.has(group.name) && <NotPricedTag className="mr-0.5" />}
+                          <button
+                            type="button"
+                            onClick={() => removeTest(group.name)}
+                            aria-label={`Remove ${group.name}`}
+                            className="rounded-full p-1 transition-colors hover:bg-error-container hover:text-error"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </span>
+                        {open &&
+                          group.members.map(member => (
+                            <span
+                              key={member}
+                              className="flex items-center gap-1 rounded-full bg-accent/12 px-2.5 py-0.5 text-[11px] font-medium text-accent"
+                            >
+                              {member}
+                              <button
+                                type="button"
+                                onClick={() => removeTest(member)}
+                                aria-label={`Remove ${member}`}
+                                className="rounded-full p-0.5 transition-colors hover:bg-error-container hover:text-error"
+                              >
+                                <X className="w-2.5 h-2.5" />
+                              </button>
+                            </span>
+                          ))}
+                      </React.Fragment>
+                    );
+                  })}
+                  {testChips.singles.map(test => (
+                    <span
+                      key={test}
+                      className="flex items-center gap-1 rounded-full bg-accent/12 px-2.5 py-0.5 text-[11px] font-medium text-accent"
+                    >
+                      {test}
+                      {unpricedSet.has(test) && <NotPricedTag />}
+                      <button
+                        type="button"
+                        onClick={() => removeTest(test)}
+                        aria-label={`Remove ${test}`}
+                        className="rounded-full p-0.5 transition-colors hover:bg-error-container hover:text-error"
+                      >
+                        <X className="w-2.5 h-2.5" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="rounded-2xl border border-dashed border-outline-variant/60 px-3 py-4 text-center text-[11px] text-on-surface-variant">
+                  Nothing on the order yet — search below to add a test or a profile.
+                </p>
+              )}
+
+              <div className="relative">
+                <SearchField
+                  role="combobox"
+                  aria-expanded={isTestDropdownOpen}
+                  aria-controls="patient-test-listbox"
+                  aria-autocomplete="list"
+                  aria-activedescendant={
+                    isTestDropdownOpen && filteredAvailableTests[activeTestIdx]
+                      ? `patient-test-opt-${activeTestIdx}`
+                      : undefined
+                  }
+                  value={testSearchQuery}
+                  onChange={e => {
+                    setTestSearchQuery(e.target.value);
+                    setTestActiveIdx(0);
+                    setIsTestDropdownOpen(true);
+                  }}
+                  onFocus={() => setIsTestDropdownOpen(true)}
+                  onBlur={() => setTimeout(() => setIsTestDropdownOpen(false), 150)}
+                  onClear={() => setTestSearchQuery('')}
+                  onKeyDown={handleTestKeyDown}
+                  placeholder="Search and add tests..."
+                  aria-label="Search and add tests"
+                />
+
+                {isTestDropdownOpen && (
+                  <div
+                    ref={testListRef}
+                    id="patient-test-listbox"
+                    role="listbox"
+                    aria-label="Available tests"
+                    className="absolute z-50 w-full mt-1 bg-surface-container-lowest border border-[var(--elevated-border)] rounded-2xl shadow-float max-h-48 fold:max-h-72 overflow-y-auto top-full left-0"
+                  >
+                    {filteredAvailableTests.length > 0 ? (
+                      filteredAvailableTests.map((test, idx) => (
+                        <button
+                          key={test.id}
+                          id={`patient-test-opt-${idx}`}
+                          role="option"
+                          aria-selected={idx === activeTestIdx}
+                          type="button"
+                          onMouseDown={e => {
+                            e.preventDefault();
+                            addTest(test.name);
+                          }}
+                          onMouseEnter={() => setTestActiveIdx(idx)}
+                          className={cn(
+                            'flex w-full items-baseline justify-between gap-3 text-left px-4 py-3 text-sm font-medium transition-colors border-b border-outline-variant/40 last:border-0',
+                            idx === activeTestIdx
+                              ? 'bg-surface-container-low text-on-surface'
+                              : 'text-on-surface hover:bg-surface-container-low',
+                          )}
+                        >
+                          <span className="min-w-0 truncate">{test.name}</span>
+                        </button>
+                      ))
+                    ) : (
+                      <div className="px-4 py-3 text-sm text-on-surface-variant text-center border-b border-outline-variant/40 last:border-0">
+                        No unselected tests found.
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Running total, on the same arithmetic the bill uses. A line with
+                  no tariff is counted here, not explained in a sentence above it:
+                  the bill prints those lines "not priced", never a silent ₹0. */}
+              {formData.testSelection.length > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-surface px-3 py-2 ring-1 ring-outline-variant/40">
+                  <span className="text-xs font-semibold uppercase tracking-[0.06em] text-on-surface-variant">
+                    {orderPreview.items.length} charge{orderPreview.items.length === 1 ? '' : 's'}
+                    {orderPreview.items.some(item => item.kind === 'panel')
+                      ? ' · profiles billed as one line'
+                      : ''}
+                  </span>
+                  <span className="flex items-center gap-2">
+                    {orderPreview.unpriced.length > 0 && (
+                      <StatusPill tone="warning">
+                        {orderPreview.unpriced.length} not priced
+                      </StatusPill>
+                    )}
+                    <span className="text-sm font-bold tabular-nums text-on-surface">
+                      {formatMoney(orderPreview.total)}
+                    </span>
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ---------- Address, after the order ---------- */}
+          <Field label="Address" className="min-w-0 fold:col-start-1 fold:row-start-2">
+            <TextArea
+              value={formData.address}
+              onChange={e => setFormData({ ...formData, address: e.target.value })}
+              placeholder="Patient Address"
+            />
+          </Field>
+        </form>
+      </Sheet>
+
+      <ConfirmSheet
+        open={!!duplicateCheck}
+        onClose={() => setDuplicateCheck(null)}
+        onConfirm={() => void savePatient()}
+        title="Possible duplicate patient"
+        confirmLabel="Register as a new patient"
+        message={
+          <>
+            <p>
+              This looks like it could be the same person as{' '}
+              <strong className="font-semibold text-on-surface">
+                {duplicateCheck?.length} existing record{duplicateCheck?.length === 1 ? '' : 's'}
+              </strong>
+              . Registering them again splits one patient's history across two files.
+            </p>
+            <ul className="mt-3 space-y-1.5">
+              {(duplicateCheck ?? []).slice(0, 4).map(match => (
+                <li key={match.id} className="text-xs text-on-surface-variant">
+                  <span className="font-semibold text-on-surface">{match.name}</span> · #{match.id}{' '}
+                  <span className="font-mono">({match.reason})</span>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-3 text-xs text-on-surface-variant">
+              If it is the same person, close this and open the existing record instead.
+            </p>
+          </>
+        }
+      />
+
+      <ConfirmSheet
+        open={!!patientToDelete}
+        onClose={() => setPatientToDelete(null)}
+        title="Archive Patient"
+        confirmLabel="Archive"
+        message={`Archive ${patientToDelete?.name}? Their reports, amendments, and invoices are retained for clinical and financial history.`}
+        onConfirm={async () => {
+          if (!patientToDelete) return;
+          const path = 'patients';
+          try {
+            const patientId = patientToDelete.id;
+
+            await archivePatient(patientId, operatorStamp(user), 'Archived from patient register');
+
+            setPatientToDelete(null);
+            toast.success(`${patientToDelete.name} archived. Clinical and financial history was retained.`);
+          } catch (err) {
+            handleFirestoreError(err, OperationType.UPDATE, path);
+            toast.error('Archive failed — nothing was changed.');
+          }
+        }}
+      />
+
+      {/* Read-only timeline: every report for the patient, grouped by day */}
+      <PatientDetailSheet
+        key={selectedPatient?.id ?? 'none'}
+        patient={selectedPatient}
+        onClose={() => setSelectedPatient(null)}
+        onEdit={role !== 'guest' ? openEditForm : undefined}
+        onPrintBill={role !== 'guest' ? patient => void printBill(patient) : undefined}
+        onSaveDue={role !== 'guest' ? saveDue : undefined}
+      />
+
+      {/* The Windows print sheet — desktop only; renders nothing on other shells,
+          so the APK and browser print paths are untouched. */}
+      <PrintDialog
+        open={!!billJob}
+        job={billJob}
+        onClose={() => setBillJob(null)}
+        onPrinted={() => toast.success('Bill sent to the printer.')}
+      />
+    </div>
+  );
+}
