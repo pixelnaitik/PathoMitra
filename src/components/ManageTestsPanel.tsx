@@ -65,7 +65,10 @@ import {
   type ReferenceRange,
 } from '../lib/pathology-tests';
 import { readSettings } from '../lib/settings';
+import { can } from '../lib/permissions';
+import type { Role } from '../lib/models';
 import { persistSettingsNow } from '../lib/settings-sync';
+import { captureError } from '../lib/telemetry';
 import {
   PRICE_LIST_UPDATED_EVENT,
   billableTests,
@@ -96,6 +99,8 @@ interface Props {
   onCustomTestsChange: (next: PathologyTest[]) => void;
   /** `operatorStamp(user)` — stamped on every price change. */
   actor: string;
+  actorUid?: string;
+  actorRole?: Role | null;
 }
 
 type Filter = 'all' | 'priced' | 'unpriced' | 'hidden' | 'custom';
@@ -125,7 +130,13 @@ function categoryRank(category: string): number {
   return idx === -1 ? CATEGORY_ORDER.length : idx;
 }
 
-export function ManageTestsPanel({ customTests, onCustomTestsChange, actor }: Props) {
+export function ManageTestsPanel({
+  customTests,
+  onCustomTestsChange,
+  actor,
+  actorUid,
+  actorRole,
+}: Props) {
   const toast = useToast();
   const [priceList, setPriceList] = useState<PriceList>(() => getPriceList());
   const [prefs, setPrefs] = useState<BillingPrefs>(() => getBillingPrefs());
@@ -252,7 +263,7 @@ export function ManageTestsPanel({ customTests, onCustomTestsChange, actor }: Pr
       });
       refresh();
     } catch (err) {
-      console.error('Price save failed:', err);
+      captureError(err, { scope: 'settings:price', entity: 'meta' });
       toast.error('The price was not saved — try again.');
     } finally {
       setSaving(false);
@@ -265,7 +276,7 @@ export function ManageTestsPanel({ customTests, onCustomTestsChange, actor }: Pr
       await setOrderable(name, active, actor);
       refresh();
     } catch (err) {
-      console.error('Availability save failed:', err);
+      captureError(err, { scope: 'settings:availability', entity: 'meta' });
       toast.error('Could not change availability.');
     } finally {
       setSaving(false);
@@ -278,7 +289,7 @@ export function ManageTestsPanel({ customTests, onCustomTestsChange, actor }: Pr
       refresh();
       toast.info(`${name} is unpriced again.`);
     } catch (err) {
-      console.error('Clear price failed:', err);
+      captureError(err, { scope: 'settings:price-clear', entity: 'meta' });
       toast.error('Could not clear that price.');
     }
   };
@@ -305,7 +316,7 @@ export function ManageTestsPanel({ customTests, onCustomTestsChange, actor }: Pr
       if (job) setPrintJob(job);
       else if (message) toast.info(message);
     } catch (err) {
-      console.error('Price list PDF failed:', err);
+      captureError(err, { scope: 'settings:price-pdf', entity: 'meta' });
       toast.error('Could not build the price list PDF.');
     }
   };
@@ -341,7 +352,7 @@ export function ManageTestsPanel({ customTests, onCustomTestsChange, actor }: Pr
       await saveBillingPrefs(next, actor);
       refresh();
     } catch (err) {
-      console.error('Billing prefs save failed:', err);
+      captureError(err, { scope: 'settings:billing-prefs', entity: 'meta' });
       toast.error('Could not save the billing defaults.');
     }
   };
@@ -357,7 +368,8 @@ export function ManageTestsPanel({ customTests, onCustomTestsChange, actor }: Pr
         <h3 className="mb-1 text-xl font-bold text-primary">Manage Tests</h3>
         <p className="text-sm text-on-surface-variant">
           Every test and package the lab can bill for, with its price and whether it may still be
-          ordered. {stats.priced} of {stats.total} approved for billing — {stats.own} at your own rate,
+          ordered. {stats.priced} of {stats.total} approved for billing — {stats.own} at your own
+          rate,
           {stats.suggested > 0
             ? ` ${stats.suggested} still on the app's suggested market rate and not chargeable unless enabled below.`
             : ' none left on the suggested rate.'}
@@ -465,28 +477,55 @@ export function ManageTestsPanel({ customTests, onCustomTestsChange, actor }: Pr
             />
           </Field>
           <Field label="Supplier GSTIN">
-            <TextInput value={taxDetails.supplierGstin ?? ''} maxLength={15} onChange={e => updateTaxDetails({ supplierGstin: e.target.value })} />
+            <TextInput
+              value={taxDetails.supplierGstin ?? ''}
+              maxLength={15}
+              onChange={e => updateTaxDetails({ supplierGstin: e.target.value })}
+            />
           </Field>
           <Field label="Patient GSTIN">
-            <TextInput value={taxDetails.patientGstin ?? ''} maxLength={15} onChange={e => updateTaxDetails({ patientGstin: e.target.value })} />
+            <TextInput
+              value={taxDetails.patientGstin ?? ''}
+              maxLength={15}
+              onChange={e => updateTaxDetails({ patientGstin: e.target.value })}
+            />
           </Field>
           <Field label="Place of supply">
-            <TextInput value={taxDetails.placeOfSupply ?? ''} maxLength={80} onChange={e => updateTaxDetails({ placeOfSupply: e.target.value })} />
+            <TextInput
+              value={taxDetails.placeOfSupply ?? ''}
+              maxLength={80}
+              onChange={e => updateTaxDetails({ placeOfSupply: e.target.value })}
+            />
           </Field>
           <Field label="Tax mode">
-            <Select value={taxDetails.mode} onChange={e => updateTaxDetails({ mode: e.target.value as 'intra' | 'inter' })}>
+            <Select
+              value={taxDetails.mode}
+              onChange={e => updateTaxDetails({ mode: e.target.value as 'intra' | 'inter' })}
+            >
               <option value="intra">Intra-state · CGST + SGST</option>
               <option value="inter">Inter-state · IGST</option>
             </Select>
           </Field>
           <Field label="Default HSN / SAC">
-            <TextInput value={taxDetails.hsnSac ?? ''} maxLength={16} onChange={e => updateTaxDetails({ hsnSac: e.target.value })} />
+            <TextInput
+              value={taxDetails.hsnSac ?? ''}
+              maxLength={16}
+              onChange={e => updateTaxDetails({ hsnSac: e.target.value })}
+            />
           </Field>
           <Field label="Legal entity name">
-            <TextInput value={taxDetails.legalEntityName ?? ''} maxLength={120} onChange={e => updateTaxDetails({ legalEntityName: e.target.value })} />
+            <TextInput
+              value={taxDetails.legalEntityName ?? ''}
+              maxLength={120}
+              onChange={e => updateTaxDetails({ legalEntityName: e.target.value })}
+            />
           </Field>
           <Field label="Invoice series">
-            <TextInput value={taxDetails.invoiceSeries ?? ''} maxLength={40} onChange={e => updateTaxDetails({ invoiceSeries: e.target.value })} />
+            <TextInput
+              value={taxDetails.invoiceSeries ?? ''}
+              maxLength={40}
+              onChange={e => updateTaxDetails({ invoiceSeries: e.target.value })}
+            />
           </Field>
           <div className="fold:col-span-3">
             <Switch
@@ -499,14 +538,22 @@ export function ManageTestsPanel({ customTests, onCustomTestsChange, actor }: Pr
             <Switch
               label="Enable referral payout calculations"
               checked={prefs.referralCompliance?.mode === 'payout-enabled'}
-              onChange={checked => updatePrefs({
-                referralCompliance: checked
-                  ? { mode: 'payout-enabled', acknowledgedBy: actor, acknowledgedAt: new Date().toISOString(), policyVersion: 'owner-ack-2026-11-24' }
-                  : { mode: 'tracking-only' },
-              })}
+              onChange={checked =>
+                updatePrefs({
+                  referralCompliance: checked
+                    ? {
+                        mode: 'payout-enabled',
+                        acknowledgedBy: actor,
+                        acknowledgedAt: new Date().toISOString(),
+                        policyVersion: 'owner-ack-2026-11-24',
+                      }
+                    : { mode: 'tracking-only' },
+                })
+              }
             />
             <p className="mt-1 text-xs text-on-surface-variant">
-              Off by default. Enabling records the approving operator and time; obtain jurisdiction-specific legal review first.
+              Off by default. Enabling records the approving operator and time; obtain
+              jurisdiction-specific legal review first.
             </p>
           </div>
           <div className="fold:col-span-3">
@@ -516,7 +563,8 @@ export function ManageTestsPanel({ customTests, onCustomTestsChange, actor }: Pr
               onChange={checked => updatePrefs({ allowSuggestedPrices: checked })}
             />
             <p className="mt-1 text-xs text-on-surface-variant">
-              Off by default. Enable only with owner approval; suggested charges are marked on invoices.
+              Off by default. Enable only with owner approval; suggested charges are marked on
+              invoices.
             </p>
           </div>
         </div>
@@ -586,6 +634,8 @@ export function ManageTestsPanel({ customTests, onCustomTestsChange, actor }: Pr
         catalogue={allTests}
         customNames={customTests.map(c => c.name)}
         actor={actor}
+        actorUid={actorUid}
+        actorRole={actorRole}
         onClose={() => {
           setAddOpen(false);
           setProfileOpen(false);
@@ -597,7 +647,13 @@ export function ManageTestsPanel({ customTests, onCustomTestsChange, actor }: Pr
           await persistSettingsNow(readSettings(), next, actor);
           onCustomTestsChange(next);
           if (typeof test.price === 'number' && Number.isFinite(test.price)) {
-            await upsertPrice({ name: test.name, price: test.price, kind: test.isGroup ? 'panel' : 'test', category: test.category, actor });
+            await upsertPrice({
+              name: test.name,
+              price: test.price,
+              kind: test.isGroup ? 'panel' : 'test',
+              category: test.category,
+              actor,
+            });
           }
           setAddOpen(false);
           setProfileOpen(false);
@@ -876,10 +932,10 @@ const EMPTY_DRAFT: DraftForm = {
   rangeMale: '',
   rangeFemale: '',
   rangeInfant: '',
-    rangeSource: '',
-    rangeReviewedAt: '',
-    rangeEffectiveFrom: '',
-    rangeApproved: false,
+  rangeSource: '',
+  rangeReviewedAt: '',
+  rangeEffectiveFrom: '',
+  rangeApproved: false,
   includedTests: [],
   price: '',
   hideMembers: false,
@@ -899,10 +955,30 @@ function toDraft(test: PathologyTest): DraftForm {
     rangeMale: test.ranges?.male?.text ?? '',
     rangeFemale: test.ranges?.female?.text ?? '',
     rangeInfant: test.ranges?.infant?.text ?? '',
-    rangeSource: test.ranges?.general?.source ?? test.ranges?.male?.source ?? test.ranges?.female?.source ?? test.ranges?.infant?.source ?? '',
-    rangeReviewedAt: test.ranges?.general?.lastReviewed ?? test.ranges?.male?.lastReviewed ?? test.ranges?.female?.lastReviewed ?? test.ranges?.infant?.lastReviewed ?? '',
-    rangeEffectiveFrom: test.effectiveFrom ?? test.ranges?.general?.effectiveFrom ?? test.ranges?.male?.effectiveFrom ?? test.ranges?.female?.effectiveFrom ?? test.ranges?.infant?.effectiveFrom ?? '',
-    rangeApproved: test.ranges?.general?.verification === 'approved' || test.ranges?.male?.verification === 'approved' || test.ranges?.female?.verification === 'approved' || test.ranges?.infant?.verification === 'approved',
+    rangeSource:
+      test.ranges?.general?.source ??
+      test.ranges?.male?.source ??
+      test.ranges?.female?.source ??
+      test.ranges?.infant?.source ??
+      '',
+    rangeReviewedAt:
+      test.ranges?.general?.lastReviewed ??
+      test.ranges?.male?.lastReviewed ??
+      test.ranges?.female?.lastReviewed ??
+      test.ranges?.infant?.lastReviewed ??
+      '',
+    rangeEffectiveFrom:
+      test.effectiveFrom ??
+      test.ranges?.general?.effectiveFrom ??
+      test.ranges?.male?.effectiveFrom ??
+      test.ranges?.female?.effectiveFrom ??
+      test.ranges?.infant?.effectiveFrom ??
+      '',
+    rangeApproved:
+      test.ranges?.general?.verification === 'approved' ||
+      test.ranges?.male?.verification === 'approved' ||
+      test.ranges?.female?.verification === 'approved' ||
+      test.ranges?.infant?.verification === 'approved',
     includedTests: [...(test.includedTests ?? [])],
     price: typeof test.price === 'number' ? String(test.price) : '',
     hideMembers: test.hideMembersFromBrowse !== false,
@@ -917,6 +993,8 @@ function TestFormSheet({
   catalogue,
   customNames,
   actor,
+  actorUid,
+  actorRole,
   onClose,
   onSubmit,
 }: {
@@ -926,6 +1004,8 @@ function TestFormSheet({
   catalogue: PathologyTest[];
   customNames: string[];
   actor: string;
+  actorUid?: string;
+  actorRole?: Role | null;
   onClose: () => void;
   onSubmit: (test: PathologyTest) => Promise<void>;
 }) {
@@ -957,14 +1037,19 @@ function TestFormSheet({
     }
     // Names and synonyms share the same folded key as pricing and lookup. A
     // punctuation-only alias must not create a second identity for one analyte.
-    const synonyms = draft.synonyms.split(',').map(value => value.trim()).filter(Boolean);
+    const synonyms = draft.synonyms
+      .split(',')
+      .map(value => value.trim())
+      .filter(Boolean);
     const aliasKeys = [name, ...synonyms].map(priceKey).filter(Boolean);
     if (new Set(aliasKeys).size !== aliasKeys.length) {
       setError('A test name and its synonyms must be distinct after normalization.');
       return;
     }
-    const clash = catalogue.find(t =>
-      t.id !== initial?.id && [t.name, ...(t.synonyms ?? [])].some(alias => aliasKeys.includes(priceKey(alias))),
+    const clash = catalogue.find(
+      t =>
+        t.id !== initial?.id &&
+        [t.name, ...(t.synonyms ?? [])].some(alias => aliasKeys.includes(priceKey(alias))),
     );
     if (clash) {
       setError(`“${clash.name}” already uses this name or synonym. Edit that one instead.`);
@@ -975,8 +1060,8 @@ function TestFormSheet({
         setError('A profile needs at least two tests inside it.');
         return;
       }
-      const missing = draft.includedTests.find(member =>
-        !catalogue.some(test => priceKey(test.name) === priceKey(member)),
+      const missing = draft.includedTests.find(
+        member => !catalogue.some(test => priceKey(test.name) === priceKey(member)),
       );
       if (missing) {
         setError(`“${missing}” is not in the catalogue. Add it before using it in a profile.`);
@@ -987,13 +1072,20 @@ function TestFormSheet({
     const rangeTexts = [draft.rangeGeneral, draft.rangeMale, draft.rangeFemale, draft.rangeInfant]
       .map(value => value.trim())
       .filter(Boolean);
+    if (draft.rangeApproved && (!actorUid || !can(actorRole, 'manageCatalog'))) {
+      setError('Only an authenticated pathologist or administrator can approve clinical ranges.');
+      return;
+    }
     if (draft.rangeApproved && rangeTexts.length === 0) {
       setError('Add at least one reference range before approving it.');
       return;
     }
     if (
       draft.rangeApproved &&
-      (!draft.rangeSource.trim() || !draft.method.trim() || !draft.rangeReviewedAt || !draft.rangeEffectiveFrom)
+      (!draft.rangeSource.trim() ||
+        !draft.method.trim() ||
+        !draft.rangeReviewedAt ||
+        !draft.rangeEffectiveFrom)
     ) {
       setError('Approved ranges need a source, method, review date, and effective date.');
       return;
@@ -1017,37 +1109,50 @@ function TestFormSheet({
       return;
     }
 
-    const clinicalSignature = (value: DraftForm) => JSON.stringify({
-      name: value.name.trim(),
-      category: value.category.trim(),
-      unit: value.unit.trim(),
-      method: value.method.trim(),
-      specimen: value.specimen.trim(),
-      kind: value.kind,
-      ranges: [value.rangeGeneral, value.rangeMale, value.rangeFemale, value.rangeInfant].map(v => v.trim()),
-      rangeSource: value.rangeSource.trim(),
-      rangeReviewedAt: value.rangeReviewedAt,
-      rangeEffectiveFrom: value.rangeEffectiveFrom,
-      rangeApproved: value.rangeApproved,
-      isGroup: value.isGroup,
-      includedTests: value.includedTests,
-      hideMembers: value.hideMembers,
-      synonyms,
-    });
+    const clinicalSignature = (value: DraftForm) =>
+      JSON.stringify({
+        name: value.name.trim(),
+        category: value.category.trim(),
+        unit: value.unit.trim(),
+        method: value.method.trim(),
+        specimen: value.specimen.trim(),
+        kind: value.kind,
+        ranges: [value.rangeGeneral, value.rangeMale, value.rangeFemale, value.rangeInfant].map(v =>
+          v.trim(),
+        ),
+        rangeSource: value.rangeSource.trim(),
+        rangeReviewedAt: value.rangeReviewedAt,
+        rangeEffectiveFrom: value.rangeEffectiveFrom,
+        rangeApproved: value.rangeApproved,
+        isGroup: value.isGroup,
+        includedTests: value.includedTests,
+        hideMembers: value.hideMembers,
+        synonyms,
+      });
     const previous = initial ? toDraft(initial) : null;
-    const version = initial && previous && clinicalSignature(draft) === clinicalSignature(previous)
-      ? initial.version ?? 1
-      : (initial?.version ?? 0) + 1;
+    const version =
+      initial && previous && clinicalSignature(draft) === clinicalSignature(previous)
+        ? (initial.version ?? 1)
+        : (initial?.version ?? 0) + 1;
     const bandMeta = {
       source: draft.rangeSource.trim() || undefined,
-      verification: draft.rangeApproved ? 'approved' as const : 'requires-lab-verification' as const,
+      verification: draft.rangeApproved
+        ? ('approved' as const)
+        : ('requires-lab-verification' as const),
       lastReviewed: draft.rangeReviewedAt || undefined,
       reviewedBy: draft.rangeApproved ? actor.trim() : undefined,
+      reviewedByUid: draft.rangeApproved ? actorUid : undefined,
+      reviewedByRole: draft.rangeApproved
+        ? actorRole === 'admin'
+          ? ('admin' as const)
+          : ('pathologist' as const)
+        : undefined,
       effectiveFrom: draft.rangeEffectiveFrom || undefined,
       version,
     };
     const ranges: ReferenceRange = {};
-    if (draft.rangeGeneral.trim()) ranges.general = { text: draft.rangeGeneral.trim(), ...bandMeta };
+    if (draft.rangeGeneral.trim())
+      ranges.general = { text: draft.rangeGeneral.trim(), ...bandMeta };
     if (draft.rangeMale.trim()) ranges.male = { text: draft.rangeMale.trim(), ...bandMeta };
     if (draft.rangeFemale.trim()) ranges.female = { text: draft.rangeFemale.trim(), ...bandMeta };
     if (draft.rangeInfant.trim()) ranges.infant = { text: draft.rangeInfant.trim(), ...bandMeta };
@@ -1060,6 +1165,12 @@ function TestFormSheet({
       version,
       effectiveFrom: draft.rangeEffectiveFrom || undefined,
       reviewedBy: draft.rangeApproved ? actor.trim() : undefined,
+      reviewedByUid: draft.rangeApproved ? actorUid : undefined,
+      reviewedByRole: draft.rangeApproved
+        ? actorRole === 'admin'
+          ? ('admin' as const)
+          : ('pathologist' as const)
+        : undefined,
       isGroup: draft.isGroup,
       ...(draft.isGroup
         ? { includedTests: draft.includedTests, hideMembersFromBrowse: draft.hideMembers }
@@ -1295,17 +1406,39 @@ function TestFormSheet({
               />
             </Field>
             <Field label="Range source" hint="Guideline, method validation, or in-house study.">
-              <TextInput value={draft.rangeSource} disabled={isBuiltIn} onChange={e => patch({ rangeSource: e.target.value })} placeholder="Lab director-approved method study" />
+              <TextInput
+                value={draft.rangeSource}
+                disabled={isBuiltIn}
+                onChange={e => patch({ rangeSource: e.target.value })}
+                placeholder="Lab director-approved method study"
+              />
             </Field>
             <Field label="Last reviewed">
-              <TextInput type="date" value={draft.rangeReviewedAt} disabled={isBuiltIn} onChange={e => patch({ rangeReviewedAt: e.target.value })} />
+              <TextInput
+                type="date"
+                value={draft.rangeReviewedAt}
+                disabled={isBuiltIn}
+                onChange={e => patch({ rangeReviewedAt: e.target.value })}
+              />
             </Field>
             <Field label="Effective from" hint="Required for an approved clinical version.">
-              <TextInput type="date" value={draft.rangeEffectiveFrom} disabled={isBuiltIn} onChange={e => patch({ rangeEffectiveFrom: e.target.value })} />
+              <TextInput
+                type="date"
+                value={draft.rangeEffectiveFrom}
+                disabled={isBuiltIn}
+                onChange={e => patch({ rangeEffectiveFrom: e.target.value })}
+              />
             </Field>
             <div className="fold:col-span-2">
-              <Switch label="I approve these ranges for clinical issue" checked={draft.rangeApproved} disabled={isBuiltIn} onChange={checked => patch({ rangeApproved: checked })} />
-              <p className="mt-1 text-xs text-on-surface-variant">Unapproved ranges remain printable only with a visible UNVERIFIED caveat.</p>
+              <Switch
+                label="I approve these ranges for clinical issue"
+                checked={draft.rangeApproved}
+                disabled={isBuiltIn}
+                onChange={checked => patch({ rangeApproved: checked })}
+              />
+              <p className="mt-1 text-xs text-on-surface-variant">
+                Unapproved ranges remain printable only with a visible UNVERIFIED caveat.
+              </p>
             </div>
           </div>
         )}
@@ -1392,7 +1525,7 @@ function BulkPriceSheet({
       );
       onApplied(changed);
     } catch (err) {
-      console.error('Bulk price change failed:', err);
+      captureError(err, { scope: 'settings:bulk-price', entity: 'meta' });
       onApplied(0);
     } finally {
       setBusy(false);

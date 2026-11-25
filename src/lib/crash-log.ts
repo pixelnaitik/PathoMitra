@@ -31,10 +31,15 @@ export interface CrashEntry extends CrashPayload {
   key: number;
 }
 
-function sanitize(entry: CrashPayload): CrashPayload {
-  const name = entry.name && /^[A-Za-z][A-Za-z0-9 _-]{0,60}$/.test(entry.name) ? entry.name : 'Error';
+function sanitize(entry: Partial<CrashPayload>): CrashPayload {
+  const name =
+    entry.name && /^[A-Za-z][A-Za-z0-9 _-]{0,60}$/.test(entry.name) ? entry.name : 'Error';
   const context: CrashPayload['context'] = {};
-  for (const [key, value] of Object.entries(entry.context)) {
+  const sourceContext =
+    entry.context && typeof entry.context === 'object' && !Array.isArray(entry.context)
+      ? entry.context
+      : {};
+  for (const [key, value] of Object.entries(sourceContext)) {
     if (!['scope', 'operation', 'entity', 'errorCode', 'retryable'].includes(key)) continue;
     if (typeof value === 'string' && /^[A-Za-z0-9:._/-]{1,80}$/.test(value)) context[key] = value;
     else if (typeof value === 'number' && Number.isFinite(value)) context[key] = value;
@@ -44,9 +49,12 @@ function sanitize(entry: CrashPayload): CrashPayload {
     name,
     message: `${name} captured; error details redacted for privacy.`,
     context,
-    userAgent: entry.userAgent?.slice(0, 200),
-    correlationId: entry.correlationId,
-    at: entry.at,
+    userAgent: typeof entry.userAgent === 'string' ? entry.userAgent.slice(0, 200) : undefined,
+    correlationId:
+      typeof entry.correlationId === 'string' && /^[A-Za-z0-9-]{1,80}$/.test(entry.correlationId)
+        ? entry.correlationId
+        : 'legacy-redacted',
+    at: typeof entry.at === 'string' && !Number.isNaN(Date.parse(entry.at)) ? entry.at : '',
   };
 }
 
@@ -67,12 +75,18 @@ async function load(): Promise<CrashEntry[]> {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
-        buffer = parsed.filter(
-          (entry): entry is CrashEntry =>
-            !!entry &&
-            typeof entry === 'object' &&
-            typeof (entry as CrashEntry).message === 'string',
-        );
+        buffer = parsed
+          .filter(
+            (entry): entry is Partial<CrashPayload> & { key?: number } =>
+              !!entry && typeof entry === 'object',
+          )
+          .map((entry, index) => ({
+            ...sanitize(entry),
+            key:
+              Number.isInteger(entry.key) && Number(entry.key) > 0 ? Number(entry.key) : index + 1,
+          }))
+          .filter(entry => !!entry.at)
+          .slice(-MAX_ENTRIES);
         nextKey = buffer.reduce((max, entry) => Math.max(max, entry.key + 1), 1);
       }
     }
@@ -142,13 +156,9 @@ export function formatCrashLog(entries: CrashEntry[]): string {
       entries.map(entry =>
         [
           `[${entry.at}] ${entry.name ?? 'Error'}: ${entry.message}`,
-          entry.url ? `  at: ${entry.url}` : '',
-          entry.stack
-            ? `  stack:\n${entry.stack
-                .split('\n')
-                .map(line => `    ${line}`)
-                .join('\n')}`
-            : '',
+          Object.entries(entry.context)
+            .map(([key, value]) => `  ${key}: ${String(value)}`)
+            .join('\n'),
         ]
           .filter(Boolean)
           .join('\n'),

@@ -28,6 +28,7 @@
 import { App } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
 import { desktopBridge, isDesktopShell } from './desktop-bridge';
+import { captureError } from './telemetry';
 
 export interface SessionLockOptions {
   onLock: () => void;
@@ -96,7 +97,7 @@ export function installSessionLock({ onLock, idleMs }: SessionLockOptions): () =
         if (disposed) void handle.remove();
         else teardowns.push(() => void handle.remove());
       })
-      .catch(error => console.error('SessionLock: appStateChange unavailable', error));
+      .catch(error => captureError(error, { scope: 'session-lock:app-state' }));
   } else if (isDesktopShell()) {
     // Occlusion is not backgrounding, but minimize, OS lock, and suspend are.
     // The main process owns those events and sends an explicit lock signal.

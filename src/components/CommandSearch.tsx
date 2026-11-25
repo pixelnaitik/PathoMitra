@@ -10,7 +10,7 @@
  * The local store materialises the whole collection on any read anyway, so the
  * ceiling was costing correctness and buying nothing.
  */
-import { useState, useEffect, useRef, useCallback, useMemo, useDeferredValue } from 'react';
+import { useState, useEffect, useRef, useCallback, useDeferredValue } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import {
@@ -30,8 +30,9 @@ import { SPRING } from '../lib/motion';
 import { BACK_PRIORITY, useBackHandler } from '../lib/back-button';
 import { useModalFocus } from '../hooks/useModalFocus';
 import {
-  filterSearchResults,
+  querySearchIndex,
   subscribeSearchIndex,
+  type SearchFilterResult,
   type SearchIndexState,
   type SearchResult,
 } from '../lib/search-index';
@@ -71,21 +72,40 @@ export function CommandSearch({
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const [index, setIndex] = useState<SearchIndexState>({ items: [], loading: false, failedSources: 0 });
-  const { onKeyDown: onModalKeyDown } = useModalFocus({ open, onClose, panelRef, initialFocusRef: inputRef });
+  const [index, setIndex] = useState<SearchIndexState>({
+    items: [],
+    loading: false,
+    failedSources: 0,
+  });
+  const { onKeyDown: onModalKeyDown } = useModalFocus({
+    open,
+    onClose,
+    panelRef,
+    initialFocusRef: inputRef,
+  });
 
   // The index is built once per app session and reconciled from repository
   // subscriptions. Reopening the palette never rereads or reindexes every row.
   useEffect(() => subscribeSearchIndex(setIndex), []);
   const deferredSearch = useDeferredValue(search);
-  const filtered = useMemo(
-    () => filterSearchResults(index.items, deferredSearch),
-    [index.items, deferredSearch],
-  );
+  const [filtered, setFiltered] = useState<SearchFilterResult>({
+    items: [],
+    totalMatches: 0,
+    omitted: 0,
+  });
+  useEffect(() => {
+    let active = true;
+    void querySearchIndex(deferredSearch).then(result => {
+      if (active) setFiltered(result);
+    });
+    return () => {
+      active = false;
+    };
+  }, [index.items, deferredSearch]);
 
   useEffect(() => {
     queueMicrotask(() => setActiveIdx(0));
-  }, [filtered.length]);
+  }, [filtered.items.length]);
   useEffect(() => {
     if (!open) return;
     queueMicrotask(() => {
@@ -95,7 +115,13 @@ export function CommandSearch({
   }, [open]);
   const navigate = useCallback(
     (result: SearchResult) => {
-      const tabMap = { patient: 'patients', report: 'reports', doctor: 'doctors', order: 'orders', sample: 'samples' };
+      const tabMap = {
+        patient: 'patients',
+        report: 'reports',
+        doctor: 'doctors',
+        order: 'orders',
+        sample: 'samples',
+      };
       onNavigate(tabMap[result.type], result.id);
       onClose();
     },
@@ -116,7 +142,7 @@ export function CommandSearch({
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setActiveIdx(i => Math.min(i + 1, filtered.length - 1));
+      setActiveIdx(i => Math.min(i + 1, filtered.items.length - 1));
       return;
     }
     if (e.key === 'ArrowUp') {
@@ -124,9 +150,9 @@ export function CommandSearch({
       setActiveIdx(i => Math.max(i - 1, 0));
       return;
     }
-    if (e.key === 'Enter' && filtered[activeIdx]) {
+    if (e.key === 'Enter' && filtered.items[activeIdx]) {
       e.preventDefault();
-      navigate(filtered[activeIdx]);
+      navigate(filtered.items[activeIdx]);
     }
   };
 
@@ -192,11 +218,11 @@ export function CommandSearch({
                 placeholder="Search patients, reports, orders, samples…"
                 aria-label="Search query"
                 role="combobox"
-                aria-expanded={filtered.length > 0}
+                aria-expanded={filtered.items.length > 0}
                 aria-controls="command-search-results"
                 aria-autocomplete="list"
                 aria-activedescendant={
-                  filtered.length ? `command-search-opt-${activeIdx}` : undefined
+                  filtered.items.length ? `command-search-opt-${activeIdx}` : undefined
                 }
                 className="h-14 min-w-0 flex-1 border-0 bg-transparent text-[15px] text-on-surface caret-accent placeholder:text-on-surface-variant focus:outline-none focus:shadow-none"
                 autoComplete="off"
@@ -238,18 +264,18 @@ export function CommandSearch({
                   <div className="h-5 w-5 animate-spin rounded-full border-2 border-accent border-t-transparent" />
                 </div>
               )}
-              {!index.loading && filtered.length === 0 && (
+              {!index.loading && filtered.items.length === 0 && (
                 <div className="py-8 text-center">
                   <p className="text-sm font-medium text-on-surface-variant">
                     {search ? 'No results found' : 'Start typing to search'}
                   </p>
                   {search ? (
-                    <p className="mt-1 text-xs text-outline">
-                      Searched all {index.items.length} record{index.items.length === 1 ? '' : 's'} — try
-                      fewer letters, a patient number, or a test name
+                    <p className="mt-1 text-xs text-on-surface-variant">
+                      Searched all {index.items.length} record{index.items.length === 1 ? '' : 's'}{' '}
+                      — try fewer letters, a patient number, or a test name
                     </p>
                   ) : (
-                    <p className="mt-1 text-xs text-outline">
+                    <p className="mt-1 text-xs text-on-surface-variant">
                       Try a name, a patient number or a test
                     </p>
                   )}
@@ -262,13 +288,20 @@ export function CommandSearch({
                 >
                   <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                   <span className="min-w-0">
-                    {index.failedSources} record {index.failedSources === 1 ? 'source could' : 'sources could'}
+                    {index.failedSources} record{' '}
+                    {index.failedSources === 1 ? 'source could' : 'sources could'}
                     not be read, so it is missing from these results. This is not "no matches".
                   </span>
                 </p>
               )}
+              {!index.loading && filtered.omitted > 0 && (
+                <p role="status" className="px-3.5 py-2 text-xs text-on-surface-variant">
+                  Showing the best {filtered.items.length} of {filtered.totalMatches} matches;{' '}
+                  {filtered.omitted} more omitted by the per-type display limit.
+                </p>
+              )}
               {!index.loading &&
-                filtered.map((result, idx) => {
+                filtered.items.map((result, idx) => {
                   const Icon = TYPE_ICONS[result.type];
                   return (
                     <button
@@ -339,8 +372,8 @@ export function CommandSearch({
                 open
               </span>
               <span className="ml-auto flex items-center gap-1 text-[11px] text-on-surface-variant">
-                <ArrowRight className="h-3 w-3" /> {filtered.length} result
-                {filtered.length !== 1 && 's'}
+                <ArrowRight className="h-3 w-3" /> {filtered.totalMatches} result
+                {filtered.totalMatches !== 1 && 's'}
               </span>
             </div>
           </motion.div>

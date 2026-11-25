@@ -9,11 +9,7 @@
  */
 import { Link } from 'react-router-dom';
 import { cn } from '../lib/utils';
-import {
-  downloadHref,
-  isExternalDownload,
-  type DownloadPlatform,
-} from '../lib/downloads';
+import { downloadHref, isExternalDownload, type DownloadPlatform } from '../lib/downloads';
 import { AndroidRobotIcon, WindowsPaneIcon } from './BrandIcons';
 
 const PLATFORMS = {
@@ -87,13 +83,7 @@ export function StoreBadge({
 
   if (external) {
     return (
-      <a
-        href={href}
-        target="_blank"
-        rel="noreferrer"
-        aria-label={p.label}
-        className={box}
-      >
+      <a href={href} target="_blank" rel="noreferrer" aria-label={p.label} className={box}>
         {icon}
         <span className="text-left">{inner}</span>
       </a>

@@ -16,6 +16,7 @@
  * never loads the plugin and browser Back keeps being browser Back.
  */
 import { useEffect } from 'react';
+import { captureError } from './telemetry';
 
 /** Returning true means "I consumed the press — stop unwinding". */
 export type BackHandler = () => boolean;
@@ -66,7 +67,7 @@ export function unwindOneLayer(): boolean {
       if (entry.handler()) return true;
     } catch (err) {
       // A broken handler must not trap the user on a screen they cannot leave.
-      console.error('PathoMitra: back handler threw', err);
+      captureError(err, { scope: 'back-button:handler' });
     }
   }
   return false;

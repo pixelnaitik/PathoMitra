@@ -6,6 +6,7 @@
  * now logs a structured line and rethrows the underlying message for the UI.
  * The export names are kept so existing call sites are unchanged.
  */
+import { captureError } from './telemetry';
 
 export enum OperationType {
   CREATE = 'create',
@@ -28,7 +29,12 @@ export function handleFirestoreError(
   path: string | null,
 ): never {
   const message = error instanceof Error ? error.message : String(error);
-  const info: FirestoreErrorInfo = { error: message, operationType, path };
-  console.error('PathoMitra data error:', JSON.stringify(info));
+  captureError(error, {
+    scope: 'data',
+    operation: operationType,
+    // Only the collection name is safe diagnostics context; a document path can
+    // contain a patient or report identifier.
+    entity: path?.split('/')[0],
+  });
   throw new Error(message);
 }

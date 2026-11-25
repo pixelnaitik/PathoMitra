@@ -48,7 +48,7 @@ export default function Trust() {
           </p>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-8 md:gap-12 opacity-80">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-8 md:gap-12">
           {guarantees.map(({ icon: Icon, label }, index) => (
             <motion.div
               key={label}

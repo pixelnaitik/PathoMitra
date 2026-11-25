@@ -30,6 +30,8 @@
  * pattern `build/` matches at any depth — default would make the tile
  * logos silently un-committable.
  */
+const artifactSuffix = process.env.PM_ARTIFACT_SUFFIX ?? '';
+
 export default {
   appId: 'com.pathomitra.desktop',
   productName: 'PathoMitra',
@@ -191,7 +193,7 @@ export default {
     // No "Naitik Raj" submenu: one clinical app, straight into the Start Menu.
     menuCategory: false,
     runAfterFinish: true,
-    artifactName: 'PathoMitra-${version}.${ext}',
+    artifactName: `PathoMitra-\${version}${artifactSuffix}.\${ext}`,
   },
   nsis: {
     // The per-user alternative (PM_WIN_TARGETS=nsis): no elevation, installs
@@ -206,7 +208,7 @@ export default {
     // — it simply does not touch the app folders).
     deleteAppDataOnUninstall: false,
     uninstallDisplayName: 'PathoMitra',
-    artifactName: 'PathoMitra-${version}-setup.${ext}',
+    artifactName: `PathoMitra-\${version}${artifactSuffix}-setup.\${ext}`,
   },
   appx: {
     // Reserved for the Store listing; must match the Partner Center reservation.
@@ -219,7 +221,7 @@ export default {
     capabilities: ['runFullTrust'],
     minVersion: '10.0.17763.0', // Windows 10 1809 — Store floor
     maxVersionTested: '10.0.26100.0', // Windows 11 24H2
-    artifactName: 'PathoMitra-${version}.${ext}',
+    artifactName: `PathoMitra-\${version}${artifactSuffix}.\${ext}`,
   },
   toolsets: {
     // Modern bundle carries makeappx/makepri; the legacy 2.6.0 one cannot do MSIX.

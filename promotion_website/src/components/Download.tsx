@@ -18,7 +18,10 @@ const FACTS = [
 
 export default function Download() {
   return (
-    <section id="download" className="relative overflow-hidden bg-surface-container-low px-6 py-24 sm:py-28">
+    <section
+      id="download"
+      className="relative overflow-hidden bg-surface-container-low px-6 py-24 sm:py-28"
+    >
       {/* soft brand glow behind the badges, drifting with the hero aurora */}
       <div aria-hidden="true" className="pointer-events-none absolute inset-0">
         <div className="aurora-orb absolute left-1/2 top-1/2 h-[340px] w-[620px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent/8 blur-[120px]" />

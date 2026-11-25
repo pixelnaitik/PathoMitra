@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { buildCrashPayload, captureError, initErrorReporting, __resetErrorReporting } from './telemetry';
+import {
+  buildCrashPayload,
+  captureError,
+  initErrorReporting,
+  __resetErrorReporting,
+} from './telemetry';
+
+vi.mock('./crash-log', () => ({ recordCrash: vi.fn() }));
 
 let fetchMock: ReturnType<typeof vi.fn>;
 
@@ -13,6 +20,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  __resetErrorReporting();
   vi.restoreAllMocks();
 });
 
@@ -41,12 +49,20 @@ describe('captureError (offline)', () => {
     expect(() => captureError({ code: 42 })).not.toThrow();
     expect(() => captureError(undefined)).not.toThrow();
   });
+
+  it('keeps raw patient/error text out of the console trace', () => {
+    captureError(new Error('Patient Asha Rao 26110001 failed'), { scope: 'reports' });
+    expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toMatch(/Asha|26110001/);
+  });
 });
 
 describe('buildCrashPayload', () => {
   it('keeps correlation metadata but removes arbitrary PHI and raw stacks', () => {
     const payload = buildCrashPayload(new Error('Asha Rao ACC-123 failed'), {
-      scope: 'reports:save', patientName: 'Asha Rao', file: 'Asha Rao.pdf', retryable: true,
+      scope: 'reports:save',
+      patientName: 'Asha Rao',
+      file: 'Asha Rao.pdf',
+      retryable: true,
     });
     const serialized = JSON.stringify(payload);
     expect(serialized).not.toContain('Asha');
@@ -59,10 +75,6 @@ describe('buildCrashPayload', () => {
 });
 
 describe('initErrorReporting', () => {
-  /**
-   * A PromiseRejectionEvent needs a rejected promise; attaching our own catch
-   * keeps vitest from reporting it as a second, unrelated unhandled rejection.
-   */
   const rejectedPromise = (error: Error) => {
     const promise = Promise.reject(error);
     promise.catch(() => {});
@@ -86,9 +98,6 @@ describe('initErrorReporting', () => {
     window.dispatchEvent(
       new PromiseRejectionEvent('unhandledrejection', { reason, promise: rejectedPromise(reason) }),
     );
-    // The `globalsInstalled` guard prevents a second registration; global DOM
-    // listeners from earlier cases are not removable here, so assert capture
-    // happened and that nothing hit the network.
     expect(console.error).toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
   });

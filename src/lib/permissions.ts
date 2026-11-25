@@ -8,19 +8,65 @@ export type Permission =
   | 'verifyReports'
   | 'issueReports'
   | 'manageBilling'
+  | 'manageDoctors'
+  | 'manageOrders'
+  | 'manageSamples'
+  | 'manageCatalog'
+  | 'manageBackup'
+  | 'restoreData'
+  | 'manageNotifications'
   | 'viewClinical'
+  | 'viewAudit'
   | 'exportData'
   | 'eraseData';
 
 const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   guest: ['viewClinical'],
-  staff: ['viewClinical', 'registerPatients', 'enterResults', 'manageBilling'],
-  technologist: ['viewClinical', 'registerPatients', 'enterResults'],
-  pathologist: ['viewClinical', 'registerPatients', 'enterResults', 'verifyReports', 'issueReports'],
+  staff: [
+    'viewClinical',
+    'registerPatients',
+    'enterResults',
+    'manageBilling',
+    'manageOrders',
+    'manageSamples',
+  ],
+  technologist: [
+    'viewClinical',
+    'registerPatients',
+    'enterResults',
+    'manageOrders',
+    'manageSamples',
+  ],
+  pathologist: [
+    'viewClinical',
+    'registerPatients',
+    'enterResults',
+    'verifyReports',
+    'issueReports',
+    'manageOrders',
+    'manageSamples',
+    'manageCatalog',
+  ],
   cashier: ['viewClinical', 'registerPatients', 'manageBilling'],
   admin: [
-    'manageOperators', 'manageSettings', 'registerPatients', 'enterResults',
-    'verifyReports', 'issueReports', 'manageBilling', 'viewClinical', 'exportData', 'eraseData',
+    'manageOperators',
+    'manageSettings',
+    'registerPatients',
+    'enterResults',
+    'verifyReports',
+    'issueReports',
+    'manageBilling',
+    'manageDoctors',
+    'manageOrders',
+    'manageSamples',
+    'manageCatalog',
+    'manageBackup',
+    'restoreData',
+    'manageNotifications',
+    'viewClinical',
+    'viewAudit',
+    'exportData',
+    'eraseData',
   ],
 };
 

@@ -13,7 +13,10 @@ const store = vi.hoisted(() => ({
 }));
 
 interface TestRepo {
-  get: (path: string, id: string) => Promise<{ id: string; data: () => Record<string, unknown> } | null>;
+  get: (
+    path: string,
+    id: string,
+  ) => Promise<{ id: string; data: () => Record<string, unknown> } | null>;
   set: (path: string, id: string, data: Record<string, unknown>) => Promise<void>;
   transaction: (fn: (tx: TestRepo) => Promise<void>) => Promise<void>;
 }
@@ -88,6 +91,20 @@ describe('validatePatientForm', () => {
   it('caps the address like the schema does', () => {
     expect(validatePatientForm({ ...base, address: 'x'.repeat(501) })).toMatch(/500 characters/);
   });
+
+  it('validates paediatric and identity fields without making them mandatory', () => {
+    expect(validatePatientForm({ ...base, dateOfBirth: '2024-02-30' })).toMatch(/valid date/);
+    expect(validatePatientForm({ ...base, externalId: 'BC-1' })).toMatch(/identifier type/);
+    expect(
+      validatePatientForm({
+        ...base,
+        dateOfBirth: '2024-02-29',
+        guardianName: 'Guardian',
+        externalIdType: 'birth-certificate',
+        externalId: 'BC-1',
+      }),
+    ).toBeNull();
+  });
 });
 
 describe('normalisePhone and patientNameKey', () => {
@@ -135,13 +152,29 @@ describe('findProbableDuplicates', () => {
       age: 30,
     }));
     many[599] = { id: 'old-match', name: 'Asha Rao', age: 34 };
-    expect(findProbableDuplicates({ name: 'asha rao', age: '34' }, many).map(match => match.id)).toContain('old-match');
+    expect(
+      findProbableDuplicates({ name: 'asha rao', age: '34' }, many).map(match => match.id),
+    ).toContain('old-match');
   });
 
   it('does not interrupt a registration for a different person', () => {
     expect(findProbableDuplicates({ name: 'Vikram Rao', age: '40', phone: '' }, records)).toEqual(
       [],
     );
+  });
+
+  it('uses a stable external identifier or name plus birth date for identity matching', () => {
+    const candidates = [
+      { id: 'child-1', name: 'Asha Rao', age: 2, dateOfBirth: '2024-02-29', externalId: 'BC-1' },
+    ];
+    expect(
+      findProbableDuplicates({ name: 'Different Name', age: 2, externalId: 'bc-1' }, candidates)[0]
+        ?.reason,
+    ).toMatch(/external identifier/);
+    expect(
+      findProbableDuplicates({ name: 'Asha Rao', age: 2, dateOfBirth: '2024-02-29' }, candidates)[0]
+        ?.reason,
+    ).toMatch(/date of birth/);
   });
 
   it('never flags the record being edited as its own duplicate', () => {

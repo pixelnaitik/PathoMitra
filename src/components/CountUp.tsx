@@ -50,5 +50,14 @@ export default function CountUp({ value, duration = 900 }: CountUpProps) {
     return () => cancelAnimationFrame(raf);
   }, [value, duration]);
 
-  return <span ref={ref}>{value.toLocaleString('en-IN')}</span>;
+  return (
+    <>
+      <span ref={ref} aria-hidden="true">
+        {value.toLocaleString('en-IN')}
+      </span>
+      <span role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+        {value.toLocaleString('en-IN')}
+      </span>
+    </>
+  );
 }

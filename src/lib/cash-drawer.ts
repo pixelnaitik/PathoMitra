@@ -39,27 +39,37 @@ function parseShift(id: string, raw: Record<string, unknown>): CashShift | null 
 }
 
 export async function openCashShift(openingFloat: number, actor: string): Promise<CashShift> {
-  if (!Number.isFinite(openingFloat) || openingFloat < 0) throw new Error('Opening float must be non-negative.');
+  if (!Number.isFinite(openingFloat) || openingFloat < 0)
+    throw new Error('Opening float must be non-negative.');
   if (!actor.trim()) throw new Error('A cash shift requires an operator identity.');
   const repo = getRepository();
-  const active = await repo.list('meta', { where: [{ field: 'status', op: '==', value: 'open' }] });
-  const openShift = active.map(doc => parseShift(doc.id, doc.data())).find(shift => shift?.id.startsWith(SHIFT_PREFIX));
-  if (openShift) throw new Error('A cash drawer shift is already open. Close it before opening another.');
-  const id = `${SHIFT_PREFIX}${generateId()}`;
-  const shift: CashShift = {
-    version: 1,
-    id,
-    status: 'open',
-    openingFloat: roundMoney(openingFloat),
-    openedAt: new Date().toISOString(),
-    openedBy: actor.trim(),
-  };
-  await repo.set('meta', id, shift as unknown as Record<string, unknown>);
-  return shift;
+  let opened: CashShift | null = null;
+  await repo.transaction(async tx => {
+    const active = await tx.list('meta', { where: [{ field: 'status', op: '==', value: 'open' }] });
+    const openShift = active
+      .map(doc => parseShift(doc.id, doc.data()))
+      .find(shift => shift?.id.startsWith(SHIFT_PREFIX));
+    if (openShift)
+      throw new Error('A cash drawer shift is already open. Close it before opening another.');
+    const id = `${SHIFT_PREFIX}${generateId()}`;
+    opened = {
+      version: 1,
+      id,
+      status: 'open',
+      openingFloat: roundMoney(openingFloat),
+      openedAt: new Date().toISOString(),
+      openedBy: actor.trim(),
+    };
+    await tx.set('meta', id, opened as unknown as Record<string, unknown>);
+  });
+  if (!opened) throw new Error('The cash shift could not be opened.');
+  return opened;
 }
 
 export async function getOpenCashShift(): Promise<CashShift | null> {
-  const docs = await getRepository().list('meta', { where: [{ field: 'status', op: '==', value: 'open' }] });
+  const docs = await getRepository().list('meta', {
+    where: [{ field: 'status', op: '==', value: 'open' }],
+  });
   for (const doc of docs) {
     if (!doc.id.startsWith(SHIFT_PREFIX)) continue;
     const shift = parseShift(doc.id, doc.data());
@@ -73,7 +83,8 @@ export async function closeCashShift(
   countedCash: number,
   actor: string,
 ): Promise<CashShift> {
-  if (!Number.isFinite(countedCash) || countedCash < 0) throw new Error('Counted cash must be non-negative.');
+  if (!Number.isFinite(countedCash) || countedCash < 0)
+    throw new Error('Counted cash must be non-negative.');
   if (!actor.trim()) throw new Error('Closing a cash shift requires an operator identity.');
   const repo = getRepository();
   let closed: CashShift | null = null;
@@ -85,7 +96,7 @@ export async function closeCashShift(
     const entries = await tx.list('payments', {
       where: [
         { field: 'mode', op: '==', value: 'cash' },
-        { field: 'at', op: '>=', value: shift.openedAt },
+        { field: 'shiftId', op: '==', value: shift.id },
       ],
     });
     let cashMovement = 0;
@@ -108,14 +119,21 @@ export async function closeCashShift(
       difference: roundMoney(countedCash - expectedCash),
     };
     await tx.set('meta', shiftId, closed as unknown as Record<string, unknown>);
-    await tx.add('auditEvents', AuditEventSchema.parse({
-      action: 'cash.drawer_closed',
-      entity: 'meta',
-      entityId: shiftId,
-      actor: actor.trim(),
-      at,
-      details: { expectedCash, countedCash: roundMoney(countedCash), difference: closed.difference },
-    }));
+    await tx.add(
+      'auditEvents',
+      AuditEventSchema.parse({
+        action: 'cash.drawer_closed',
+        entity: 'meta',
+        entityId: shiftId,
+        actor: actor.trim(),
+        at,
+        details: {
+          expectedCash,
+          countedCash: roundMoney(countedCash),
+          difference: closed.difference,
+        },
+      }),
+    );
   });
   if (!closed) throw new Error('The cash shift could not be closed.');
   return closed;

@@ -20,6 +20,7 @@ export interface LocalDoc {
 }
 
 import type { EntityName } from './entities';
+import type { Role } from '../lib/models';
 
 /** Collections the offline app knows about. */
 export type { EntityName } from './entities';
@@ -48,6 +49,8 @@ export interface ListOptions {
   direction?: 'asc' | 'desc';
   /** Maximum rows to return. */
   limit?: number;
+  /** Rows to skip after filtering and ordering. */
+  offset?: number;
   /** In-memory filters. */
   where?: WhereFilter[];
 }
@@ -58,6 +61,15 @@ export interface ListOptions {
  * `WebRepository` (localStorage, browser dev only). `data/index.ts` picks one
  * based on the runtime platform.
  */
+export interface RepositoryPrincipal {
+  uid: string;
+  role: Role;
+}
+
+export interface PrincipalAwareRepository extends DataRepository {
+  setPrincipal(actor: RepositoryPrincipal | null): Promise<void>;
+}
+
 export interface DataRepository {
   /** One-time open/encryption bootstrap. Safe to call more than once. */
   init(): Promise<void>;
@@ -94,6 +106,7 @@ export interface DataRepository {
     entity: EntityName,
     cb: (docs: LocalDoc[]) => void,
     onError?: (error: unknown) => void,
+    options?: ListOptions,
   ): () => void;
 
   /**

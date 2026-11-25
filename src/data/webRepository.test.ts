@@ -36,8 +36,13 @@ describe('WebRepository durability', () => {
   it('merges against the latest storage value rather than a stale tab cache', async () => {
     await repo.set('patients', 'p1', { name: 'Asha' });
     await repo.list('patients'); // warm this tab's cache
-    localStorage.setItem('pathlab:patients', JSON.stringify({ p1: { name: 'Asha' }, p2: { name: 'Bilal' } }));
+    localStorage.setItem(
+      'pathlab:patients',
+      JSON.stringify({ p1: { name: 'Asha' }, p2: { name: 'Bilal' } }),
+    );
     await repo.set('patients', 'p3', { name: 'Chetan' });
-    expect(Object.keys(JSON.parse(localStorage.getItem('pathlab:patients') ?? '{}')).sort()).toEqual(['p1', 'p2', 'p3']);
+    expect(
+      Object.keys(JSON.parse(localStorage.getItem('pathlab:patients') ?? '{}')).sort(),
+    ).toEqual(['p1', 'p2', 'p3']);
   });
 });

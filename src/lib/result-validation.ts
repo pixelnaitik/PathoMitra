@@ -16,6 +16,15 @@ export interface ResultValidationPolicy {
   criticalMarginMultiplier?: number;
   /** Maximum absolute numeric value accepted before operator review. */
   absoluteLimit?: number;
+  /** Relative change that requires delta review. */
+  relativeDeltaThreshold?: number;
+  /** Absolute change that requires delta review. */
+  absoluteDeltaThreshold?: number;
+}
+
+export interface NumericRange {
+  min?: number;
+  max?: number;
 }
 
 const NUMBER = /^[<>≤≥]?\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
@@ -47,6 +56,7 @@ export function validateResult(
   value: unknown,
   test?: PathologyTest | null,
   policy: ResultValidationPolicy = {},
+  referenceRange?: NumericRange | null,
 ): ResultValidation {
   if (value === null || value === undefined || String(value).trim() === '') {
     return { valid: true, severity: 'ok', critical: false };
@@ -54,7 +64,12 @@ export function validateResult(
   const text = String(value).trim();
   const kind = resolveTestKind(test);
   if (text.length > 500) {
-    return { valid: false, severity: 'error', message: 'Result is longer than 500 characters.', critical: false };
+    return {
+      valid: false,
+      severity: 'error',
+      message: 'Result is longer than 500 characters.',
+      critical: false,
+    };
   }
   if (kind === 'numeric') {
     const numeric = parseNumericResult(text);
@@ -68,10 +83,25 @@ export function validateResult(
     }
     const absoluteLimit = policy.absoluteLimit ?? 1_000_000_000_000;
     if (Math.abs(numeric) > absoluteLimit) {
-      return { valid: false, severity: 'error', message: 'Result exceeds the accepted numeric limit.', critical: false };
+      return {
+        valid: false,
+        severity: 'error',
+        message: 'Result exceeds the accepted numeric limit.',
+        critical: false,
+      };
     }
-    const bands = test?.ranges ? Object.values(test.ranges) : [];
-    const limits = bands.flatMap(numericBounds);
+    const bands = test?.ranges
+      ? Object.values(test.ranges).filter((band): band is NonNullable<typeof band> => !!band)
+      : [];
+    // A caller that knows the patient must supply the resolved band. Without
+    // that context, combining every demographic band into one min/max envelope
+    // would hide genuinely critical patient-specific excursions.
+    const limits =
+      referenceRange !== undefined
+        ? numericBounds(referenceRange ?? undefined)
+        : bands.length === 1
+          ? numericBounds(bands[0])
+          : [];
     if (limits.length > 0) {
       const min = Math.min(...limits);
       const max = Math.max(...limits);
@@ -82,11 +112,17 @@ export function validateResult(
           valid: true,
           severity: 'warning',
           critical: true,
-          message: 'Result is outside the configured critical screening margin; review before issue.',
+          message:
+            'Result is outside the configured critical screening margin; review before issue.',
         };
       }
       if (numeric < 0 && min >= 0) {
-        return { valid: true, severity: 'warning', critical: false, message: 'Negative result requires review.' };
+        return {
+          valid: true,
+          severity: 'warning',
+          critical: false,
+          message: 'Negative result requires review.',
+        };
       }
     }
     return { valid: true, severity: 'ok', critical: false };
@@ -104,7 +140,12 @@ export function validateResult(
     return { valid: true, severity: 'ok', critical: false };
   }
   if (kind === 'titer' && !TITER.test(text)) {
-    return { valid: false, severity: 'error', message: 'Enter a dilution such as 1:160.', critical: false };
+    return {
+      valid: false,
+      severity: 'error',
+      message: 'Enter a dilution such as 1:160.',
+      critical: false,
+    };
   }
   return { valid: true, severity: 'ok', critical: false };
 }
@@ -120,14 +161,32 @@ export function validateReportResults(
   results: Record<string, unknown>,
   resolveTest: (name: string) => PathologyTest | null | undefined = () => undefined,
   policy?: ResultValidationPolicy,
+  resolveRange?: (name: string) => NumericRange | null | undefined,
+  previousResults?: Record<string, unknown>,
 ): ReportResultValidation {
   const errors: ReportResultValidation['errors'] = [];
   const warnings: ReportResultValidation['warnings'] = [];
   for (const name of selection) {
-    const result = validateResult(results[name], resolveTest(name) ?? undefined, policy);
+    const result = validateResult(
+      results[name],
+      resolveTest(name) ?? undefined,
+      policy,
+      resolveRange?.(name),
+    );
     if (!result.valid) errors.push({ test: name, message: result.message ?? 'Invalid result.' });
     else if (result.severity === 'warning') {
-      warnings.push({ test: name, message: result.message ?? 'Review this result.', critical: result.critical });
+      warnings.push({
+        test: name,
+        message: result.message ?? 'Review this result.',
+        critical: result.critical,
+      });
+    }
+    if (previousResults && Object.prototype.hasOwnProperty.call(previousResults, name)) {
+      const delta = validateDelta(results[name], previousResults[name], {
+        relativeThreshold: policy?.relativeDeltaThreshold,
+        absoluteThreshold: policy?.absoluteDeltaThreshold,
+      });
+      if (delta.message) warnings.push({ test: name, message: delta.message, critical: false });
     }
   }
   return { valid: errors.length === 0, errors, warnings };
@@ -141,11 +200,18 @@ export function validateDelta(
 ): { valid: boolean; message?: string } {
   const now = parseNumericResult(String(current ?? ''));
   const before = parseNumericResult(String(previous ?? ''));
-  if (now === null || before === null || before === 0) return { valid: true };
-  const relative = Math.abs(now - before) / Math.max(Math.abs(before), 1);
+  if (now === null || before === null) return { valid: true };
+  const relative =
+    before === 0 ? (now === 0 ? 0 : 1) : Math.abs(now - before) / Math.max(Math.abs(before), 1);
   const absolute = Math.abs(now - before);
-  if (relative >= (policy.relativeThreshold ?? 0.5) && absolute >= (policy.absoluteThreshold ?? 1)) {
-    return { valid: true, message: 'Result changed materially from the previous report; review the delta.' };
+  if (
+    relative >= (policy.relativeThreshold ?? 0.5) &&
+    absolute >= (policy.absoluteThreshold ?? 1)
+  ) {
+    return {
+      valid: true,
+      message: 'Result changed materially from the previous report; review the delta.',
+    };
   }
   return { valid: true };
 }

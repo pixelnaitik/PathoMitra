@@ -54,7 +54,7 @@ export function generateSecret(bytes = 32): string {
 }
 
 function readField(doc: LocalDoc, field: string): unknown {
-  return doc.data()[field];
+  return field === 'id' ? doc.id : doc.data()[field];
 }
 
 function matches(doc: LocalDoc, filter: WhereFilter): boolean {
@@ -97,9 +97,9 @@ function cmp(a: unknown, b: unknown): number {
   return String(a).localeCompare(String(b));
 }
 
-/** Apply `where` → `orderBy` → `limit`, in that order, returning a new array. */
+/** Apply `where` → `orderBy` → `offset` → `limit`, returning a new array. */
 export function applyQuery(docs: LocalDoc[], options: ListOptions = {}): LocalDoc[] {
-  const { where, orderBy = 'createdAt', direction = 'desc', limit } = options;
+  const { where, orderBy = 'createdAt', direction = 'desc', limit, offset = 0 } = options;
 
   let out =
     where && where.length > 0
@@ -108,9 +108,10 @@ export function applyQuery(docs: LocalDoc[], options: ListOptions = {}): LocalDo
 
   out.sort((x, y) => {
     const r = cmp(readField(x, orderBy), readField(y, orderBy));
-    return direction === 'asc' ? r : -r;
+    return (direction === 'asc' ? r : -r) || x.id.localeCompare(y.id);
   });
 
+  if (offset > 0) out = out.slice(offset);
   if (typeof limit === 'number' && limit >= 0) out = out.slice(0, limit);
   return out;
 }

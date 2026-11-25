@@ -1,8 +1,10 @@
 {
   "name": "PathoMitra",
   "short_name": "PathoMitra",
-  "description": "Offline pathology lab console - patient records, reports and billing, stored on your device",
-  "start_url": "/dashboard",
+  "description": "PathoMitra public information site. Clinical records are available only in the encrypted Android and Desktop apps.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "display_override": ["window-controls-overlay", "standalone"],
   "background_color": "#f5f5f7",

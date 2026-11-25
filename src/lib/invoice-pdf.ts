@@ -6,19 +6,15 @@
  * sample PDF would be the wrong direction — both builders here share one
  * letterhead, one palette resolution, one money renderer and one page frame.
  *
- * ⚠ `F-1` (PDF Unicode font) is still open, and it bites harder here than on a
- * clinical report. jsPDF's built-in fonts are WinAnsi: `₹` (U+20B9) is not in
- * that encoding and prints as a box or a space. A bill is the document a patient
- * takes home and a lab may have to produce to a tax officer, so the currency is
- * rendered as `Rs.` — the ordinary Indian commercial abbreviation, always
- * WinAnsi-safe — rather than shipping a glyph that silently disappears. Changing
- * this is a one-line edit in `pdfMoney()` once a Unicode font is embedded.
+ * Money and names use the bundled Unicode font. `₹` is preserved rather than
+ * downgraded to `Rs.`; the font is embedded in every document before any text is
+ * drawn, so the currency does not depend on the viewer's installed fonts.
  *
  * Everything else is ordinary jsPDF + jspdf-autotable, lazily imported like the
  * report path so the library stays out of the initial bundle.
  */
 import { buildReportPalette, A4, resolveReportLayout } from './report-layout';
-import { ensurePdfFont, PDF_FONT, pdfCellFont } from './pdf-fonts';
+import { ensurePdfFont, PDF_FONT, pdfCellFont, pdfText } from './pdf-fonts';
 import { THEME_OPTIONS } from './theme';
 import { formatAmount } from './notification-engine';
 import { legacyInvoiceNo } from './invoice-registry';
@@ -47,24 +43,14 @@ void fill; // available to the next document that needs a filled band
 /** Bill margins — compact, nothing like the 50 mm pad margin of a clinical report. */
 const M = { top: 14, right: 14, bottom: 14, left: 14 } as const;
 
-/**
- * Money as it may be drawn with a standard PDF font.
- *
- * `formatAmount` keeps its `₹` because it feeds on-screen alerts, where the glyph
- * is fine; the printed document must not depend on an encoding jsPDF does not
- * have. Grouping stays `en-IN` so the digits read the way the lab reads them.
- *
- * The lab's `BillingPrefs.currency` is deliberately *not* consulted here: any
- * symbol outside Latin-1 (`₹`, `₩`, `฿`) is exactly the thing that cannot be
- * drawn, and a bill is not the place to find that out at the printer.
- */
+/** Money with the rupee glyph preserved by the embedded Unicode font. */
 export function pdfMoney(value: number): string {
   const safe = Number.isFinite(value) ? value : 0;
   const grouped = safe.toLocaleString('en-IN', {
     minimumFractionDigits: Number.isInteger(safe) ? 0 : 2,
     maximumFractionDigits: 2,
   });
-  return `Rs. ${grouped}`;
+  return `₹ ${grouped}`;
 }
 
 /**
@@ -80,10 +66,14 @@ export function pdfMoney(value: number): string {
  * downgraded en/em dashes and curly quotes to ASCII, but the probe in
  * `scripts/probes/jspdf-encoding-probe.mjs` shows cp1252 encodes those correctly — so
  * "13.0 – 17.0" and "NOTE —" now print as typed instead of as hyphens.
- * Unicode text is preserved for the embedded Devanagari font.
+ * Unicode text is preserved for the embedded script-specific Noto fonts.
  */
 export function pdfSafeText(value: unknown): string {
-  return String(value ?? '').replace(/\s+/g, ' ').trim();
+  return pdfText(
+    String(value ?? '')
+      .replace(/\s+/g, ' ')
+      .trim(),
+  );
 }
 
 interface Letterhead {
@@ -213,11 +203,11 @@ function drawFieldGrid(
     doc.setFont(PDF_FONT, 'normal');
     doc.setFontSize(9.5);
     doc.setTextColor(25, 28, 31);
-    const linesA = doc.splitTextToSize(valueA, cellWidth) as unknown as string[];
+    const linesA = doc.splitTextToSize(pdfText(valueA), cellWidth) as unknown as string[];
     const linesB =
       valueB === undefined
         ? ([] as string[])
-        : (doc.splitTextToSize(valueB, cellWidth) as unknown as string[]);
+        : (doc.splitTextToSize(pdfText(valueB), cellWidth) as unknown as string[]);
     doc.text(linesA, M.left, cursor + 4);
     if (valueB !== undefined) doc.text(linesB, M.left + half, cursor + 4);
 
@@ -238,7 +228,9 @@ function itemCells(item: InvoiceItem): [string, string, string, string, string] 
     item.detail,
     item.priceSource === 'suggested' ? 'Suggested tariff enabled by lab' : '',
     item.hsnSac ? `HSN/SAC ${item.hsnSac}` : '',
-  ].filter(Boolean).join(' · ');
+  ]
+    .filter(Boolean)
+    .join(' · ');
   return [
     pdfSafeText(name),
     pdfSafeText(detail),
@@ -273,7 +265,7 @@ export async function buildInvoicePdf(input: InvoicePdfInput): Promise<jsPdfDoc>
 
   const filename = `Bill ${invoice.invoiceNo || invoice.id.slice(0, 8)}.pdf`;
   const doc = new jsPDF();
-    ensurePdfFont(doc);
+  ensurePdfFont(doc, input);
   doc.setProperties({ title: filename });
 
   const refNo = `Bill No. ${invoice.invoiceNo || legacyInvoiceNo(invoice.id)}`;
@@ -296,17 +288,20 @@ export async function buildInvoicePdf(input: InvoicePdfInput): Promise<jsPdfDoc>
       pdfSafeText(invoice.doctorName || input.patient?.doctorName || 'Self'),
     ],
     ...(invoice.taxDetails
-      ? [[
-          'Supplier GSTIN',
-          pdfSafeText(invoice.taxDetails.supplierGstin || '—'),
-          'Patient GSTIN',
-          pdfSafeText(invoice.taxDetails.patientGstin || '—'),
-        ] as [string, string, string, string], [
-          'Place of supply',
-          pdfSafeText(invoice.taxDetails.placeOfSupply || '—'),
-          'Legal entity',
-          pdfSafeText(invoice.taxDetails.legalEntityName || '—'),
-        ] as [string, string, string, string]]
+      ? [
+          [
+            'Supplier GSTIN',
+            pdfSafeText(invoice.taxDetails.supplierGstin || '—'),
+            'Patient GSTIN',
+            pdfSafeText(invoice.taxDetails.patientGstin || '—'),
+          ] as [string, string, string, string],
+          [
+            'Place of supply',
+            pdfSafeText(invoice.taxDetails.placeOfSupply || '—'),
+            'Legal entity',
+            pdfSafeText(invoice.taxDetails.legalEntityName || '—'),
+          ] as [string, string, string, string],
+        ]
       : []),
   ]);
 
@@ -373,10 +368,20 @@ export async function buildInvoicePdf(input: InvoicePdfInput): Promise<jsPdfDoc>
       : []),
     ...(invoice.tax > 0
       ? invoice.taxDetails?.mode === 'inter'
-        ? ([[`IGST @ ${trimNumber(invoice.taxPercent)}%`, pdfMoney(invoice.tax), false]] as Array<[string, string, boolean]>)
+        ? ([[`IGST @ ${trimNumber(invoice.taxPercent)}%`, pdfMoney(invoice.tax), false]] as Array<
+            [string, string, boolean]
+          >)
         : ([
-            [`CGST @ ${trimNumber(invoice.taxPercent / 2)}%`, pdfMoney(invoice.taxDetails?.cgst ?? 0), false],
-            [`SGST @ ${trimNumber(invoice.taxPercent / 2)}%`, pdfMoney(invoice.taxDetails?.sgst ?? 0), false],
+            [
+              `CGST @ ${trimNumber(invoice.taxPercent / 2)}%`,
+              pdfMoney(invoice.taxDetails?.cgst ?? 0),
+              false,
+            ],
+            [
+              `SGST @ ${trimNumber(invoice.taxPercent / 2)}%`,
+              pdfMoney(invoice.taxDetails?.sgst ?? 0),
+              false,
+            ],
           ] as Array<[string, string, boolean]>)
       : []),
     ['Total', pdfMoney(invoice.amount), true],
@@ -486,7 +491,7 @@ export async function buildStatementPdf(
 
   const filename = `Referral statement ${statement.doctorName} ${periodLabel}.pdf`;
   const doc = new jsPDF();
-    ensurePdfFont(doc);
+  ensurePdfFont(doc, { statement, settings, periodLabel });
   doc.setProperties({ title: filename });
 
   let y = drawHeader(
@@ -505,8 +510,8 @@ export async function buildStatementPdf(
       pdfSafeText(statement.phone || statement.clinic || '-'),
     ],
     [
-      'Rate on file',
-      `${trimNumber(statement.percent)}%`,
+      'Rate applied',
+      pdfSafeText(statement.rateLabel),
       'Bills in period',
       String(statement.totals.bills),
     ],
@@ -628,7 +633,7 @@ export async function buildStatementsSummaryPdf(
   const h = letterhead(settings);
 
   const doc = new jsPDF();
-    ensurePdfFont(doc);
+  ensurePdfFont(doc, { statements, settings, month });
   const filename = `Referral summary ${month}.pdf`;
   doc.setProperties({ title: filename });
   const y = drawHeader(
@@ -695,7 +700,7 @@ export async function buildPriceListPdf(
   const h = letterhead(settings);
 
   const doc = new jsPDF();
-    ensurePdfFont(doc);
+  ensurePdfFont(doc, { rows, settings });
   const filename = `Price list ${formatDate(new Date().toISOString())}.pdf`;
   doc.setProperties({ title: filename });
   const y = drawHeader(

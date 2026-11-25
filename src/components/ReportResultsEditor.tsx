@@ -304,11 +304,23 @@ export function ReportResultsEditor({
                               onChange={e => onChange(entry.name, e.target.value)}
                               onKeyDown={onNavigate}
                               placeholder="Enter result…"
-                              className={cn(FIELD_BASE, readOnly && 'bg-surface-container-low', !validation.valid && 'border-error', validation.critical && 'border-warning')}
+                              className={cn(
+                                FIELD_BASE,
+                                readOnly && 'bg-surface-container-low',
+                                !validation.valid && 'border-error',
+                                validation.critical && 'border-warning',
+                              )}
                             />
                           )}
                           {feedback && (
-                            <p id={feedbackId} role="alert" className={cn('mt-1 text-[10px] font-semibold', validation.valid ? 'text-warning' : 'text-error')}>
+                            <p
+                              id={feedbackId}
+                              role="alert"
+                              className={cn(
+                                'mt-1 text-[10px] font-semibold',
+                                validation.valid ? 'text-warning' : 'text-error',
+                              )}
+                            >
                               {feedback}
                             </p>
                           )}

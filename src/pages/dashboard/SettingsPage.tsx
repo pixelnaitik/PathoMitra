@@ -47,6 +47,7 @@ import DataBackupPanel from '../../components/DataBackupPanel';
 import {
   readSettings,
   readCustomTests,
+  SETTINGS_PERSIST_ERROR_EVENT,
   type LabSettings,
 } from '../../lib/settings';
 import { processLogoFile } from '../../lib/brand-logo';
@@ -72,6 +73,7 @@ import OperatorAccountsPanel from '../../components/OperatorAccountsPanel';
 import { can } from '../../lib/permissions';
 import type { PathologyTest } from '../../lib/pathology-tests';
 import { persistSettingsNow } from '../../lib/settings-sync';
+import { captureError } from '../../lib/telemetry';
 
 /** Keys that make up the report-layout slice of the settings — the part the
  * templates tab edits, previews, saves and undoes. */
@@ -255,6 +257,16 @@ export default function SettingsPage({
     biometricAvailable,
   } = useAuth();
   const toast = useToast();
+  useEffect(() => {
+    const report = (event: Event) => {
+      const detail = (event as CustomEvent<{ message?: string }>).detail;
+      toast.error(detail?.message || 'Settings could not be stored on this device.');
+    };
+    window.addEventListener(SETTINGS_PERSIST_ERROR_EVENT, report);
+    return () => window.removeEventListener(SETTINGS_PERSIST_ERROR_EVENT, report);
+  }, [toast]);
+  const canManageSettings = can(role, 'manageSettings');
+  const canManageCatalog = can(role, 'manageCatalog');
 
   const [activeTab, setActiveTab] = useState(() =>
     initialSection && SETTINGS_SECTIONS.includes(initialSection) ? initialSection : 'profile',
@@ -434,6 +446,10 @@ export default function SettingsPage({
   }, [initialSection]);
 
   const handleSave = async () => {
+    if (!canManageSettings && !(activeTab === 'tests' && canManageCatalog)) {
+      toast.error('Your role cannot change these settings.');
+      return;
+    }
     setSaving(true);
     try {
       await persistSettingsNow(formData, customTests, user?.uid);
@@ -442,7 +458,11 @@ export default function SettingsPage({
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (error) {
-      toast.error(error instanceof Error ? `Settings were not saved — ${error.message}` : 'Settings were not saved.');
+      toast.error(
+        error instanceof Error
+          ? `Settings were not saved — ${error.message}`
+          : 'Settings were not saved.',
+      );
     } finally {
       setSaving(false);
     }
@@ -467,21 +487,27 @@ export default function SettingsPage({
   // Undo/redo restore: `current` only changes when the cursor moves, so the
   // edit flow (push) never loops through this effect.
   useEffect(() => {
-    queueMicrotask(() => setFormData(prev => {
-      const cur = templateHistory.current;
-      return JSON.stringify(cur) === JSON.stringify(pickTemplateSettings(prev))
-        ? prev
-        : { ...prev, ...cur };
-    }));
+    queueMicrotask(() =>
+      setFormData(prev => {
+        const cur = templateHistory.current;
+        return JSON.stringify(cur) === JSON.stringify(pickTemplateSettings(prev))
+          ? prev
+          : { ...prev, ...cur };
+      }),
+    );
   }, [templateHistory.current]);
 
   const patchTemplate = useCallback(
     (patch: Partial<LabSettings>, commit: boolean) => {
+      if (!canManageSettings) {
+        toast.error('Only an administrator can change report and commercial settings.');
+        return;
+      }
       setFormData(prev => ({ ...prev, ...patch }));
       if (commit)
         templateHistory.push(pickTemplateSettings({ ...latestFormRef.current, ...patch }));
     },
-    [templateHistory],
+    [templateHistory, canManageSettings, toast],
   );
 
   /**
@@ -489,20 +515,27 @@ export default function SettingsPage({
    * are nested, so a partial patch is merged instead of replacing the group —
    * flipping SMS off must not switch WhatsApp on.
    */
-  const patchPrefs = useCallback((patch: NotificationPrefsPatch) => {
-    setFormData(prev => {
-      const current = resolvePrefs(prev.notificationPrefs);
-      return {
-        ...prev,
-        notificationPrefs: {
-          ...current,
-          ...patch,
-          channels: { ...current.channels, ...(patch.channels ?? {}) },
-          categories: { ...current.categories, ...(patch.categories ?? {}) },
-        },
-      };
-    });
-  }, []);
+  const patchPrefs = useCallback(
+    (patch: NotificationPrefsPatch) => {
+      if (!canManageSettings) {
+        toast.error('Only an administrator can change clinical notification settings.');
+        return;
+      }
+      setFormData(prev => {
+        const current = resolvePrefs(prev.notificationPrefs);
+        return {
+          ...prev,
+          notificationPrefs: {
+            ...current,
+            ...patch,
+            channels: { ...current.channels, ...(patch.channels ?? {}) },
+            categories: { ...current.categories, ...(patch.categories ?? {}) },
+          },
+        };
+      });
+    },
+    [canManageSettings, toast],
+  );
 
   /**
    * Banners need the *system's* permission, not just our preference — so the
@@ -569,6 +602,10 @@ export default function SettingsPage({
   );
 
   const resetToRecommended = () => {
+    if (!canManageSettings) {
+      toast.error('Only an administrator can change report layout settings.');
+      return;
+    }
     const next = { ...latestFormRef.current, ...RECOMMENDED_LAYOUT_DEFAULTS };
     setFormData(next);
     templateHistory.push(pickTemplateSettings(next), true);
@@ -583,7 +620,7 @@ export default function SettingsPage({
       const message = await openSampleReportPdf(formData, activeTemplateTab);
       if (message) toast.warning(message);
     } catch (err) {
-      console.error('Could not build the sample PDF:', err);
+      captureError(err, { scope: 'settings:sample-pdf', entity: 'labSettings' });
       toast.error('Could not build the sample PDF. Check the margin values first.');
     } finally {
       setOpeningSample(false);
@@ -1371,7 +1408,7 @@ export default function SettingsPage({
                       variant="brand"
                       onClick={handleSave}
                       loading={saving}
-                      disabled={saved}
+                      disabled={saved || !canManageSettings}
                     >
                       {saved ? (
                         <>
@@ -1482,6 +1519,8 @@ export default function SettingsPage({
                 customTests={customTests}
                 onCustomTestsChange={setCustomTests}
                 actor={operatorStamp(user)}
+                actorUid={user?.uid}
+                actorRole={role}
               />
             )}
 
@@ -1666,24 +1705,26 @@ export default function SettingsPage({
                     </button>
                   </div>
 
-                  {can(role, 'eraseData') && <div className="p-4 bg-error-container/40 border border-error/30 rounded-2xl space-y-3">
-                    <h4 className="font-bold text-error flex items-center gap-2">
-                      <AlertTriangle className="w-4 h-4" /> Danger zone
-                    </h4>
-                    <p className="text-xs text-on-surface-variant">
-                      Permanently delete this account and wipe the entire local clinical database —
-                      every patient, report and invoice on this device. Export anything you need
-                      first; this cannot be undone. Shared, emailed, printed, or cloud copies are outside
-                      the app and cannot be verified as erased.
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => setEraseOpen(true)}
-                      className="inline-flex items-center gap-2 px-4 py-2 bg-error hover:brightness-110 text-on-error text-sm font-bold rounded-xl transition"
-                    >
-                      <Trash2 className="w-4 h-4" /> Erase all data &amp; delete account
-                    </button>
-                  </div>}
+                  {can(role, 'eraseData') && (
+                    <div className="p-4 bg-error-container/40 border border-error/30 rounded-2xl space-y-3">
+                      <h4 className="font-bold text-error flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4" /> Danger zone
+                      </h4>
+                      <p className="text-xs text-on-surface-variant">
+                        Permanently delete this account and wipe the entire local clinical database
+                        — every patient, report and invoice on this device. Export anything you need
+                        first; this cannot be undone. Shared, emailed, printed, or cloud copies are
+                        outside the app and cannot be verified as erased.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setEraseOpen(true)}
+                        className="inline-flex items-center gap-2 px-4 py-2 bg-error hover:brightness-110 text-on-error text-sm font-bold rounded-xl transition"
+                      >
+                        <Trash2 className="w-4 h-4" /> Erase all data &amp; delete account
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1697,7 +1738,11 @@ export default function SettingsPage({
               <div className="mt-8 pt-6 border-t border-outline-variant/20 flex justify-end">
                 <button
                   onClick={handleSave}
-                  disabled={saving || saved}
+                  disabled={
+                    saving ||
+                    saved ||
+                    (!canManageSettings && !(activeTab === 'tests' && canManageCatalog))
+                  }
                   className={`flex items-center gap-2 px-6 py-3 rounded-xl font-bold transition ${
                     saved
                       ? 'bg-success-container text-on-success-container'

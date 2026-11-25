@@ -21,12 +21,7 @@ const NAV_LINKS = [
 /** Logo tile + wordmark. */
 function Brand({ onNavigate }: { onNavigate?: () => void }) {
   return (
-    <Link
-      to="/"
-      onClick={onNavigate}
-      aria-label="PathoMitra — home"
-      className="group flex min-w-0 shrink-0 items-center gap-2.5"
-    >
+    <Link to="/" onClick={onNavigate} className="group flex min-w-0 shrink-0 items-center gap-2.5">
       <span className="relative flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-[14px] bg-primary text-on-primary shadow-card transition-transform duration-300 group-hover:scale-105">
         <img
           src={BRAND_LOGO_SRC}

@@ -37,7 +37,10 @@ function formatInvoiceNo(prefix: string, sequence: number): string {
 }
 
 type InvoiceAllocationTx = {
-  get: (entity: 'meta' | 'invoices', id: string) => Promise<{ data: () => Record<string, unknown> } | null>;
+  get: (
+    entity: 'meta' | 'invoices',
+    id: string,
+  ) => Promise<{ data: () => Record<string, unknown> } | null>;
   set: (entity: 'meta', id: string, value: Record<string, unknown>) => Promise<void>;
 };
 

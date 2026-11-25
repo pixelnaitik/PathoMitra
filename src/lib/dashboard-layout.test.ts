@@ -68,7 +68,9 @@ describe('the bottom tab bar', () => {
 describe('a package is one test everywhere a test is counted as ordered', () => {
   it('folds the analytics charts through collapseToProfiles', () => {
     const source = read(ANALYTICS);
-    expect(source).toMatch(/import \{[^}]*collapseToProfiles[^}]*\} from '\.\.\/\.\.\/lib\/pathology-tests'/);
+    expect(source).toMatch(
+      /import \{[^}]*collapseToProfiles[^}]*\} from '\.\.\/\.\.\/lib\/pathology-tests'/,
+    );
     // Both the category donut and the volume bars used to walk the raw list.
     const folded = source.match(/collapseToProfiles\(r\.testSelection\)/g) ?? [];
     expect(folded.length).toBeGreaterThanOrEqual(2);

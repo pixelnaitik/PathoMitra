@@ -1,9 +1,16 @@
-import { useCallback, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type RefObject,
+} from 'react';
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [contenteditable="true"], [tabindex]:not([tabindex="-1"])';
 
 let openModals = 0;
+const inertBackground = new Map<Element, boolean>();
 
 function tabbableWithin(root: HTMLElement): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(element => {
@@ -12,11 +19,29 @@ function tabbableWithin(root: HTMLElement): HTMLElement[] {
   });
 }
 
-function setBackgroundInert(inert: boolean): void {
-  const background = document.getElementById('main-content');
-  if (!background) return;
-  if (inert) background.setAttribute('inert', '');
-  else background.removeAttribute('inert');
+function setBackgroundInert(inert: boolean, panel?: HTMLElement | null): void {
+  const root = document.getElementById('root');
+  if (!root) return;
+  if (!inert) {
+    inertBackground.forEach((wasInert, element) => {
+      if (wasInert) element.setAttribute('inert', '');
+      else element.removeAttribute('inert');
+    });
+    inertBackground.clear();
+    return;
+  }
+  if (inertBackground.size > 0) return;
+  const mark = (parent: Element) => {
+    for (const child of Array.from(parent.children)) {
+      if (child === panel) continue;
+      if (panel && child.contains(panel)) mark(child);
+      else {
+        inertBackground.set(child, child.hasAttribute('inert'));
+        child.setAttribute('inert', '');
+      }
+    }
+  };
+  mark(root);
 }
 
 /** Shared focus, Escape, scroll-lock, and inert-background behavior for modal UI. */
@@ -37,13 +62,15 @@ export function useModalFocus({
 }) {
   const returnFocusTo = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
-  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     if (!open) return;
     returnFocusTo.current = (document.activeElement as HTMLElement | null) ?? null;
     openModals += 1;
-    setBackgroundInert(true);
+    setBackgroundInert(true, panelRef.current);
     const previousOverflow = lockScroll ? document.body.style.overflow : '';
     if (lockScroll) document.body.style.overflow = 'hidden';
     const onKey = (event: KeyboardEvent) => {
@@ -53,7 +80,9 @@ export function useModalFocus({
     const frame = requestAnimationFrame(() => {
       const panel = panelRef.current;
       if (!panel) return;
-      (initialFocusRef?.current ?? tabbableWithin(panel)[0] ?? panel).focus({ preventScroll: true });
+      (initialFocusRef?.current ?? tabbableWithin(panel)[0] ?? panel).focus({
+        preventScroll: true,
+      });
     });
     return () => {
       cancelAnimationFrame(frame);

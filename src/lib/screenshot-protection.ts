@@ -18,6 +18,7 @@
  * `true` (nothing here is unprotected by an opted-out lab).
  */
 import { Capacitor, registerPlugin } from '@capacitor/core';
+import { captureError } from './telemetry';
 
 interface WindowSecurityPlugin {
   setScreenshotProtection(options: { enabled: boolean }): Promise<{ enabled: boolean }>;
@@ -41,7 +42,7 @@ export async function applyScreenshotProtection(allowScreenshots: boolean): Prom
   } catch (error) {
     // The flag was set by MainActivity and this call only clears it, so a failure
     // here leaves the screen protected — which is the state to report.
-    console.error('screenshot-protection: native call failed, leaving protection on', error);
+    captureError(error, { scope: 'screenshot-protection:native' });
     return true;
   }
 }

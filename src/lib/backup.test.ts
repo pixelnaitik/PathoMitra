@@ -47,7 +47,13 @@ vi.mock('../data', () => ({
   isShell: false,
 }));
 
-import { restoreBackup, createBackup, inspectBackup, backupFileName, type BackupFile } from './backup';
+import {
+  restoreBackup,
+  createBackup,
+  inspectBackup,
+  backupFileName,
+  type BackupFile,
+} from './backup';
 import { getPriceList, priceKey, resetPriceListCache } from './price-list';
 
 type Store = Record<string, Record<string, unknown>>;
@@ -133,19 +139,46 @@ describe('restoreBackup (P0.9 — atomic, validated, honest)', () => {
     expect(result.counts.patients).toBe(2);
     expect(result.counts.reports).toBe(1);
     expect(result.skipped).toEqual(['billingModule']);
+    expect(result.safetySnapshot).toBeTruthy();
+    expect(
+      files.written.some(
+        entry =>
+          entry.path.endsWith(`/${result.safetySnapshot}`) &&
+          entry.data.includes('backup-encrypted'),
+      ),
+    ).toBe(true);
     expect(repo.store.patients.p1).toMatchObject({ name: 'Asha' });
     expect(repo.store.billingModule).toBeUndefined();
   });
 
   it('previews and refuses newer-record conflicts until overwrite is explicit', async () => {
-    const repo = makeRepo(undefined, { patients: { p1: { name: 'Current', createdAt: '2026-10-15T00:00:00.000Z' } } });
+    const repo = makeRepo(undefined, {
+      patients: { p1: { name: 'Current', createdAt: '2026-10-15T00:00:00.000Z' } },
+    });
     h.repo = repo;
-    const backup = makeBackup({ patients: [{ id: 'p1', name: 'Older', createdAt: '2026-10-14T00:00:00.000Z' }] });
+    const backup = makeBackup({
+      patients: [{ id: 'p1', name: 'Older', createdAt: '2026-10-14T00:00:00.000Z' }],
+    });
     expect((await inspectBackup(backup)).conflicts).toHaveLength(1);
     await expect(restoreBackup(backup)).rejects.toThrow(/newer or undated/);
     expect(repo.store.patients.p1).toMatchObject({ name: 'Current' });
     await restoreBackup(backup, { overwriteConflicts: true });
     expect(repo.store.patients.p1).toMatchObject({ name: 'Older' });
+  });
+
+  it('rejects a partial snapshot that would leave orphaned clinical references', async () => {
+    const repo = makeRepo();
+    h.repo = repo;
+    await expect(
+      restoreBackup(
+        makeBackup({
+          reports: [
+            { id: 'r1', status: 'draft', patientId: 'missing-patient', patientName: 'Asha' },
+          ],
+        }),
+      ),
+    ).rejects.toThrow(/missing patients\/missing-patient collection/);
+    expect(repo.store.reports).toBeUndefined();
   });
 
   it('rejects count mismatches before a single write reaches the store', async () => {
@@ -190,7 +223,7 @@ describe('restoreBackup (P0.9 — atomic, validated, honest)', () => {
           ],
         }),
       ),
-    ).rejects.toThrow(/write refused/);
+    ).rejects.toThrow(/pre-restore snapshot was reapplied/);
     // The successful earlier writes were rolled back with the failure.
     expect(repo.store.patients.p1).toBeUndefined();
     expect(repo.store.reports?.r1).toBeUndefined();
@@ -291,6 +324,16 @@ describe('createBackup — a snapshot is never silently replaced', () => {
       `PathoMitra/Backups/${stem}.json`,
       `PathoMitra/Backups/${stem}-2.json`,
     ]);
+  });
+
+  it('serializes concurrent backup creation so both names are reserved', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-19T18:30:05.000Z'));
+    h.repo = makeRepo(undefined, { patients: { p1: { name: 'Asha' } } });
+    const [first, second] = await Promise.all([createBackup(), createBackup()]);
+    vi.useRealTimers();
+    expect(first.fileName).not.toBe(second.fileName);
+    expect(files.written).toHaveLength(2);
   });
 
   it('keeps stepping past a name that is already taken', async () => {

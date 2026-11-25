@@ -16,12 +16,7 @@ function Brand({ onNavigate }: { onNavigate?: () => void }) {
   // Uploaded lab logo when one is saved, otherwise the shipped microscope art.
   const brandLogo = useBrandLogo();
   return (
-    <Link
-      to="/"
-      onClick={onNavigate}
-      aria-label="PathoMitra — home"
-      className="group flex min-w-0 shrink-0 items-center gap-2.5"
-    >
+    <Link to="/" onClick={onNavigate} className="group flex min-w-0 shrink-0 items-center gap-2.5">
       <span className="relative flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-[14px] bg-primary text-on-primary shadow-card transition-transform duration-300 group-hover:scale-105">
         <img
           src={brandLogo ?? DEFAULT_BRAND_LOGO_SRC}

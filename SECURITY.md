@@ -49,35 +49,39 @@ The real controls, and what a valid vulnerability against them looks like:
    (AES-256) SQLite database — `@capacitor-community/sqlite` on Android,
    `better-sqlite3-multiple-ciphers` on Windows. The key is randomly generated on
    first run and is never derived from the operator passcode. Where the key is
-   *held* differs by platform and the difference is load-bearing — see
+   _held_ differs by platform and the difference is load-bearing — see
    "Desktop (Windows)" below. Any path to plaintext — encryption silently
    disabled, the key derived from a constant, the database copied out
    unencrypted — is critical.
    `capacitor.config.ts` sets `androidIsEncryption: true` explicitly so a
    config change can never silently produce a plaintext database; removing it
    is a security regression.
-2. **Local authentication.** One operator account, unlocked by a
-   PBKDF2-hashed passcode (Web Crypto in the `https://localhost` WebView
-   secure context) with an optional biometric / device-credential unlock. A
-   bypass of the lock screen, plaintext storage of the hash, or a lockout
-   that a client-side flag can reset is critical.
+2. **Local authentication.** Up to 21 operator accounts with action-level
+   permissions, unlocked by PBKDF2-hashed passcodes (Web Crypto in the
+   `https://localhost` WebView secure context) and optional Android biometrics or
+   Windows Hello. Every mutation requires an authenticated actor; a lock-screen
+   bypass, plaintext hash, client-resettable lockout, or authorization bypass is
+   critical.
 3. **Session re-locking.** The app re-locks on background and after the idle
    interval, and escalates a lockout after repeated failed attempts.
    Regressions that let a locked session keep serving data are high severity.
-4. **Backup files.** Backups are JSON snapshots the operator explicitly
-   creates; they contain the full clinical dataset and are only as safe as
-   wherever the operator puts them. The app must never create a backup
-   automatically or transmit patient data off the device — a path that does is
-   a critical privacy violation.
+4. **Backup files.** Backups are AES-256-GCM encrypted snapshots. The app
+   may create local snapshots and copy the latest verified snapshot to the
+   operator-selected local destination on a schedule; it must never transmit
+   patient data to a server or remote service. Restore writes a durable encrypted
+   safety snapshot first, and successful drills record observed RPO/RTO and
+   reconciled counts. A path that sends backup data remotely or skips rollback
+   protection is a critical privacy/safety violation.
 5. **Stored XSS / markup injection.** Patient and result values are rendered
    into lists, PDFs, and the share/preview surfaces. A payload that executes,
    or that escapes the A4 report layout to exfiltrate another patient's data,
    is high severity.
 6. **Release build hardening.** `debuggable false`, R8 minification with the
-   reflection-heavy keep-rules, and the build guards in `scripts/` that fail
-   the build if web-deployment artifacts (service worker, `_headers`,
-   `robots.txt`) or placeholder release identity enter the APK. A change that
-   makes the release WebView debuggable or skips a guard is reportable.
+   reflection-heavy keep-rules, native asset/alignment/signature checks, and
+   source/artifact provenance manifests. Android and Windows release workflows
+   fail closed when signing secrets are absent. A change that makes a release
+   WebView debuggable, ships an unsigned release artifact, or skips a guard is
+   reportable.
 7. **The no-network invariant.** The manifest must not request `INTERNET` or
    any permission the documented feature list does not name. A dependency or
    PR that adds a network permission, a remote font, or a phone-home call is a
@@ -99,7 +103,7 @@ account. Consequences, stated plainly:
 - Another user on the same machine cannot read it, and Windows does not roam it.
 - **Any process running as that user can ask Windows to unseal it.** This is the
   gap that a hardware-backed keystore does not have, and it is the reason the
-  Windows deployment control is the *Windows account*, not the database: a shared
+  Windows deployment control is the _Windows account_, not the database: a shared
   or administrator-readable login, or malware running under the operator's
   profile, reaches the key. Screen lock plus a dedicated operator account is the
   mitigation; a lab that needs the stronger bound runs the Android build on a
@@ -125,18 +129,22 @@ account. Consequences, stated plainly:
 - **Content-Security-Policy on the shell's own responses.** The bundle is served
   by a custom `pathomitra://` scheme handler, which is why the policy is attached
   there (and again in `onHeadersReceived`) instead of relying on `public/_headers`
-  — that file only ever reaches the Cloudflare deployment. `'unsafe-inline'` for
-  script/style exists solely for the documented pre-paint splash and theme
-  bootstrap in `index.html`; a report that shows a way to remove it while keeping
-  the app running is welcome.
+  — that file only ever reaches the Cloudflare deployment. Inline bootstrap
+  scripts are SHA-256 pinned; `script-src` has no `unsafe-inline` or `unsafe-eval`.
+  The remaining `style-src-attr 'unsafe-inline'` exception is scoped to React,
+  Recharts, and dynamic layout transforms; stylesheet execution itself remains
+  `style-src 'self'`. A report that removes the exception without breaking those
+  controls is welcome.
 - **Path containment in the trusted process.** Every filesystem-facing IPC channel
   resolves inside an app-owned root, re-checking the **real** path so a symlink or
   junction cannot escape (`within()` in `electron/ipc.ts`); deletes are narrowed to
   the two backup folders and refuse directories. A report that reads or deletes
   anything outside those roots is critical.
-- **Print staging holds PHI.** The spooled HTML is written under
-  `userData\Print\<uuid>.html` at `0o600` and swept per job — never `%TEMP%`. A
-  change that puts it back, or that leaves it behind, is a privacy regression.
+- **Print staging holds PHI.** Raster pages and the spooled HTML are staged
+  under `userData\Print\<uuid>\` with private permissions and removed after the
+  job — never `%TEMP%`. Pages stream one at a time from the renderer instead of
+  retaining the whole raster set in memory. A change that puts staging back in a
+  shared folder or leaves it behind is a privacy regression.
 - **No self-update, no remote code.** `publish: null`; nothing fetches and
   executes. (This is also what makes the app cleanly compliant with Store
   Policies 10.2.2.)
@@ -146,13 +154,12 @@ account. Consequences, stated plainly:
 - The MSI **deliberately leaves `%APPDATA%\PathoMitra` in place** on uninstall
   (a reinstall must not destroy a laboratory's records). The operator has to
   "Erase all data & delete account" first; see privacy policy §6.
-- `powerMonitor` re-lock on suspend/minimise is not implemented (audit `A-2`);
-  the idle countdown is the control that runs today.
-- Windows Hello / WebAuthn unlock is not implemented — the desktop console opens
-  with the passcode only.
-- The unsigned direct-download build triggers a SmartScreen prompt. Configure
-  `WIN_CSC_LINK` (or `azureSignOptions`) and let `npm run desktop:check-package`
-  prove every shipped PE is signed before distributing.
+- Windows Hello depends on an enrolled platform authenticator and must be
+  validated on the target Windows device; the passcode remains the fallback.
+- Signed Windows release artifacts require owner-provided `WIN_CSC_LINK` and
+  `WIN_CSC_KEY_PASSWORD`. Until then, signing is an external prerequisite and
+  `npm run desktop:check-package` must not be treated as evidence of a signed
+  release.
 
 ## Scope
 
@@ -165,9 +172,9 @@ Play listing of a laboratory running this app.
 - **Never commit `android/keystore.properties`, `*.jks` / `*.keystore`, or
   `.env`** — all are git-ignored. The release keystore is the identity of your
   app on Google Play; losing it means losing the listing.
-- **Set real `VITE_SUPPORT_EMAIL` / `VITE_PRIVACY_URL` values.** The build
-  guard refuses a release build with placeholders, because a health app whose
-  contact is unreachable does not survive Play review.
+- **Set real `VITE_SUPPORT_EMAIL` / `VITE_PRIVACY_URL` values.** The canonical
+  policy URL is `https://pathomitra.pages.dev/`; the build guard refuses release
+  placeholders and the strict live probe verifies the hosted contact/policy.
 - **Keep the 16 KB page-alignment check green.** `release.yml` verifies every
   native library in the AAB; Play rejects updates targeting API 35+ whose
   `.so` files are under-aligned.

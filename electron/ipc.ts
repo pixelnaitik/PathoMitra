@@ -15,17 +15,58 @@
  */
 import { BrowserWindow, app, ipcMain, shell } from 'electron';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { eraseDatabase, loadEntity, openDatabase, saveEntitiesBulk, saveEntity } from './db';
+import {
+  countDocuments,
+  deleteDocument,
+  eraseDatabase,
+  getDocument,
+  loadEntity,
+  openDatabase,
+  queryDocuments,
+  saveDocument,
+  saveEntitiesBulk,
+  saveEntity,
+  updateDocument,
+} from './db';
 import { deleteSecret, getSecret, setSecret } from './keyring';
 import { isRendererCredentialAccount } from '../src/lib/renderer-credentials';
-import { isEntityName } from '../src/data/entities';
+import { isEntityName, type EntityName } from '../src/data/entities';
 import { printPdfFile } from './print';
-import { type PrintJobRequest, type PrintJobResult, listPrinters, printJob } from './print-window';
+import {
+  appendPrintPage,
+  beginPrintJob,
+  cancelPrintJob,
+  commitPrintJob,
+  type PrintJobRequest,
+  type PrintJobResult,
+  type PrintJobStartRequest,
+  listPrinters,
+  printJob,
+} from './print-window';
+import {
+  closeDesktopSession,
+  getDesktopPrincipal,
+  openBiometricSession,
+  openDesktopSession,
+  type DesktopPrincipal,
+} from './session';
+import { can } from '../src/lib/permissions';
+import { repositoryPermission } from '../src/lib/repository-permissions';
+import { desktopReportPublicKey, signDesktopReport, verifyDesktopReport } from './report-signing';
+import {
+  backupDestinationStatus,
+  chooseBackupDestination,
+  copyBackupToDestination,
+} from './backup-destination';
+import { canonicalReportManifest } from '../src/lib/report-manifest';
+import type { ReportRecord } from '../src/lib/models';
+import type { ListOptions, WhereFilter } from '../src/data/types';
 
 /** Collection names from the shared entity contract — anything else is refused. */
-function assertEntity(entity: unknown): string {
+function assertEntity(entity: unknown): EntityName {
   if (!isEntityName(entity)) {
     throw new Error(`unknown collection: ${String(entity)}`);
   }
@@ -39,36 +80,106 @@ function record(value: unknown): Record<string, unknown> | null {
 }
 
 /** Clinical invariants enforced in the trusted main process, not only React. */
-function assertClinicalPayload(entity: string, payload: unknown): void {
+async function assertClinicalPayload(
+  entity: string,
+  payload: unknown,
+  principal: DesktopPrincipal,
+): Promise<void> {
   const store = record(payload);
   if (!store) throw new Error('db payload must be a collection object');
-  for (const value of Object.values(store)) {
+  for (const [id, value] of Object.entries(store)) {
     const doc = record(value);
     if (!doc) throw new Error(`invalid document in ${entity}`);
     if (entity === 'reports' && doc.status === 'final') {
       const patientId = String(doc.patientId ?? '').trim();
-      const patientName = String(doc.patientName ?? '').trim().toLowerCase();
+      const patientName = String(doc.patientName ?? '')
+        .trim()
+        .toLowerCase();
       const tests = Array.isArray(doc.testSelection) ? doc.testSelection : [];
       const snapshot = record(doc.issuanceSnapshot);
       const verification = record(doc.verification);
       const signature = record(doc.issuanceSignature);
-      if (!patientId || !patientName || patientName === 'unknown' || tests.length === 0 || !snapshot) {
+      if (
+        !patientId ||
+        !patientName ||
+        patientName === 'unknown' ||
+        tests.length === 0 ||
+        !snapshot
+      ) {
         throw new Error('invalid final report: patient, tests, and issuance snapshot are required');
       }
-      if (!verification || verification.role !== 'pathologist' || !String(verification.reviewedBy ?? '').trim() || !String(verification.reviewedAt ?? '').trim()) {
+      const issuerUid = String(doc.issuerUid ?? '').trim();
+      const reviewerUid = String(verification?.reviewerUid ?? '').trim();
+      if (
+        !verification ||
+        verification.role !== 'pathologist' ||
+        !String(verification.reviewedBy ?? '').trim() ||
+        !String(verification.reviewedAt ?? '').trim() ||
+        !reviewerUid
+      ) {
         throw new Error('invalid final report: independent pathologist verification is required');
       }
-      if (!signature || signature.algorithm !== 'ECDSA-P256-SHA256' || !record(signature.publicKey) || !String(signature.signature ?? '').trim() || !/^[a-f0-9]{64}$/.test(String(signature.manifestHash ?? ''))) {
+      if (
+        !issuerUid ||
+        issuerUid !== principal.uid ||
+        reviewerUid === issuerUid ||
+        !can(principal.role, 'issueReports')
+      ) {
+        throw new Error(
+          'invalid final report: authenticated issuer and independent reviewer are required',
+        );
+      }
+      if (
+        !signature ||
+        signature.algorithm !== 'ECDSA-P256-SHA256' ||
+        !record(signature.publicKey) ||
+        !String(signature.signature ?? '').trim() ||
+        !String(signature.keyId ?? '').trim() ||
+        !/^[a-f0-9]{64}$/.test(String(signature.manifestHash ?? ''))
+      ) {
         throw new Error('invalid final report: issuance signature is required');
+      }
+      const manifest = canonicalReportManifest({ id, ...doc } as unknown as ReportRecord);
+      const hash = crypto.createHash('sha256').update(manifest).digest('hex');
+      if (
+        hash !== signature.manifestHash ||
+        !(await verifyDesktopReport(manifest, String(signature.signature), String(signature.keyId)))
+          .valid
+      ) {
+        throw new Error('invalid final report: issuance signature verification failed');
       }
     }
     if (entity === 'orders') {
-      if (!['ordered', 'collected', 'processing', 'resulted', 'issued', 'billed', 'cancelled', 'amended'].includes(String(doc.status)) || !Array.isArray(doc.items) || doc.items.length === 0) {
+      if (
+        ![
+          'ordered',
+          'collected',
+          'processing',
+          'resulted',
+          'issued',
+          'billed',
+          'cancelled',
+          'amended',
+        ].includes(String(doc.status)) ||
+        !Array.isArray(doc.items) ||
+        doc.items.length === 0
+      ) {
         throw new Error('invalid order document');
       }
     }
     if (entity === 'samples') {
-      if (!['expected', 'collected', 'received', 'processing', 'rejected', 'lost', 'disposed'].includes(String(doc.status)) || !Array.isArray(doc.custody)) {
+      if (
+        ![
+          'expected',
+          'collected',
+          'received',
+          'processing',
+          'rejected',
+          'lost',
+          'disposed',
+        ].includes(String(doc.status)) ||
+        !Array.isArray(doc.custody)
+      ) {
         throw new Error('invalid sample document');
       }
       for (const event of doc.custody) {
@@ -78,7 +189,14 @@ function assertClinicalPayload(entity: string, payload: unknown): void {
         }
       }
     }
-    if (entity === 'auditEvents' && (!String(doc.action ?? '').trim() || !String(doc.entity ?? '').trim() || !String(doc.entityId ?? '').trim() || !String(doc.actor ?? '').trim() || !String(doc.at ?? '').trim())) {
+    if (
+      entity === 'auditEvents' &&
+      (!String(doc.action ?? '').trim() ||
+        !String(doc.entity ?? '').trim() ||
+        !String(doc.entityId ?? '').trim() ||
+        !String(doc.actor ?? '').trim() ||
+        !String(doc.at ?? '').trim())
+    ) {
       throw new Error('audit events require action, entity, id, actor, and timestamp');
     }
   }
@@ -131,6 +249,99 @@ function within(root: string, rel: string): string {
 }
 
 const privateRoot = (): string => app.getPath('userData');
+const OUTPUT_FOLDERS = new Set(['PathoMitra', 'PathLab OS']);
+const MAX_COLLECTION_BYTES = 64 * 1024 * 1024;
+const MAX_COMMIT_BYTES = 128 * 1024 * 1024;
+const MAX_DOCUMENTS = 100_000;
+const MAX_QUERY_LIMIT = 10_000;
+const WHERE_OPS = new Set(['==', '!=', '<', '<=', '>', '>=', 'in', 'array-contains', 'contains']);
+
+function parseListOptions(value: unknown): ListOptions {
+  const input = record(value);
+  if (!input) return {};
+  const options: ListOptions = {};
+  if (input.orderBy !== undefined) {
+    if (typeof input.orderBy !== 'string' || !/^[A-Za-z0-9_]+$/.test(input.orderBy))
+      throw new Error('invalid order field');
+    options.orderBy = input.orderBy;
+  }
+  if (input.direction !== undefined) {
+    if (input.direction !== 'asc' && input.direction !== 'desc')
+      throw new Error('invalid sort direction');
+    options.direction = input.direction;
+  }
+  if (input.limit !== undefined) {
+    if (
+      !Number.isInteger(input.limit) ||
+      Number(input.limit) < 0 ||
+      Number(input.limit) > MAX_QUERY_LIMIT
+    )
+      throw new Error('invalid list limit');
+    options.limit = Number(input.limit);
+  }
+  if (input.offset !== undefined) {
+    if (
+      !Number.isInteger(input.offset) ||
+      Number(input.offset) < 0 ||
+      Number(input.offset) > 1_000_000
+    )
+      throw new Error('invalid list offset');
+    options.offset = Number(input.offset);
+  }
+  if (input.where !== undefined) {
+    if (!Array.isArray(input.where) || input.where.length > 20)
+      throw new Error('invalid query filters');
+    options.where = input.where.map((entry): WhereFilter => {
+      const filter = record(entry);
+      if (
+        !filter ||
+        typeof filter.field !== 'string' ||
+        !/^[A-Za-z0-9_]+$/.test(filter.field) ||
+        typeof filter.op !== 'string' ||
+        !WHERE_OPS.has(filter.op)
+      )
+        throw new Error('invalid query filter');
+      const value = filter.value;
+      const scalar = value === null || ['string', 'number', 'boolean'].includes(typeof value);
+      const list =
+        Array.isArray(value) &&
+        value.length <= 100 &&
+        value.every(item => ['string', 'number', 'boolean'].includes(typeof item));
+      if (!scalar && !list) throw new Error('invalid query filter value');
+      return {
+        field: filter.field,
+        op: filter.op as WhereFilter['op'],
+        value: value as WhereFilter['value'],
+      };
+    });
+  }
+  return options;
+}
+
+function withinOutputRoot(rel: string): string {
+  const normalized = rel.replaceAll('\\', '/');
+  const folder = normalized.split('/')[0];
+  if (!OUTPUT_FOLDERS.has(folder)) throw new Error('path is outside the app output folders');
+  return within(privateRoot(), rel);
+}
+
+function assertJsonDepth(value: unknown, depth = 0): void {
+  if (depth > 32) throw new Error('database payload is nested too deeply');
+  if (value && typeof value === 'object') {
+    for (const child of Object.values(value as Record<string, unknown>))
+      assertJsonDepth(child, depth + 1);
+  }
+}
+
+function assertPayloadBudget(entity: string, json: string, payload: unknown): void {
+  if (Buffer.byteLength(json, 'utf8') > MAX_COLLECTION_BYTES)
+    throw new Error(`${entity} payload exceeds the 64 MB limit`);
+  const store = record(payload);
+  if (!store) throw new Error('db payload must be a collection object');
+  if (Object.keys(store).length > MAX_DOCUMENTS)
+    throw new Error(`${entity} payload contains too many documents`);
+  assertJsonDepth(payload);
+}
 
 /**
  * Roots a renderer may name with an absolute path — only the folders the app
@@ -177,7 +388,9 @@ function resolveTarget(target: unknown, extensions: readonly string[]): string {
         ? (target as { filePath?: unknown }).filePath
         : undefined;
   if (typeof value !== 'string' || !value) throw new Error('a filePath is required');
-  const resolved = withinAppRoots(path.isAbsolute(value) ? value : path.resolve(privateRoot(), value));
+  const resolved = withinAppRoots(
+    path.isAbsolute(value) ? value : path.resolve(privateRoot(), value),
+  );
   if (!extensions.includes(path.extname(resolved).toLowerCase())) {
     throw new Error('This file type cannot be opened or printed by PathoMitra.');
   }
@@ -202,7 +415,12 @@ const MAX_SAVE_BYTES = 64 * 1024 * 1024;
 const SAVE_EXTENSIONS = new Set(['.pdf', '.csv', '.json', '.txt']);
 const APP_FOLDERS = new Set(['PathoMitra', 'PathLab OS']);
 
-function validateSaveArgs(args: unknown): { args: SaveArgs; buffer: Buffer; folder: string; relative: string } {
+function validateSaveArgs(args: unknown): {
+  args: SaveArgs;
+  buffer: Buffer;
+  folder: string;
+  relative: string;
+} {
   const value = record(args);
   if (!value) throw new Error('invalid file save arguments');
   const { relPath, data, base64, publicFirst } = value;
@@ -223,15 +441,25 @@ function validateSaveArgs(args: unknown): { args: SaveArgs; buffer: Buffer; fold
   }
   const [folder, ...parts] = relPath.split('/');
   const relative = parts.join('/');
-  if (!APP_FOLDERS.has(folder) || !relative || !SAVE_EXTENSIONS.has(path.extname(relative).toLowerCase())) {
-    throw new Error('save path must stay inside an app output folder and use a supported file type');
+  if (
+    !APP_FOLDERS.has(folder) ||
+    !relative ||
+    !SAVE_EXTENSIONS.has(path.extname(relative).toLowerCase())
+  ) {
+    throw new Error(
+      'save path must stay inside an app output folder and use a supported file type',
+    );
   }
   if (base64 && !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) {
     throw new Error('file payload is not valid base64');
   }
-  const estimatedBytes = base64 ? Math.floor((data.length * 3) / 4) : Buffer.byteLength(data, 'utf8');
+  const estimatedBytes = base64
+    ? Math.floor((data.length * 3) / 4)
+    : Buffer.byteLength(data, 'utf8');
   if (estimatedBytes > MAX_SAVE_BYTES) {
-    throw new Error(`file payload exceeds the ${Math.round(MAX_SAVE_BYTES / 1024 / 1024)} MB limit`);
+    throw new Error(
+      `file payload exceeds the ${Math.round(MAX_SAVE_BYTES / 1024 / 1024)} MB limit`,
+    );
   }
   const buffer = base64 ? Buffer.from(data, 'base64') : Buffer.from(data, 'utf8');
   if (buffer.length > MAX_SAVE_BYTES) throw new Error('file payload exceeds the size limit');
@@ -268,7 +496,11 @@ function saveFile(args: SaveArgs): { name: string; uri: string; path: string; is
       };
     } catch (err) {
       if (temp) {
-        try { fs.rmSync(temp, { force: true }); } catch { /* preserve the original failure */ }
+        try {
+          fs.rmSync(temp, { force: true });
+        } catch {
+          /* preserve the original failure */
+        }
       }
       lastError = err;
     }
@@ -312,6 +544,57 @@ function isTrustedSender(event: Electron.IpcMainInvokeEvent): boolean {
  * where the arguments arrive from the renderer as untyped JSON and every handler
  * validates them on its own.
  */
+type PrincipalEvent = Electron.IpcMainInvokeEvent & { principal?: DesktopPrincipal };
+
+const PRIVILEGED_CHANNELS = new Set([
+  'pm:db:load',
+  'pm:db:save',
+  'pm:db:clear',
+  'pm:db:commit',
+  'pm:db:get',
+  'pm:db:query',
+  'pm:db:count',
+  'pm:db:set',
+  'pm:db:update',
+  'pm:db:delete',
+  'pm:files:save',
+  'pm:files:readText',
+  'pm:files:rename',
+  'pm:files:list',
+  'pm:files:uri',
+  'pm:files:delete',
+  'pm:files:removeTree',
+  'pm:files:print',
+  'pm:print:printers',
+  'pm:print:job',
+  'pm:print:begin',
+  'pm:print:page',
+  'pm:print:commit',
+  'pm:print:cancel',
+  'pm:shell:show',
+  'pm:report:public-key',
+  'pm:report:sign',
+  'pm:report:verify',
+  'pm:backup:choose',
+  'pm:backup:status',
+  'pm:backup:copy',
+]);
+
+function principalOf(event: PrincipalEvent): DesktopPrincipal {
+  if (!event.principal) throw new Error('Desktop session required.');
+  return event.principal;
+}
+
+function assertPermission(event: PrincipalEvent, permission: Parameters<typeof can>[1]): void {
+  if (!can(principalOf(event).role, permission))
+    throw new Error(`Desktop session lacks ${permission} permission.`);
+}
+
+function assertOperator(event: PrincipalEvent): void {
+  if (principalOf(event).role === 'guest')
+    throw new Error('Guest sessions cannot perform this action.');
+}
+
 function handle<A extends unknown[]>(
   channel: string,
   listener: (event: Electron.IpcMainInvokeEvent, ...args: A) => unknown,
@@ -321,26 +604,144 @@ function handle<A extends unknown[]>(
       console.error(`PathoMitra desktop: refused ${channel} from an untrusted frame`);
       throw new Error(`Untrusted IPC sender for ${channel}.`);
     }
+    if (PRIVILEGED_CHANNELS.has(channel)) {
+      const [token, ...rest] = args;
+      (event as PrincipalEvent).principal = getDesktopPrincipal(token);
+      return listener(event, ...(rest as A));
+    }
     return listener(event, ...(args as A));
   });
 }
 
 export function registerIpc(): void {
+  handle('pm:session:open', async (_event, identifier: unknown, password: unknown) => {
+    if (typeof identifier !== 'string' || typeof password !== 'string')
+      throw new Error('invalid session arguments');
+    return openDesktopSession(identifier, password);
+  });
+  handle('pm:session:open-biometric', async (_event, operatorId: unknown) => {
+    if (typeof operatorId !== 'string') throw new Error('invalid session arguments');
+    return openBiometricSession(operatorId);
+  });
+  handle('pm:session:close', async (_event, token: unknown) => closeDesktopSession(token));
+  handle('pm:system:storage', async () => {
+    const stats = await fs.promises.statfs(app.getPath('userData'));
+    const blockSize = Number(stats.bsize) || 0;
+    const quota = Number(stats.blocks) * blockSize;
+    const available = Number(stats.bavail) * blockSize;
+    return { usage: Math.max(0, quota - available), quota };
+  });
+  handle('pm:backup:choose', event => {
+    assertPermission(event as PrincipalEvent, 'manageBackup');
+    return chooseBackupDestination(BrowserWindow.fromWebContents(event.sender));
+  });
+  handle('pm:backup:status', event => {
+    assertPermission(event as PrincipalEvent, 'manageBackup');
+    return backupDestinationStatus();
+  });
+  handle('pm:backup:copy', (event, fileName: unknown, payload: unknown) => {
+    assertPermission(event as PrincipalEvent, 'manageBackup');
+    if (
+      typeof fileName !== 'string' ||
+      typeof payload !== 'string' ||
+      Buffer.byteLength(payload, 'utf8') > MAX_COLLECTION_BYTES
+    )
+      throw new Error('invalid off-device backup payload');
+    return copyBackupToDestination(fileName, payload);
+  });
+  handle('pm:report:public-key', event => {
+    assertPermission(event as PrincipalEvent, 'viewClinical');
+    return desktopReportPublicKey();
+  });
+  handle('pm:report:sign', (event, manifest: unknown) => {
+    assertPermission(event as PrincipalEvent, 'issueReports');
+    if (typeof manifest !== 'string' || !manifest || manifest.length > 2_000_000)
+      throw new Error('invalid report manifest');
+    return signDesktopReport(manifest);
+  });
+  handle('pm:report:verify', (event, manifest: unknown, signature: unknown, keyId: unknown) => {
+    assertPermission(event as PrincipalEvent, 'viewClinical');
+    if (
+      typeof manifest !== 'string' ||
+      typeof signature !== 'string' ||
+      (keyId !== undefined && typeof keyId !== 'string')
+    )
+      throw new Error('invalid signature arguments');
+    return verifyDesktopReport(manifest, signature, keyId);
+  });
+
   /* Database façade -------------------------------------------------------- */
   handle('pm:db:init', async () => {
     await openDatabase();
   });
-  handle('pm:db:load', (_e, entity: unknown) => loadEntity(assertEntity(entity)));
-  handle('pm:db:save', (_e, entity: unknown, json: unknown) => {
+  handle('pm:db:load', (event, entity: unknown) => {
+    assertPermission(event as PrincipalEvent, 'viewClinical');
+    return loadEntity(assertEntity(entity));
+  });
+  handle('pm:db:save', async (event, entity: unknown, json: unknown) => {
     const name = assertEntity(entity);
     if (typeof json !== 'string') throw new Error('db payload must be a JSON string');
     // Parse-on-write: the encrypted file must never hold something the
     // renderer could not have produced — cheap structural guard.
     const payload = JSON.parse(json);
-    assertClinicalPayload(name, payload);
+    assertPayloadBudget(name, json, payload);
+    await assertClinicalPayload(name, payload, principalOf(event as PrincipalEvent));
+    for (const doc of Object.values(payload as Record<string, unknown>)) {
+      const value = record(doc) ?? {};
+      assertPermission(event as PrincipalEvent, repositoryPermission(name, 'create', value));
+    }
     saveEntity(name, json);
   });
-  handle('pm:db:clear', () => eraseDatabase());
+  handle('pm:db:get', (event, entity: unknown, id: unknown) => {
+    assertPermission(event as PrincipalEvent, 'viewClinical');
+    if (typeof id !== 'string' || !id || id.length > 256) throw new Error('invalid document id');
+    return getDocument(assertEntity(entity), id);
+  });
+  handle('pm:db:query', (event, entity: unknown, options: unknown) => {
+    assertPermission(event as PrincipalEvent, 'viewClinical');
+    return queryDocuments(assertEntity(entity), parseListOptions(options));
+  });
+  handle('pm:db:count', (event, entity: unknown, where: unknown) => {
+    assertPermission(event as PrincipalEvent, 'viewClinical');
+    return countDocuments(assertEntity(entity), parseListOptions({ where }).where);
+  });
+  handle('pm:db:set', async (event, entity: unknown, id: unknown, json: unknown) => {
+    const name = assertEntity(entity);
+    if (typeof id !== 'string' || !id || id.length > 256 || typeof json !== 'string')
+      throw new Error('invalid document write');
+    const payload = JSON.parse(json);
+    assertPayloadBudget(name, json, { [id]: payload });
+    await assertClinicalPayload(name, { [id]: payload }, principalOf(event as PrincipalEvent));
+    const value = record(payload) ?? {};
+    assertPermission(event as PrincipalEvent, repositoryPermission(name, 'create', value));
+    saveDocument(name, id, json);
+  });
+  handle('pm:db:update', async (event, entity: unknown, id: unknown, patchJson: unknown) => {
+    const name = assertEntity(entity);
+    if (typeof id !== 'string' || !id || id.length > 256 || typeof patchJson !== 'string')
+      throw new Error('invalid document update');
+    const patch = JSON.parse(patchJson);
+    if (!record(patch)) throw new Error('invalid document patch');
+    assertJsonDepth(patch);
+    const current = getDocument(name, id);
+    if (!current) throw new Error(`Cannot update missing ${name} document: ${id}`);
+    const merged = { ...(JSON.parse(current) as Record<string, unknown>), ...patch };
+    const json = JSON.stringify(merged);
+    assertPayloadBudget(name, json, { [id]: merged });
+    await assertClinicalPayload(name, { [id]: merged }, principalOf(event as PrincipalEvent));
+    assertPermission(event as PrincipalEvent, repositoryPermission(name, 'update', merged));
+    updateDocument(name, id, patchJson);
+  });
+  handle('pm:db:delete', (event, entity: unknown, id: unknown) => {
+    const name = assertEntity(entity);
+    if (typeof id !== 'string' || !id || id.length > 256) throw new Error('invalid document id');
+    assertPermission(event as PrincipalEvent, repositoryPermission(name, 'delete'));
+    deleteDocument(name, id);
+  });
+  handle('pm:db:clear', event => {
+    assertPermission(event as PrincipalEvent, 'eraseData');
+    return eraseDatabase();
+  });
   /**
    * Atomic multi-collection write (see `saveEntitiesBulk`). Each entry is
    * validated exactly like a single `pm:db:save` — allow-listed collection name,
@@ -348,36 +749,55 @@ export function registerIpc(): void {
    * transaction, so the renderer's `transaction()` is only ever atomic or not at
    * all, never half-applied.
    */
-  handle('pm:db:commit', (_e, entries: unknown) => {
+  handle('pm:db:commit', async (event, entries: unknown) => {
     if (!Array.isArray(entries)) throw new Error('db commit expects an array of collections');
-    const rows = entries.map(entry => {
-      const row = entry as { entity?: unknown; json?: unknown } | null;
-      const name = assertEntity(row?.entity);
-      if (typeof row?.json !== 'string') throw new Error('db payload must be a JSON string');
-      const payload = JSON.parse(row.json);
-      assertClinicalPayload(name, payload);
-      return { entity: name, json: row.json };
-    });
+    if (entries.length > 16) throw new Error('db commit contains too many collections');
+    let totalBytes = 0;
+    const rows = await Promise.all(
+      entries.map(async entry => {
+        const row = entry as { entity?: unknown; json?: unknown } | null;
+        const name = assertEntity(row?.entity);
+        if (typeof row?.json !== 'string') throw new Error('db payload must be a JSON string');
+        totalBytes += Buffer.byteLength(row.json, 'utf8');
+        if (totalBytes > MAX_COMMIT_BYTES) throw new Error('db commit exceeds the 128 MB limit');
+        const payload = JSON.parse(row.json);
+        assertPayloadBudget(name, row.json, payload);
+        await assertClinicalPayload(name, payload, principalOf(event as PrincipalEvent));
+        for (const doc of Object.values(payload as Record<string, unknown>)) {
+          const value = record(doc) ?? {};
+          assertPermission(event as PrincipalEvent, repositoryPermission(name, 'create', value));
+        }
+        return { entity: name, json: row.json };
+      }),
+    );
     saveEntitiesBulk(rows);
   });
 
   /* Files ------------------------------------------------------------------ */
-  handle('pm:files:rename', (_event, from: unknown, to: unknown) => {
-    if (typeof from !== 'string' || typeof to !== 'string') throw new Error('invalid rename arguments');
-    const source = within(privateRoot(), from);
-    const target = within(privateRoot(), to);
-    if (!SAVE_EXTENSIONS.has(path.extname(target).toLowerCase())) throw new Error('unsupported target file type');
+  handle('pm:files:rename', (event, from: unknown, to: unknown) => {
+    assertPermission(event as PrincipalEvent, 'manageBackup');
+    if (typeof from !== 'string' || typeof to !== 'string')
+      throw new Error('invalid rename arguments');
+    const source = withinOutputRoot(from);
+    const target = withinOutputRoot(to);
+    if (!SAVE_EXTENSIONS.has(path.extname(target).toLowerCase()))
+      throw new Error('unsupported target file type');
     if (!fs.statSync(source).isFile()) throw new Error('rename source is not a file');
     fs.renameSync(source, target);
   });
-  handle('pm:files:save', (_e, args: SaveArgs) => saveFile(args));
-  handle('pm:files:readText', (_e, rel: unknown) => {
-    if (typeof rel !== 'string') throw new Error('bad path');
-    return fs.readFileSync(within(privateRoot(), rel), 'utf8');
+  handle('pm:files:save', (event, args: SaveArgs) => {
+    assertOperator(event as PrincipalEvent);
+    return saveFile(args);
   });
-  handle('pm:files:list', (_e, relDir: unknown, extension: unknown) => {
+  handle('pm:files:readText', (event, rel: unknown) => {
+    assertPermission(event as PrincipalEvent, 'manageBackup');
+    if (typeof rel !== 'string') throw new Error('bad path');
+    return fs.readFileSync(withinOutputRoot(rel), 'utf8');
+  });
+  handle('pm:files:list', (event, relDir: unknown, extension: unknown) => {
+    assertPermission(event as PrincipalEvent, 'manageBackup');
     if (typeof relDir !== 'string') throw new Error('bad path');
-    const dir = within(privateRoot(), relDir);
+    const dir = withinOutputRoot(relDir);
     const ext = typeof extension === 'string' ? extension : '';
     try {
       return fs
@@ -390,9 +810,10 @@ export function registerIpc(): void {
       throw err;
     }
   });
-  handle('pm:files:uri', (_e, rel: unknown) => {
+  handle('pm:files:uri', (event, rel: unknown) => {
+    assertPermission(event as PrincipalEvent, 'manageBackup');
     if (typeof rel !== 'string') throw new Error('bad path');
-    return pathToFileURL(within(privateRoot(), rel)).href;
+    return pathToFileURL(withinOutputRoot(rel)).href;
   });
   /**
    * Delete one app-owned file (the backup list's "delete old snapshots").
@@ -401,7 +822,8 @@ export function registerIpc(): void {
    * the renderer actually lists — a compromised page still cannot wipe the
    * Electron profile or the WAL sidecars of the database.
    */
-  handle('pm:files:removeTree', (_e, rel: unknown) => {
+  handle('pm:files:removeTree', (event, rel: unknown) => {
+    assertPermission(event as PrincipalEvent, 'manageBackup');
     if (rel !== 'PathoMitra' && rel !== 'PathLab OS') {
       throw new Error('only app output folders may be removed');
     }
@@ -416,9 +838,11 @@ export function registerIpc(): void {
       const assertNoLinks = (current: string): void => {
         for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
           const full = path.join(current, entry.name);
-          if (entry.isSymbolicLink()) throw new Error('app output folder contains a symbolic link or junction');
+          if (entry.isSymbolicLink())
+            throw new Error('app output folder contains a symbolic link or junction');
           const real = fs.realpathSync(full);
-          if (!contains(fs.realpathSync(safe), real)) throw new Error('app output folder contains an escaping junction');
+          if (!contains(fs.realpathSync(safe), real))
+            throw new Error('app output folder contains an escaping junction');
           if (entry.isDirectory()) assertNoLinks(full);
         }
       };
@@ -426,7 +850,8 @@ export function registerIpc(): void {
       fs.rmSync(safe, { recursive: true, force: true });
     }
   });
-  handle('pm:files:delete', (_e, rel: unknown) => {
+  handle('pm:files:delete', (event, rel: unknown) => {
+    assertPermission(event as PrincipalEvent, 'manageBackup');
     if (typeof rel !== 'string') throw new Error('bad path');
     const root = privateRoot();
     const abs = within(root, rel);
@@ -446,11 +871,13 @@ export function registerIpc(): void {
    * window that asked for it.
    */
   handle('pm:files:print', (event, target: unknown) => {
+    assertOperator(event as PrincipalEvent);
     const abs = resolveTarget(target, ['.pdf']);
     return printPdfFile(abs, BrowserWindow.fromWebContents(event.sender) ?? undefined);
   });
   /** Open with the user's default handler, or reveal in Explorer. */
-  handle('pm:shell:show', async (_e, target: unknown) => {
+  handle('pm:shell:show', async (event, target: unknown) => {
+    assertOperator(event as PrincipalEvent);
     const abs = resolveTarget(target, ['.pdf', '.csv', '.json', '.txt']);
     const err = await shell.openPath(abs);
     if (err) throw new Error(err);
@@ -458,9 +885,10 @@ export function registerIpc(): void {
 
   /* In-app print dialog ---------------------------------------------------- */
   /** Installed printers for the dialog's dropdown. */
-  handle('pm:print:printers', event =>
-    listPrinters(BrowserWindow.fromWebContents(event.sender) ?? undefined),
-  );
+  handle('pm:print:printers', event => {
+    assertOperator(event as PrincipalEvent);
+    return listPrinters(BrowserWindow.fromWebContents(event.sender) ?? undefined);
+  });
   /**
    * Spool a job the dialog already rendered. The payload is a page list of PNG
    * data URLs — untrusted input by Electron's rules — so the shape is checked
@@ -468,25 +896,55 @@ export function registerIpc(): void {
    * generated document. Failures come back as `{ ok: false }` rather than a
    * rejection: the dialog shows them inline, it does not crash on them.
    */
-  handle(
-    'pm:print:job',
-    (event, request: unknown): Promise<PrintJobResult> | PrintJobResult => {
-      const job = request as Partial<PrintJobRequest> | null;
-      if (
-        !job ||
-        !Array.isArray(job.pages) ||
-        typeof job.options?.deviceName !== 'string' ||
-        typeof job.sheetWidthMm !== 'number' ||
-        typeof job.sheetHeightMm !== 'number'
-      ) {
-        return { ok: false, error: 'The print job was not well formed.' };
-      }
-      return printJob(
-        job as PrintJobRequest,
-        BrowserWindow.fromWebContents(event.sender) ?? undefined,
-      );
-    },
-  );
+  handle('pm:print:job', (event, request: unknown): Promise<PrintJobResult> | PrintJobResult => {
+    assertOperator(event as PrincipalEvent);
+    const job = request as Partial<PrintJobRequest> | null;
+    if (
+      !job ||
+      !Array.isArray(job.pages) ||
+      typeof job.options?.deviceName !== 'string' ||
+      typeof job.sheetWidthMm !== 'number' ||
+      typeof job.sheetHeightMm !== 'number'
+    ) {
+      return { ok: false, error: 'The print job was not well formed.' };
+    }
+    return printJob(
+      job as PrintJobRequest,
+      BrowserWindow.fromWebContents(event.sender) ?? undefined,
+    );
+  });
+
+  handle('pm:print:begin', (event, request: unknown) => {
+    assertOperator(event as PrincipalEvent);
+    const job = request as Partial<PrintJobStartRequest> | null;
+    if (
+      !job ||
+      typeof job.options?.deviceName !== 'string' ||
+      typeof job.sheetWidthMm !== 'number' ||
+      typeof job.sheetHeightMm !== 'number'
+    ) {
+      return { ok: false, error: 'The print job was not well formed.' };
+    }
+    return beginPrintJob(
+      job as PrintJobStartRequest,
+      BrowserWindow.fromWebContents(event.sender) ?? undefined,
+    );
+  });
+  handle('pm:print:page', (event, jobId: unknown, page: unknown) => {
+    assertOperator(event as PrincipalEvent);
+    if (typeof jobId !== 'string') return { ok: false, error: 'The print job id is invalid.' };
+    return appendPrintPage(jobId, page);
+  });
+  handle('pm:print:commit', async (event, jobId: unknown): Promise<PrintJobResult> => {
+    assertOperator(event as PrincipalEvent);
+    if (typeof jobId !== 'string') return { ok: false, error: 'The print job id is invalid.' };
+    return commitPrintJob(jobId);
+  });
+  handle('pm:print:cancel', (event, jobId: unknown) => {
+    assertOperator(event as PrincipalEvent);
+    if (typeof jobId !== 'string') return { ok: false, error: 'The print job id is invalid.' };
+    return cancelPrintJob(jobId);
+  });
 
   /* Secure storage (Windows Credential Manager) ---------------------------- */
   /**
@@ -500,9 +958,7 @@ export function registerIpc(): void {
     if (typeof secret !== 'string') throw new Error('bad keyring args');
     return setSecret(name, secret);
   });
-  handle('pm:keyring:get', (_e, account: unknown) =>
-    getSecret(assertRendererAccount(account)),
-  );
+  handle('pm:keyring:get', (_e, account: unknown) => getSecret(assertRendererAccount(account)));
   handle('pm:keyring:delete', (_e, account: unknown) =>
     deleteSecret(assertRendererAccount(account)),
   );

@@ -11,10 +11,11 @@
  * It is intentionally a *compatibility shim*, not a re-implementation of
  * Firestore: queries are evaluated in memory (`data/query.ts`), `onSnapshot`
  * is a local observer, and server-only concepts (`serverTimestamp`,
- * `waitForPendingWrites`) resolve immediately against device state.
+ * `waitForPendingWrites`) resolve immediately against committed device state.
+ * There is no cloud queue and no remote acknowledgement.
  */
 import { getRepository } from './index';
-import { applyQuery, generateId } from './query';
+import { generateId } from './query';
 import type { EntityName, ListOptions, LocalDoc, WhereFilter, WhereOp } from './types';
 
 // ---------------------------------------------------------------------------
@@ -326,16 +327,27 @@ export function onSnapshot(
 ): () => void {
   try {
     if (ref.__kind === 'doc') {
-      return getRepository().subscribe(ref.path, docs => {
-        const found = docs.find(d => d.id === ref.id) ?? null;
-        onNext(buildSnapshot(ref.path, found ? [found] : [], ref.id));
-      });
+      const opts: ListOptions = { where: [{ field: 'id', op: '==', value: ref.id }] };
+      return getRepository().subscribe(
+        ref.path,
+        docs => {
+          const found = docs.find(d => d.id === ref.id) ?? null;
+          onNext(buildSnapshot(ref.path, found ? [found] : [], ref.id));
+        },
+        onError,
+        opts,
+      );
     }
     const path = ref.path;
     const opts = ref.__kind === 'query' ? toListOptions(ref.constraints) : {};
-    return getRepository().subscribe(path, docs => {
-      onNext(buildSnapshot(path, applyQuery(docs, opts)));
-    });
+    return getRepository().subscribe(
+      path,
+      docs => {
+        onNext(buildSnapshot(path, docs));
+      },
+      onError,
+      opts,
+    );
   } catch (e) {
     onError?.(e);
     return () => {};

@@ -15,6 +15,7 @@ import { deleteReportCascade } from '../../lib/cascades';
 import { useCollectionList, type ListFilter } from '../../hooks/useCollectionList';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { handleFirestoreError, OperationType } from '../../lib/firestore-errors';
+import { captureError } from '../../lib/telemetry';
 import { useAuth } from '../../contexts/AuthContext';
 import { can } from '../../lib/permissions';
 import {
@@ -109,6 +110,10 @@ import { normalisePhone } from '../../lib/patient-registry';
 import { buildReportIssuanceSnapshot } from '../../lib/report-snapshot';
 import { signReportIssuance } from '../../lib/report-signing';
 import { createOrderWithSamples, createSamplesForOrder } from '../../lib/clinical-workflow';
+import { listOperatorProfiles, type OperatorIdentity } from '../../lib/operator-accounts';
+import { generateId } from '../../data/query';
+import { getRepository } from '../../data';
+import type { DataRepository } from '../../data/types';
 import { validateReportResults } from '../../lib/result-validation';
 import {
   clearReportDraft,
@@ -147,6 +152,7 @@ const reportBaseOf = (report: ReportRecord): StoredReport => ({
   testSelection: report.testSelection ?? [],
   issuanceSnapshot: report.issuanceSnapshot,
   criticalReview: report.criticalReview,
+  deltaReview: report.deltaReview,
   status: report.status,
   version: report.version,
   updatedAt: report.updatedAt,
@@ -156,6 +162,39 @@ const sameReportRevision = (a: StoredReport, b: StoredReport): boolean =>
   a.id === b.id &&
   (a.version ?? 1) === (b.version ?? 1) &&
   (a.updatedAt ?? '') === (b.updatedAt ?? '');
+
+const resolvedRangeFor = (name: string, patient?: PatientRecord) => {
+  const info = findTestInfo(name);
+  return patient
+    ? resolveReferenceRange(info?.ranges, ageAsNumber(patient), patient.gender).values
+    : undefined;
+};
+
+const isDeltaWarning = (message: string) => message.includes('changed materially');
+
+async function loadPreviousIssuedReport(
+  patientId: string,
+  excludeReportId?: string,
+  before?: string,
+): Promise<ReportRecord | null> {
+  if (!patientId) return null;
+  const rows = await getRepository().list('reports', {
+    where: [
+      { field: 'patientId', op: '==', value: patientId },
+      { field: 'status', op: '==', value: 'final' },
+    ],
+    orderBy: 'createdAt',
+    direction: 'desc',
+    limit: 50,
+  });
+  for (const row of rows) {
+    const report = readReport(row.id, row.data());
+    if (report.id === excludeReportId) continue;
+    if (before && report.createdAt >= before) continue;
+    return report;
+  }
+  return null;
+}
 
 /** Older forms saved names with stray padding; announcements must not repeat it. */
 const spokenName = (name: string | undefined) => (name || '').trim() || 'this report';
@@ -200,14 +239,29 @@ export default function ReportsPage({
   const [modalError, setModalError] = useState<string | null>(null);
   const [selectedReport, setSelectedReport] = useState<SelectedReport | null>(null);
   const [editorBase, setEditorBase] = useState<StoredReport | null>(null);
+  const [previousReport, setPreviousReport] = useState<ReportRecord | null>(null);
   const [recoveredDraft, setRecoveredDraft] = useState<ReportDraftAutosave | null>(null);
-  const [draftSaveState, setDraftSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [draftSaveState, setDraftSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>(
+    'idle',
+  );
   const [draftSavedAt, setDraftSavedAt] = useState('');
   const selectedValidation = useMemo(
-    () => selectedReport
-      ? validateReportResults(expandTestSelection(selectedReport.testSelection ?? []), selectedReport.resultData, findTestInfo)
-      : null,
-    [selectedReport],
+    () =>
+      selectedReport
+        ? validateReportResults(
+            expandTestSelection(selectedReport.testSelection ?? []),
+            selectedReport.resultData,
+            findTestInfo,
+            undefined,
+            name =>
+              resolvedRangeFor(
+                name,
+                patients.find(patient => patient.id === selectedReport.patientId),
+              ),
+            previousReport?.resultData,
+          )
+        : null,
+    [selectedReport, patients, previousReport],
   );
   // The read-only viewing dashboard: card taps and Preview land here, while the
   // editable Report Details sheet is reached through Edit / Finish draft.
@@ -223,9 +277,34 @@ export default function ReportsPage({
   // so an inline field-level error can name it without discarding typed values.
   const [amendReason, setAmendReason] = useState('');
   const [criticalReviewReason, setCriticalReviewReason] = useState('');
+  const [deltaReviewReason, setDeltaReviewReason] = useState('');
+  const [composerPreviousReport, setComposerPreviousReport] = useState<ReportRecord | null>(null);
+  const previousReportRequest = useRef(0);
   const [reviewerName, setReviewerName] = useState('');
+  const [reviewerUid, setReviewerUid] = useState('');
+  const [reviewers, setReviewers] = useState<OperatorIdentity[]>([]);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void listOperatorProfiles()
+      .then(profiles => {
+        if (active)
+          setReviewers(
+            profiles.filter(
+              profile =>
+                profile.role === 'pathologist' && !profile.disabled && profile.uid !== user?.uid,
+            ),
+          );
+      })
+      .catch(() => {
+        if (active) setReviewers([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [user?.uid]);
 
   // Row menus: dismiss on any outside click or Escape, and only while a menu is
   // actually open — the listener used to run for the whole life of the page.
@@ -288,7 +367,9 @@ export default function ReportsPage({
     results: {} as Record<string, string>,
   });
   const [newCriticalReviewReason, setNewCriticalReviewReason] = useState('');
+  const [newDeltaReviewReason, setNewDeltaReviewReason] = useState('');
   const [newReviewerName, setNewReviewerName] = useState('');
+  const [newReviewerUid, setNewReviewerUid] = useState('');
 
   // How many ordered tests (panels expanded to members) are still blank. Purely
   // advisory since 2026-10-15: the composer shows the count so the operator knows
@@ -315,9 +396,47 @@ export default function ReportsPage({
     [isModalOpen, newReport.testSelection],
   );
   const composerValidation = useMemo(
-    () => validateReportResults(expandTestSelection(newReport.testSelection), newReport.results, findTestInfo),
-    [newReport.results, newReport.testSelection],
+    () =>
+      validateReportResults(
+        expandTestSelection(newReport.testSelection),
+        newReport.results,
+        findTestInfo,
+        undefined,
+        name =>
+          resolvedRangeFor(
+            name,
+            patients.find(patient => patient.id === newReport.patientId),
+          ),
+        composerPreviousReport?.resultData,
+      ),
+    [
+      newReport.results,
+      newReport.testSelection,
+      newReport.patientId,
+      patients,
+      composerPreviousReport,
+    ],
   );
+
+  useEffect(() => {
+    let active = true;
+    setComposerPreviousReport(null);
+    setNewDeltaReviewReason('');
+    if (!newReport.patientId)
+      return () => {
+        active = false;
+      };
+    void loadPreviousIssuedReport(newReport.patientId)
+      .then(report => {
+        if (active) setComposerPreviousReport(report);
+      })
+      .catch(() => {
+        if (active) setComposerPreviousReport(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [newReport.patientId]);
 
   /**
    * Approximate page count for the report about to be issued.
@@ -453,7 +572,9 @@ export default function ReportsPage({
         clearAction?.();
       })
       .catch(error => handleFirestoreError(error, OperationType.GET, 'reports'));
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, [initialReportId, clearAction]);
 
   // Private notes live in the staff-only reportNotes collection; hydrate the
@@ -471,7 +592,7 @@ export default function ReportsPage({
           current && current.id === reportId ? { ...current, privateNotes: note } : current,
         );
       })
-      .catch(err => console.error('Failed to load report note:', err));
+      .catch(error => captureError(error, { scope: 'reports:note-load', entity: 'reportNotes' }));
     return () => {
       cancelled = true;
     };
@@ -518,6 +639,32 @@ export default function ReportsPage({
    * transaction on the native store). Reports merge (so an immutable field like
    * `createdBy` is never blanked by a patch); history rows are written whole.
    */
+  const commitReportOpsInTx = async (
+    tx: DataRepository,
+    ops: ReportWriteOp[],
+    audit?: { action: string; details?: Record<string, unknown> },
+  ): Promise<void> => {
+    if (ops.length === 0) return;
+    for (const op of ops) {
+      if (op.entity === 'reports') {
+        const current = await tx.get('reports', op.id);
+        await tx.set('reports', op.id, { ...(current?.data() ?? {}), ...op.value });
+      } else {
+        await tx.set(op.entity, op.id, op.value);
+      }
+    }
+    if (audit) {
+      await tx.add('auditEvents', {
+        action: audit.action,
+        entity: 'reports',
+        entityId: ops.find(op => op.entity === 'reports')?.id ?? '',
+        actor: operatorStamp(user),
+        at: new Date().toISOString(),
+        details: audit.details ?? {},
+      });
+    }
+  };
+
   const commitReportOps = async (
     ops: ReportWriteOp[],
     audit?: { action: string; details?: Record<string, unknown> },
@@ -566,6 +713,7 @@ export default function ReportsPage({
       orderId: target.orderId,
       sampleIds: target.sampleIds,
       criticalReview: target.criticalReview,
+      deltaReview: target.deltaReview,
       updatedAt: target.updatedAt,
       id: target.id,
       status: target.status,
@@ -588,14 +736,31 @@ export default function ReportsPage({
     setDraftSavedAt('');
     setAmendReason('');
     setCriticalReviewReason('');
+    setDeltaReviewReason('');
+    setPreviousReport(null);
     setReviewerName('');
+    setReviewerUid('');
     setDetailError(null);
+    const request = ++previousReportRequest.current;
+    void loadPreviousIssuedReport(report.patientId, report.id, report.createdAt)
+      .then(previous => {
+        if (previousReportRequest.current === request) setPreviousReport(previous);
+      })
+      .catch(() => {
+        if (previousReportRequest.current === request) setPreviousReport(null);
+      });
     void loadReportDraft(report.id)
-      .then(draft => setRecoveredDraft(draft))
-      .catch(() => setDraftSaveState('error'));
+      .then(draft => {
+        if (previousReportRequest.current === request) setRecoveredDraft(draft);
+      })
+      .catch(() => {
+        if (previousReportRequest.current === request) setDraftSaveState('error');
+      });
   };
 
   const closeReportEditor = () => {
+    previousReportRequest.current += 1;
+    setPreviousReport(null);
     setSelectedReport(null);
     setEditorBase(null);
     setRecoveredDraft(null);
@@ -603,14 +768,25 @@ export default function ReportsPage({
     setDraftSavedAt('');
     setAmendReason('');
     setCriticalReviewReason('');
+    setDeltaReviewReason('');
     setReviewerName('');
+    setReviewerUid('');
     setDetailError(null);
   };
 
   useEffect(() => {
     if (!selectedReport || !editorBase || !canEdit || recoveredDraft) return;
     const current = asResultMap(selectedReport.resultData);
-    if (JSON.stringify(current) === JSON.stringify(asResultMap(editorBase.resultData))) return;
+    const resultsChanged =
+      JSON.stringify(current) !== JSON.stringify(asResultMap(editorBase.resultData));
+    if (
+      !resultsChanged &&
+      !amendReason &&
+      !criticalReviewReason &&
+      !deltaReviewReason &&
+      !reviewerUid
+    )
+      return;
     let cancelled = false;
     const timer = window.setTimeout(() => {
       setDraftSaveState('saving');
@@ -619,6 +795,12 @@ export default function ReportsPage({
         baseVersion: editorBase.version ?? 1,
         baseUpdatedAt: editorBase.updatedAt,
         resultData: current,
+        ...(reviewerUid && reviewerName
+          ? { reviewer: { uid: reviewerUid, name: reviewerName, role: 'pathologist' as const } }
+          : {}),
+        ...(criticalReviewReason ? { criticalReviewReason } : {}),
+        ...(amendReason ? { amendReason } : {}),
+        ...(deltaReviewReason ? { deltaReviewReason } : {}),
       })
         .then(saved => {
           if (cancelled) return;
@@ -633,7 +815,17 @@ export default function ReportsPage({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [selectedReport, editorBase, canEdit, recoveredDraft]);
+  }, [
+    selectedReport,
+    editorBase,
+    canEdit,
+    recoveredDraft,
+    amendReason,
+    criticalReviewReason,
+    deltaReviewReason,
+    reviewerUid,
+    reviewerName,
+  ]);
 
   /**
    * One report write at a time, from this screen.
@@ -671,32 +863,40 @@ export default function ReportsPage({
       });
 
       const patient = patients.find(p => p.id === newReport.patientId);
-      if (!patient) throw new Error('The selected patient no longer exists. No report was created.');
+      if (!patient)
+        throw new Error('The selected patient no longer exists. No report was created.');
       const timestamp = new Date().toISOString();
       const patientName = patient.name;
-      const validation = validateReportResults(expandTestSelection(newReport.testSelection), sanitizedResults, findTestInfo);
-      if (!validation.valid) throw new Error(validation.errors.map(item => `${item.test}: ${item.message}`).join('; '));
+      const previous =
+        status === 'final'
+          ? await loadPreviousIssuedReport(patient.id, undefined, timestamp)
+          : null;
+      const validation = validateReportResults(
+        expandTestSelection(newReport.testSelection),
+        sanitizedResults,
+        findTestInfo,
+        undefined,
+        name => resolvedRangeFor(name, patient),
+        previous?.resultData,
+      );
+      if (!validation.valid)
+        throw new Error(validation.errors.map(item => `${item.test}: ${item.message}`).join('; '));
       if (validation.warnings.some(item => item.critical) && !newCriticalReviewReason.trim()) {
         throw new Error('Record a clinical review reason for the critical result before issue.');
       }
-      const { order } = await createOrderWithSamples({
-        patientId: patient.id,
-        doctorName: patient.doctorName,
-        doctorId: patient.doctorId,
-        tests: newReport.testSelection,
-        actor: operatorStamp(user),
-        allowDuplicate: true,
-        now: new Date(timestamp),
-      });
-
-      // Offline: no signing service, no patient-facing QR mirror, no billing.
-      // The report is written straight to the encrypted local store. The
-      // `signature` column holds the issuing operator's display name — the
-      // printable signer — rather than being left empty while the document
-      // claimed an electronic verification that never happened.
+      if (
+        status === 'final' &&
+        validation.warnings.some(item => isDeltaWarning(item.message)) &&
+        !newDeltaReviewReason.trim()
+      ) {
+        throw new Error('Record a delta review reason for the material change before issue.');
+      }
+      const orderId = generateId();
+      // Offline: no patient-facing QR mirror and no remote signing service. The
+      // device-backed signature is added below before the aggregate commits.
       const reportRef = doc(collection(db, 'reports'));
       const content = {
-        orderId: order.id,
+        orderId,
         patientId: newReport.patientId,
         patientName,
         resultData: sanitizedResults,
@@ -705,7 +905,19 @@ export default function ReportsPage({
         createdBy: operatorStamp(user),
         testSelection: newReport.testSelection,
         ...(status === 'final'
-          ? { issuanceSnapshot: buildReportIssuanceSnapshot({ orderId: order.id, patientId: patient.id, testSelection: newReport.testSelection, resultData: sanitizedResults }, patient, readSettings(), timestamp) }
+          ? {
+              issuanceSnapshot: buildReportIssuanceSnapshot(
+                {
+                  orderId,
+                  patientId: patient.id,
+                  testSelection: newReport.testSelection,
+                  resultData: sanitizedResults,
+                },
+                patient,
+                readSettings(),
+                timestamp,
+              ),
+            }
           : {}),
       };
       // Blank results do not block issuing (owner, 2026-10-15): a panel whose
@@ -720,7 +932,14 @@ export default function ReportsPage({
         operatorName: user?.displayName ?? '',
         actor: user ? { uid: user.uid, role: role ?? 'guest' } : undefined,
         criticalOverrideReason: newCriticalReviewReason,
-        reviewer: status === 'final' ? { name: newReviewerName, role: 'pathologist' } : undefined,
+        ...(status === 'final' && previous
+          ? { previousResults: previous.resultData, previousReportId: previous.id }
+          : {}),
+        deltaReviewReason: newDeltaReviewReason,
+        reviewer:
+          status === 'final'
+            ? { uid: newReviewerUid, name: newReviewerName, role: 'pathologist' }
+            : undefined,
         now: timestamp,
       });
       if (!plan.ok) throw new Error(plan.error ?? 'Report could not be saved.');
@@ -738,15 +957,40 @@ export default function ReportsPage({
           issuanceHash = sealed.manifestHash;
         }
       }
-      await commitReportOps(plan.ops, {
-        action: status === 'final' ? 'report.issued' : 'report.draft_created',
-        details: { orderId: order.id, patientId: patient.id, ...(issuanceHash ? { issuanceHash } : {}) },
-      });
+      await createOrderWithSamples(
+        {
+          patientId: patient.id,
+          doctorName: patient.doctorName,
+          doctorId: patient.doctorId,
+          tests: newReport.testSelection,
+          actor: operatorStamp(user),
+          allowDuplicate: true,
+          now: new Date(timestamp),
+        },
+        {
+          id: orderId,
+          operationId: `report-create-${reportRef.id}`,
+          afterCreate: async (tx, _order, samples) => {
+            const reportOp = plan.ops.find(op => op.entity === 'reports');
+            if (reportOp) reportOp.value.sampleIds = samples.map(sample => sample.id);
+            await commitReportOpsInTx(tx, plan.ops, {
+              action: status === 'final' ? 'report.issued' : 'report.draft_created',
+              details: {
+                orderId,
+                patientId: patient.id,
+                ...(issuanceHash ? { issuanceHash } : {}),
+              },
+            });
+          },
+        },
+      );
 
       setIsModalOpen(false);
       setNewReport({ patientId: '', testSelection: [], results: {} });
       setNewCriticalReviewReason('');
+      setNewDeltaReviewReason('');
       setNewReviewerName('');
+      setNewReviewerUid('');
       setPatientSearchQuery('');
       setTestSearchQuery('');
       setModalError(null);
@@ -756,7 +1000,7 @@ export default function ReportsPage({
           : `Draft saved for ${patientName}.`,
       );
     } catch (err: any) {
-      console.error(err);
+      captureError(err, { scope: 'reports:create', entity: 'reports' });
       setModalError(err instanceof Error ? err.message : String(err));
     } finally {
       reportWriteInFlight.current = false;
@@ -785,23 +1029,52 @@ export default function ReportsPage({
     try {
       const stored = await readStoredReport(target);
       if (editorBase && !sameReportRevision(editorBase, stored)) {
-        setDetailError('This report changed in another session. Close and reopen it before saving; your unsaved edits are still available.');
+        setDetailError(
+          'This report changed in another session. Close and reopen it before saving; your unsaved edits are still available.',
+        );
         return;
       }
       const now = new Date().toISOString();
       const targetStatus: ReportStatus =
         issue && target.status === 'draft' ? 'final' : target.status;
-      const issuePatient = targetStatus === 'final' ? patients.find(p => p.id === target.patientId) : undefined;
+      const issuePatient =
+        targetStatus === 'final' ? patients.find(p => p.id === target.patientId) : undefined;
       if (targetStatus === 'final' && !issuePatient) {
         throw new Error('The patient no longer exists. The report was not changed.');
       }
-      const validation = validateReportResults(expandTestSelection(target.testSelection ?? []), target.resultData, findTestInfo);
+      const previous =
+        targetStatus === 'final'
+          ? await loadPreviousIssuedReport(target.patientId, target.id, target.createdAt)
+          : null;
+      if (previous) setPreviousReport(previous);
+      const validation = validateReportResults(
+        expandTestSelection(target.testSelection ?? []),
+        target.resultData,
+        findTestInfo,
+        undefined,
+        name => resolvedRangeFor(name, issuePatient),
+        previous?.resultData,
+      );
       if (targetStatus === 'final' && !validation.valid) {
         setDetailError(validation.errors.map(item => `${item.test}: ${item.message}`).join('; '));
         return;
       }
-      if (targetStatus === 'final' && validation.warnings.some(item => item.critical) && !criticalReviewReason.trim()) {
+      if (
+        targetStatus === 'final' &&
+        validation.warnings.some(item => item.critical) &&
+        !criticalReviewReason.trim()
+      ) {
         setDetailError('Record a clinical review reason for the critical result before issue.');
+        return;
+      }
+      if (
+        targetStatus === 'final' &&
+        validation.warnings.some(item => isDeltaWarning(item.message)) &&
+        !deltaReviewReason.trim()
+      ) {
+        setDetailError(
+          'Record a delta review reason for the material change before issue or amendment.',
+        );
         return;
       }
       let orderId = target.orderId;
@@ -831,7 +1104,14 @@ export default function ReportsPage({
         testType: target.testType,
         testSelection: target.testSelection ?? [],
         ...(targetStatus === 'final'
-          ? { issuanceSnapshot: buildReportIssuanceSnapshot({ ...target, orderId }, issuePatient!, readSettings(), now) }
+          ? {
+              issuanceSnapshot: buildReportIssuanceSnapshot(
+                { ...target, orderId },
+                issuePatient!,
+                readSettings(),
+                now,
+              ),
+            }
           : {}),
       };
       const plan = planReportWrite({
@@ -850,7 +1130,14 @@ export default function ReportsPage({
         operatorName: user?.displayName ?? '',
         actor: user ? { uid: user.uid, role: role ?? 'guest' } : undefined,
         criticalOverrideReason: criticalReviewReason,
-        reviewer: targetStatus === 'final' ? { name: reviewerName, role: 'pathologist' } : undefined,
+        ...(targetStatus === 'final' && previous
+          ? { previousResults: previous.resultData, previousReportId: previous.id }
+          : {}),
+        deltaReviewReason,
+        reviewer:
+          targetStatus === 'final'
+            ? { uid: reviewerUid, name: reviewerName, role: 'pathologist' }
+            : undefined,
         now,
       });
       if (!plan.ok) {
@@ -875,16 +1162,23 @@ export default function ReportsPage({
         }
       }
       await commitReportOps(plan.ops, {
-        action: plan.amended ? 'report.amended' : plan.issuing ? 'report.issued' : 'report.results_saved',
+        action: plan.amended
+          ? 'report.amended'
+          : plan.issuing
+            ? 'report.issued'
+            : 'report.results_saved',
         details: {
           orderId,
           version: plan.nextVersion,
           ...(issuanceHash ? { issuanceHash } : {}),
           ...(plan.verification ? { verification: plan.verification } : {}),
           ...(plan.criticalReview ? { criticalReview: plan.criticalReview } : {}),
+          ...(plan.deltaReview ? { deltaReview: plan.deltaReview } : {}),
         },
       });
-      await clearReportDraft(target.id).catch(error => console.error('Draft cleanup failed:', error));
+      await clearReportDraft(target.id).catch(error =>
+        captureError(error, { scope: 'reports:draft-cleanup', entity: 'meta' }),
+      );
       closeReportEditor();
       toast.success(
         plan.amended
@@ -942,16 +1236,19 @@ export default function ReportsPage({
     action: 'print' | 'preview' | 'download' | 'share' = 'print',
   ) => {
     const legacyFinal = report.status === 'final' && !report.issuanceSnapshot;
-    const s = (report.issuanceSnapshot?.settings ?? (legacyFinal ? DEFAULT_SETTINGS : readSettings())) as ReturnType<typeof readSettings>;
-    const patient = report.issuanceSnapshot?.patient ?? (legacyFinal
-      ? {
-          id: report.patientId,
-          name: report.patientName,
-          age: '',
-          gender: '' as PatientRecord['gender'],
-          createdAt: report.createdAt,
-        }
-      : patients.find(p => p.id === report.patientId) ?? null);
+    const s = (report.issuanceSnapshot?.settings ??
+      (legacyFinal ? DEFAULT_SETTINGS : readSettings())) as ReturnType<typeof readSettings>;
+    const patient =
+      report.issuanceSnapshot?.patient ??
+      (legacyFinal
+        ? {
+            id: report.patientId,
+            name: report.patientName,
+            age: '',
+            gender: '' as PatientRecord['gender'],
+            createdAt: report.createdAt,
+          }
+        : (patients.find(p => p.id === report.patientId) ?? null));
 
     // Credential / issuance wording for this document, derived rather than typed
     // inline: an accreditation only prints when the operator has attested it, and
@@ -994,7 +1291,7 @@ export default function ReportsPage({
           img.src = '/default-share-template.png';
         });
       } catch (err) {
-        console.error('Share letterhead could not be prepared; printing without it', err);
+        captureError(err, { scope: 'reports:letterhead', entity: 'reports' });
         return '';
       }
     };
@@ -1010,7 +1307,7 @@ export default function ReportsPage({
       legal,
       shareTemplateImage,
     }).catch((err: unknown) => {
-      console.error(`Could not build the report (${action}):`, err);
+      captureError(err, { scope: 'reports:pdf', operation: action, entity: 'reports' });
       toast.error('The report could not be prepared. Try again or use Download.');
       return null;
     });
@@ -1046,15 +1343,25 @@ export default function ReportsPage({
           filename,
           pdfBase64: pdfToBase64(doc),
           actor: operatorStamp(user),
+          actorUid: user?.uid ?? '',
+          actorRole: role ?? 'guest',
+          entityType: 'reports',
           recordId: report.id,
           recordVersion: Number(report.version) || 1,
         });
         return;
       }
       try {
-        await printPdf(doc, filename, { actor: operatorStamp(user), recordId: report.id, recordVersion: Number(report.version) || 1 });
+        await printPdf(doc, filename, {
+          actor: operatorStamp(user),
+          actorUid: user?.uid ?? '',
+          actorRole: role ?? 'guest',
+          entityType: 'reports' as const,
+          recordId: report.id,
+          recordVersion: Number(report.version) || 1,
+        });
       } catch (err) {
-        console.error('Error opening the print dialog:', err);
+        captureError(err, { scope: 'reports:print', operation: 'print', entity: 'reports' });
         toast.error('Could not open the print dialog. Use Download instead.');
       }
     } else if (action === 'preview') {
@@ -1063,12 +1370,19 @@ export default function ReportsPage({
       // an OEM reader), falling back to the print sheet only when the device
       // has no PDF-capable app at all.
       try {
-        const message = await previewPdf(doc, filename, { actor: operatorStamp(user), recordId: report.id, recordVersion: Number(report.version) || 1 });
+        const message = await previewPdf(doc, filename, {
+          actor: operatorStamp(user),
+          actorUid: user?.uid ?? '',
+          actorRole: role ?? 'guest',
+          entityType: 'reports' as const,
+          recordId: report.id,
+          recordVersion: Number(report.version) || 1,
+        });
         // Non-null only when the tab was refused — the file was downloaded then,
         // so this is a detour to report, not a failure.
         if (message) toast.warning(message);
       } catch (err) {
-        console.error('Error opening the report preview:', err);
+        captureError(err, { scope: 'reports:preview', operation: 'preview', entity: 'reports' });
         toast.error('Could not open the report preview. Use Download instead.');
       }
     } else if (action === 'share') {
@@ -1082,13 +1396,20 @@ export default function ReportsPage({
           filename,
           'Diagnostic Report',
           `Diagnostic report for ${patient?.name || report.patientName || 'the patient'}`,
-          { actor: operatorStamp(user), recordId: report.id, recordVersion: Number(report.version) || 1 },
+          {
+            actor: operatorStamp(user),
+            actorUid: user?.uid ?? '',
+            actorRole: role ?? 'guest',
+            entityType: 'reports' as const,
+            recordId: report.id,
+            recordVersion: Number(report.version) || 1,
+          },
         );
         // Non-null only for outcomes worth a word: saved-but-no-share-target, or
         // a browser that had to download instead. A dismissed sheet is null.
         if (message) toast.info(message);
       } catch (err) {
-        console.error('Error sharing the report:', err);
+        captureError(err, { scope: 'reports:share', operation: 'share', entity: 'reports' });
         toast.error('Could not share the report. Use Download instead.');
       }
     } else {
@@ -1096,7 +1417,14 @@ export default function ReportsPage({
       // the two error toasts above that tell the user to use it — so on device
       // the file goes through the Filesystem plugin and names where it landed.
       try {
-        const message = await savePdf(doc, filename, { actor: operatorStamp(user), recordId: report.id, recordVersion: Number(report.version) || 1 });
+        const message = await savePdf(doc, filename, {
+          actor: operatorStamp(user),
+          actorUid: user?.uid ?? '',
+          actorRole: role ?? 'guest',
+          entityType: 'reports' as const,
+          recordId: report.id,
+          recordVersion: Number(report.version) || 1,
+        });
         if (message) toast.success(message);
         // A toast is gone in three seconds and the operator is usually already
         // looking at the next screen, so on a device the same receipt is posted to
@@ -1112,7 +1440,7 @@ export default function ReportsPage({
           });
         }
       } catch (err) {
-        console.error('Error saving the report:', err);
+        captureError(err, { scope: 'reports:download', operation: 'download', entity: 'reports' });
         toast.error('Could not save the report to this device.');
       }
     }
@@ -1186,29 +1514,42 @@ export default function ReportsPage({
     const allReports = reportsList.allItems;
     const terms = deferredSearch.split(/\s+/).filter(Boolean);
     const exportRows = [
-      ...allReports.map((report): ListEntry => ({ ...report, itemType: 'report', timestamp: report.createdAt })),
+      ...allReports.map((report): ListEntry => ({
+        ...report,
+        itemType: 'report',
+        timestamp: report.createdAt,
+      })),
       ...patients
         .filter(patient => !allReports.some(report => report.patientId === patient.id))
-        .map((patient): ListEntry => ({ ...patient, itemType: 'patient', timestamp: patient.createdAt })),
-    ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).filter(item => {
-      if (terms.length > 0) {
-        const haystack = [
-          item.itemType === 'report' ? item.patientName : item.name || '',
-          item.id,
-          item.itemType === 'report' ? item.patientId : '',
-          'phone' in item ? (item.phone ?? '') : '',
-          'phone' in item ? normalisePhone(String(item.phone ?? '')) : '',
-          item.testType ?? '',
-          ...(item.testSelection ?? []),
-        ].filter(Boolean).join(' ').toLowerCase();
-        if (!terms.every(term => haystack.includes(term))) return false;
-      }
-      if (!item.createdAt) return true;
-      const day = toIsoDay(new Date(item.createdAt));
-      if (fromDate && day < fromDate) return false;
-      if (toDate && day > toDate) return false;
-      return true;
-    });
+        .map((patient): ListEntry => ({
+          ...patient,
+          itemType: 'patient',
+          timestamp: patient.createdAt,
+        })),
+    ]
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+      .filter(item => {
+        if (terms.length > 0) {
+          const haystack = [
+            item.itemType === 'report' ? item.patientName : item.name || '',
+            item.id,
+            item.itemType === 'report' ? item.patientId : '',
+            'phone' in item ? (item.phone ?? '') : '',
+            'phone' in item ? normalisePhone(String(item.phone ?? '')) : '',
+            item.testType ?? '',
+            ...(item.testSelection ?? []),
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase();
+          if (!terms.every(term => haystack.includes(term))) return false;
+        }
+        if (!item.createdAt) return true;
+        const day = toIsoDay(new Date(item.createdAt));
+        if (fromDate && day < fromDate) return false;
+        if (toDate && day > toDate) return false;
+        return true;
+      });
     if (exportRows.length === 0) {
       toast.warning('Nothing to export — widen the filter first.');
       return;
@@ -1233,12 +1574,15 @@ export default function ReportsPage({
     try {
       const message = await downloadCsv(`pathomitra-reports-${toIsoDay(new Date())}.csv`, csv, {
         actor: operatorStamp(user),
+        actorUid: user?.uid ?? '',
+        actorRole: role ?? 'guest',
+        entityType: 'exports' as const,
         rowCount: exportRows.length,
         filters: { fromDate, toDate },
       });
       toast.success(message ?? `Exported ${exportRows.length} records to CSV.`);
     } catch (err) {
-      console.error('Error writing the CSV export:', err);
+      captureError(err, { scope: 'reports:csv', operation: 'export', entity: 'reports' });
       toast.error('Could not write the CSV on this device.');
     }
   };
@@ -1696,6 +2040,7 @@ export default function ReportsPage({
         onClose={() => {
           setIsModalOpen(false);
           setNewReport({ patientId: '', testSelection: [], results: {} });
+          setNewDeltaReviewReason('');
           setPatientSearchQuery('');
           setTestSearchQuery('');
           setModalError(null);
@@ -1711,6 +2056,7 @@ export default function ReportsPage({
               onClick={() => {
                 setIsModalOpen(false);
                 setNewReport({ patientId: '', testSelection: [], results: {} });
+                setNewDeltaReviewReason('');
                 setPatientSearchQuery('');
                 setTestSearchQuery('');
                 setModalError(null);
@@ -1926,13 +2272,27 @@ export default function ReportsPage({
               )}
 
               {composerValidation.errors.length > 0 && (
-                <div role="alert" className="rounded-xl border border-error/30 bg-error-container p-3 text-xs text-on-error-container">
-                  {composerValidation.errors.slice(0, 4).map(item => <p key={item.test}><strong>{item.test}:</strong> {item.message}</p>)}
+                <div
+                  role="alert"
+                  className="rounded-xl border border-error/30 bg-error-container p-3 text-xs text-on-error-container"
+                >
+                  {composerValidation.errors.slice(0, 4).map(item => (
+                    <p key={item.test}>
+                      <strong>{item.test}:</strong> {item.message}
+                    </p>
+                  ))}
                 </div>
               )}
               {composerValidation.warnings.length > 0 && (
-                <div role="status" className="rounded-xl border border-outline-variant bg-surface-container p-3 text-xs text-on-surface-variant">
-                  {composerValidation.warnings.map(item => <p key={item.test}><strong>{item.test}:</strong> {item.message}</p>)}
+                <div
+                  role="status"
+                  className="rounded-xl border border-outline-variant bg-surface-container p-3 text-xs text-on-surface-variant"
+                >
+                  {composerValidation.warnings.map(item => (
+                    <p key={item.test}>
+                      <strong>{item.test}:</strong> {item.message}
+                    </p>
+                  ))}
                 </div>
               )}
               <Field
@@ -1940,11 +2300,23 @@ export default function ReportsPage({
                 hint="Required before issue and must be different from the issuing operator."
                 required
               >
-                <TextInput
-                  value={newReviewerName}
-                  onChange={event => setNewReviewerName(event.target.value)}
-                  placeholder="Reviewer name"
-                />
+                <select
+                  className="w-full rounded-xl border border-outline-variant/40 bg-surface px-3 py-2 text-sm text-on-surface"
+                  value={newReviewerUid}
+                  onChange={event => {
+                    const profile = reviewers.find(item => item.uid === event.target.value);
+                    setNewReviewerUid(event.target.value);
+                    setNewReviewerName(profile?.name ?? '');
+                  }}
+                  required
+                >
+                  <option value="">Select an independent pathologist</option>
+                  {reviewers.map(profile => (
+                    <option key={profile.uid} value={profile.uid}>
+                      {profile.name}
+                    </option>
+                  ))}
+                </select>
               </Field>
               {composerValidation.warnings.some(item => item.critical) && (
                 <Field
@@ -1956,6 +2328,19 @@ export default function ReportsPage({
                     value={newCriticalReviewReason}
                     onChange={event => setNewCriticalReviewReason(event.target.value)}
                     placeholder="Required before issue"
+                  />
+                </Field>
+              )}
+              {composerValidation.warnings.some(item => isDeltaWarning(item.message)) && (
+                <Field
+                  label="Delta review reason"
+                  hint="Required when a result changed materially from the previous issued report."
+                  required
+                >
+                  <TextInput
+                    value={newDeltaReviewReason}
+                    onChange={event => setNewDeltaReviewReason(event.target.value)}
+                    placeholder="Why is the material change clinically expected?"
                   />
                 </Field>
               )}
@@ -2338,19 +2723,34 @@ export default function ReportsPage({
         {selectedReport && (
           <div className="space-y-6">
             {recoveredDraft && (
-              <div role="status" className="rounded-xl border border-warning/40 bg-warning-container/40 p-3 text-xs text-on-surface">
+              <div
+                role="status"
+                className="rounded-xl border border-warning/40 bg-warning-container/40 p-3 text-xs text-on-surface"
+              >
                 <p>
-                  {editorBase && recoveredDraft.baseVersion === (editorBase.version ?? 1) &&
+                  {editorBase &&
+                  recoveredDraft.baseVersion === (editorBase.version ?? 1) &&
                   (recoveredDraft.baseUpdatedAt ?? '') === (editorBase.updatedAt ?? '')
-                    ? `Unsaved result edits from ${new Date(recoveredDraft.savedAt).toLocaleString()} are available.`
+                    ? `Unsaved report edits from ${new Date(recoveredDraft.savedAt).toLocaleString()} are available.`
                     : 'A newer saved report exists. Older unsaved edits were found but were not applied.'}
                 </p>
                 <div className="mt-2 flex gap-2">
                   <Button
                     size="sm"
-                    disabled={!!editorBase && (recoveredDraft.baseVersion !== (editorBase.version ?? 1) || (recoveredDraft.baseUpdatedAt ?? '') !== (editorBase.updatedAt ?? ''))}
+                    disabled={
+                      !!editorBase &&
+                      (recoveredDraft.baseVersion !== (editorBase.version ?? 1) ||
+                        (recoveredDraft.baseUpdatedAt ?? '') !== (editorBase.updatedAt ?? ''))
+                    }
                     onClick={() => {
-                      setSelectedReport(current => current ? { ...current, resultData: recoveredDraft.resultData } : current);
+                      setSelectedReport(current =>
+                        current ? { ...current, resultData: recoveredDraft.resultData } : current,
+                      );
+                      setReviewerUid(recoveredDraft.reviewer?.uid ?? '');
+                      setReviewerName(recoveredDraft.reviewer?.name ?? '');
+                      setCriticalReviewReason(recoveredDraft.criticalReviewReason ?? '');
+                      setAmendReason(recoveredDraft.amendReason ?? '');
+                      setDeltaReviewReason(recoveredDraft.deltaReviewReason ?? '');
                       setRecoveredDraft(null);
                     }}
                   >
@@ -2371,10 +2771,19 @@ export default function ReportsPage({
               </div>
             )}
             {!recoveredDraft && draftSaveState !== 'idle' && (
-              <p role="status" className={cn('text-xs', draftSaveState === 'error' ? 'text-error' : 'text-on-surface-variant')}>
-                {draftSaveState === 'saving' && 'Saving unsaved result edits in encrypted local storage…'}
-                {draftSaveState === 'saved' && `Unsaved edits saved locally at ${new Date(draftSavedAt).toLocaleTimeString()}.`}
-                {draftSaveState === 'error' && 'Unsaved edits could not be saved locally. Keep this sheet open and use Save.'}
+              <p
+                role="status"
+                className={cn(
+                  'text-xs',
+                  draftSaveState === 'error' ? 'text-error' : 'text-on-surface-variant',
+                )}
+              >
+                {draftSaveState === 'saving' &&
+                  'Saving unsaved report edits in encrypted local storage…'}
+                {draftSaveState === 'saved' &&
+                  `Unsaved edits saved locally at ${new Date(draftSavedAt).toLocaleTimeString()}.`}
+                {draftSaveState === 'error' &&
+                  'Unsaved edits could not be saved locally. Keep this sheet open and use Save.'}
               </p>
             )}
             <div>
@@ -2431,22 +2840,48 @@ export default function ReportsPage({
                     hint="Required before issue or amendment and must be different from the issuing operator."
                     required
                   >
-                    <TextInput
-                      value={reviewerName}
-                      onChange={event => setReviewerName(event.target.value)}
-                      placeholder="Reviewer name"
-                    />
+                    <select
+                      className="w-full rounded-xl border border-outline-variant/40 bg-surface px-3 py-2 text-sm text-on-surface"
+                      value={reviewerUid}
+                      onChange={event => {
+                        const profile = reviewers.find(item => item.uid === event.target.value);
+                        setReviewerUid(event.target.value);
+                        setReviewerName(profile?.name ?? '');
+                      }}
+                      required
+                    >
+                      <option value="">Select an independent pathologist</option>
+                      {reviewers.map(profile => (
+                        <option key={profile.uid} value={profile.uid}>
+                          {profile.name}
+                        </option>
+                      ))}
+                    </select>
                   </Field>
-                  {selectedValidation && selectedValidation.warnings.some(item => item.critical) && (
+                  {selectedValidation &&
+                    selectedValidation.warnings.some(item => item.critical) && (
+                      <Field
+                        label="Clinical review reason for critical result"
+                        hint="Required before issue or amendment; retained with operator and timestamp."
+                        required
+                      >
+                        <TextInput
+                          value={criticalReviewReason}
+                          onChange={event => setCriticalReviewReason(event.target.value)}
+                          placeholder="Required before issue or amendment"
+                        />
+                      </Field>
+                    )}
+                  {selectedValidation?.warnings.some(item => isDeltaWarning(item.message)) && (
                     <Field
-                      label="Clinical review reason for critical result"
-                      hint="Required before issue or amendment; retained with operator and timestamp."
+                      label="Delta review reason"
+                      hint="Required when a result changed materially from the previous issued report."
                       required
                     >
                       <TextInput
-                        value={criticalReviewReason}
-                        onChange={event => setCriticalReviewReason(event.target.value)}
-                        placeholder="Required before issue or amendment"
+                        value={deltaReviewReason}
+                        onChange={event => setDeltaReviewReason(event.target.value)}
+                        placeholder="Why is the material change clinically expected?"
                       />
                     </Field>
                   )}

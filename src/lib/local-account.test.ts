@@ -17,8 +17,15 @@ vi.mock('./secure-store', () => ({
   },
 }));
 
-const { createAccount, createAccountWithRecovery, recoverAccountPassword, verifyAccountPassword, getAccount, changePassword, MAX_FREE_ATTEMPTS } =
-  await import('./local-account');
+const {
+  createAccount,
+  createAccountWithRecovery,
+  recoverAccountPassword,
+  verifyAccountPassword,
+  getAccount,
+  changePassword,
+  MAX_FREE_ATTEMPTS,
+} = await import('./local-account');
 
 type UnlockResult = Awaited<ReturnType<typeof verifyAccountPassword>>;
 
@@ -152,15 +159,23 @@ describe('createAccount existence invariant', () => {
  * forced a caller to.
  */
 describe('offline recovery', () => {
-  beforeEach(() => { store.clear(); });
+  beforeEach(() => {
+    store.clear();
+  });
 
   it('resets the administrator passcode without replacing the account or data', async () => {
     const { account, recoveryKey } = await createAccountWithRecovery('Dr Test', '4417', false);
     await expect(recoverAccountPassword('WRONG-KEY', '9012')).rejects.toThrow(/incorrect/);
-    await recoverAccountPassword(recoveryKey, '9012');
+    const replacementKey = await recoverAccountPassword(recoveryKey, '9012');
     expect((await getAccount())?.createdAt).toBe(account.createdAt);
     expect((await verifyAccountPassword('9012')).ok).toBe(true);
     expect(JSON.stringify([...store.values()])).not.toContain(recoveryKey);
+    expect(JSON.stringify([...store.values()])).not.toContain(replacementKey);
+    await expect(recoverAccountPassword(recoveryKey, '1122')).rejects.toThrow(/incorrect/);
+    await expect(recoverAccountPassword(replacementKey, '1122')).resolves.toEqual(
+      expect.any(String),
+    );
+    expect((await verifyAccountPassword('1122')).ok).toBe(true);
   });
 });
 

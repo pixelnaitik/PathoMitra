@@ -10,6 +10,8 @@ import {
   mapPermission,
   pickBackend,
   showBanner,
+  scheduleAlertReminder,
+  cancelAlertReminder,
 } from './desktop-notifications';
 
 /**
@@ -47,6 +49,13 @@ describe('desktop-notifications backend selection', () => {
     await expect(showBanner({ key: 'overdue:p1', title: 'T', body: 'B' })).resolves.toBe(false);
   });
 
+  it('does not schedule per-alert reminders outside the native shell', async () => {
+    await expect(scheduleAlertReminder({ key: 'overdue:p1', title: 'T', body: 'B' })).resolves.toBe(
+      false,
+    );
+    await expect(cancelAlertReminder('overdue:p1')).resolves.toBeUndefined();
+  });
+
   it('ignores a dismiss for a banner that never existed', async () => {
     await expect(dismissBanner('overdue:p1')).resolves.toBeUndefined();
   });
@@ -82,7 +91,11 @@ describe('desktop-notifications backend selection', () => {
 describe('daily reminder', () => {
   it('is daily, inexact, and contains no patient identifier', () => {
     const spec = dailyReminderSpec();
-    expect(spec).toMatchObject({ every: 'day', isExactNotification: false, on: { hour: 8, minute: 0 } });
+    expect(spec).toMatchObject({
+      every: 'day',
+      isExactNotification: false,
+      on: { hour: 8, minute: 0 },
+    });
     expect(`${spec.title} ${spec.body}`).not.toMatch(/patient|2611|IN26|ACC-/i);
   });
 });

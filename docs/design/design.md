@@ -83,7 +83,7 @@ Single family, two roles — technical and legible, no display font.
 
 - **Shell:** `src/pages/dashboard/DashboardLayout.tsx` owns navigation and the
   content frame. There is no separate `Sidebar.tsx`. At `fold:` and up the rail is persistent; on a phone the
-  navigation is a **4-item bottom pill** (Overview · Patients · Bills · Reports) with the drawer reached from
+  navigation is a **4-item bottom pill** (Overview · Patients · Reports · Bills) with the drawer reached from
   the header — Settings is deliberately _not_ a fifth pill item (a fifth entry wrapped onto a second row inside
   the `grid-cols-4` `overflow-hidden` pill; fixed in 2.7.1). If a fifth tab is ever added, `grid-cols-4` moves
   with it.
@@ -130,10 +130,10 @@ not re-implement a control that already exists there.
 | `Switch`, `Disclosure`, `Tooltip`                               | Binary settings, progressive disclosure, hover hints.        |
 | `ToastProvider`, `useToast`                                     | Non-blocking success/failure feedback.                       |
 
-**List filtering:** pages that list Firestore documents share
-`hooks/useCollectionList` (cursor-paginated, live first page, server-side
-`where()` filters) and format `createdAt` with `lib/date-range` + `toIsoDay`.
-Use those instead of hand-rolled filtering so date boundaries cannot drift.
+**List filtering:** collection pages share `hooks/useCollectionList` and the local
+`src/data/` repository contract. Reads may use indexed/paged repository options where
+available; full-collection materialization is not the default. Format `createdAt` with
+`lib/date-range` + `toIsoDay` so date boundaries cannot drift.
 
 ## 6. UX engineering
 
@@ -149,7 +149,12 @@ Use those instead of hand-rolled filtering so date boundaries cannot drift.
   banner — degraded-connectivity messaging was removed with `ConnectionBanner`.
 - **Errors:** `ErrorBoundary` is scoped per dashboard tab, so one broken page
   cannot take the shell down. `handleFirestoreError` turns SDK codes into
-  lab-staff-readable sentences.
+  lab-staff-readable sentences. Failed patient, billing, doctor, analytics, and
+  notification reads have distinct retryable/partial states; an empty list or
+  zero balance is never presented as proof when a source failed.
+- **Truthful continuity:** backup health uses verified off-device copy state,
+  restore drills record observed RTO/RPO and reconciled counts, and notification
+  queries disclose every reached ceiling.
 
 ## 7. Accessibility
 
@@ -168,6 +173,8 @@ Use those instead of hand-rolled filtering so date boundaries cannot drift.
 - **Motion:** `MotionConfig reducedMotion="user"` plus the CSS
   `prefers-reduced-motion` block in `index.css`. Respect both when adding motion.
 - **Touch:** primary controls target ≥ 44 px (`h-11`/`h-12`).
+- **Automated evidence:** `npm run test:a11y` runs axe over the public site, synthetic onboarding, dashboard, analytics table alternatives, and settings, plus keyboard, 360 px, 200% zoom, reduced-motion, and all-palette contrast checks. Automation is evidence, not WCAG certification.
+- **External release gate:** before shipping, record a manual Windows Narrator and Android TalkBack pass on a synthetic account covering onboarding/unlock, search, patient registration, report entry/review/issuance, billing, settings, modal focus/Escape, error recovery, 200% zoom, and high contrast. Record build, OS/device, date, tester, and results; unavailable device checks remain Unverified in the audit.
 
 ## 8. Animation & motion design
 
@@ -196,14 +203,39 @@ The generated report follows its own printable rules, shared with the live A4
 preview through `src/lib/report-layout.ts` (geometry, clamping, printable area,
 column widths, QR position) so **the preview cannot disagree with the PDF**:
 
-- **Font:** `helvetica` — always available in PDF readers, no embedding.
+- **Font:** ordinary Latin cells use standard Helvetica; Unicode data uses embedded, subsetted Noto Sans families for Devanagari, Bengali, Gujarati, Gurmukhi, Oriya, Tamil, Telugu, Kannada, Malayalam, Arabic, Hebrew, Greek, Cyrillic, currency, and math symbols. Unsupported scripts and irreconcilable mixed-script fields fail closed instead of printing mojibake. Regenerate subsets with `scripts/subset-pdf-fonts.py` when coverage changes.
 - **Page:** A4, 210 × 297 mm; margins come from the lab's saved layout settings
   with `getPrintableArea()` validating them (`RECOMMENDED_LAYOUT_DEFAULTS` is
   what "Reset to recommended" restores).
 - **Colour:** near-grayscale for results, muted brand dark for headings — chosen
   for printer economy and contrast, not for screen.
 - **Hierarchy:** patient metadata anchors the top of every page; tests are
-  grouped by `isGroup` so the paper mirrors the screen.
+  grouped by `isGroup` so the paper mirrors the screen. Category and panel bands
+  are detected and moved with their first result when a pass would orphan them.
+- **Output audit:** print, preview, download, share, and CSV export append an
+  immutable event containing actor uid/role, entity type, content hash, actual
+  destination when exposed, and completed/cancelled/failed outcome.
+- **Desktop printing:** selected pages stream one at a time to private main-process
+  staging, then are removed after the spooler finishes. Renderer and main enforce
+  the same page, pixel, byte, and 1–20 copy limits.
+- **Visual regression:** `npm run test:pdf` maintains platform-neutral page-image
+  fixtures for long Indic names, currency/math, legacy caveats, amendments, and
+  multi-page pagination.
 - **Templates:** `modern`, `classic`, `minimalist`, and `blank` (for
   pre-printed letterheads, which deliberately omits drawn header graphics so
   nothing overlaps the stationery).
+
+## 10. Continuity and recovery
+
+- Android and Windows Desktop are the clinical platforms; production Web/PWA is
+  marketing-only.
+- Backups are encrypted with AES-256-GCM and copied only to operator-selected
+  local destinations. No server sync exists.
+- Every restore writes and verifies a durable pre-restore safety snapshot before
+  applying data. Rollback status is surfaced rather than assumed.
+- The runbook targets are RPO one shift (8 hours) and RTO one working day (24
+  hours). Successful drills record observed snapshot age, restore duration,
+  reconciled record count, and source snapshot; these are measurements, not
+  compliance claims.
+- Physical-device restore, printer, biometric, Narrator, and TalkBack checks stay
+  external release gates until runtime evidence is recorded.

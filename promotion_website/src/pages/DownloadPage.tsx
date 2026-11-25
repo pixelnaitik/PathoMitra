@@ -22,7 +22,11 @@ const PLATFORMS = [
     key: 'android' as const,
     icon: Smartphone,
     title: 'Android app',
-    requirements: ['Android 9 and up (API 28+)', 'Phone, tablet or bench workstation', 'No INTERNET permission — the app cannot send data out'],
+    requirements: [
+      'Android 9 and up (API 28+)',
+      'Phone, tablet or bench workstation',
+      'No INTERNET permission — the app cannot send data out',
+    ],
     blurb:
       'The full console in your pocket: registration, results, report issuing, billing and analytics on an encrypted on-device database.',
   },
@@ -30,7 +34,11 @@ const PLATFORMS = [
     key: 'windows' as const,
     icon: Monitor,
     title: 'Windows desktop',
-    requirements: ['Windows 10 or 11, 64-bit', 'Installs per machine — no server, no admin domain setup', 'Records live in an AES-256 encrypted local database'],
+    requirements: [
+      'Windows 10 or 11, 64-bit',
+      'Installs per machine — no server, no admin domain setup',
+      'Records live in an AES-256 encrypted local database',
+    ],
     blurb:
       'The same console as a native desktop app for the counter PC — print, export and back up without a browser tab.',
   },
@@ -58,7 +66,11 @@ export default function DownloadPage() {
                     key={platform}
                     initial={{ opacity: 0, y: 18, scale: 0.96 }}
                     animate={{ opacity: 1, y: 0, scale: 1 }}
-                    transition={{ delay: 0.1 + i * 0.12, duration: 0.5, ease: [0.34, 1.56, 0.64, 1] }}
+                    transition={{
+                      delay: 0.1 + i * 0.12,
+                      duration: 0.5,
+                      ease: [0.34, 1.56, 0.64, 1],
+                    }}
                   >
                     <StoreBadge platform={platform} size="lg" />
                   </motion.div>
@@ -87,7 +99,10 @@ export default function DownloadPage() {
                           {live ? (
                             <CircleCheck className="h-3.5 w-3.5" aria-hidden="true" />
                           ) : (
-                            <CircleDashed className="h-3.5 w-3.5 animate-spin [animation-duration:4s]" aria-hidden="true" />
+                            <CircleDashed
+                              className="h-3.5 w-3.5 animate-spin [animation-duration:4s]"
+                              aria-hidden="true"
+                            />
                           )}
                           {live ? 'Available now' : 'Publication in progress'}
                         </span>
@@ -100,8 +115,14 @@ export default function DownloadPage() {
                       </p>
                       <ul className="mt-5 space-y-2.5">
                         {p.requirements.map(req => (
-                          <li key={req} className="flex items-start gap-2.5 text-sm text-on-surface-variant">
-                            <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-secondary" aria-hidden="true" />
+                          <li
+                            key={req}
+                            className="flex items-start gap-2.5 text-sm text-on-surface-variant"
+                          >
+                            <span
+                              className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-secondary"
+                              aria-hidden="true"
+                            />
                             {req}
                           </li>
                         ))}

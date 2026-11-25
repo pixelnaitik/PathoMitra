@@ -8,9 +8,8 @@
   Strict-Transport-Security: max-age=31536000; includeSubDomains
   # Same-origin only: the product is local-first with no backend, so the previous
   # Firebase / Google-font / remote-avatar allowances were dead origins and are gone.
-  # 'unsafe-inline' stays for script/style because index.html carries the pre-paint
-  # theme bootstrap and the splash animation inline.
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; worker-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'
+  # Bootstrap scripts are hash-pinned; inline style attributes are scoped separately.
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'sha256-JWr2BYiQ1CMBig6sXW4VjkJZYi+OQkIhFcu9uS50VKI=' 'sha256-AMWReOJdxU3plZP6FC7yv6h/jKP18fsKvABE2smKNd4=' 'sha256-iQwCSV9lPbz3+de/OT2rhp9buGTCWwWGUYBri7vdJg4='; style-src 'self'; style-src-attr 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; worker-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'
 
 # Static hashed assets (JS, CSS) — cache for 1 year, immutable
 /assets/*

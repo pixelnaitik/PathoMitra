@@ -32,7 +32,11 @@ export const RENDERER_CREDENTIAL_PREFIX = 'pathlab_';
  * name them, even if they were to (improperly) carry the prefix. Checked first
  * so an explicit deny survives any future loosening of the prefix rule.
  */
-export const MAIN_ONLY_CREDENTIAL_ACCOUNTS: readonly string[] = ['db-key'];
+export const MAIN_ONLY_CREDENTIAL_ACCOUNTS: readonly string[] = [
+  'db-key',
+  'report-signing-private-v2',
+  'report-signing-registry-v2',
+];
 
 /**
  * True when `account` is one the renderer may read / write / delete. A single

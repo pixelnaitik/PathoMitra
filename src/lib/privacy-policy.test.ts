@@ -47,11 +47,26 @@ describe('isPlaceholderAuthority — reserved and placeholder hosts', () => {
 describe('privacy policy content', () => {
   const body = PRIVACY_SECTIONS.flatMap(s => s.body).join(' ');
 
-  it('says the settings/custom-test store is not inside the encrypted database', () => {
-    // "All records are kept in SQLCipher" was an overstatement: settings, custom
-    // tests and notification read-state live in localStorage (lib/settings.ts).
-    expect(body).toMatch(/not AES-256 encrypted/);
-    expect(body).not.toMatch(/^All records are kept/);
+  it('describes the secure settings mirror and bounded recovery journal', () => {
+    expect(body).toMatch(/mirrored through the platform secure-store mechanism/);
+    expect(body).toMatch(/bounded localStorage journal/);
+    expect(body).toMatch(/Clinical records remain in SQLCipher/);
+  });
+
+  it('describes multiple operators, Windows Hello and the production web block', () => {
+    expect(body).toMatch(/up to 21 local operator accounts/);
+    expect(body).toMatch(/Windows Hello\/WebAuthn/);
+    expect(body).toMatch(/production browser build is marketing-only/);
+    expect(body).toMatch(/legacy pathlab:\* data/);
+  });
+
+  it('does not promise silent deletion of issued clinical or financial history', () => {
+    expect(body).toMatch(
+      /issued reports, retained versions, payments and audit history are protected/,
+    );
+    expect(body).not.toMatch(
+      /Individual patients, reports and invoices can also be deleted separately/,
+    );
   });
 
   it('discloses banner-only alert delivery, with no compose hand-off left', () => {
@@ -104,7 +119,7 @@ describe('privacy policy content', () => {
     expect(body).toMatch(/DPAPI/);
     expect(body).toMatch(/%APPDATA%\\PathoMitra/);
     expect(body).toMatch(/any process running as your user/);
-    expect(body).toMatch(/does not encrypt at all/);
+    expect(body).toMatch(/Browser storage is not an approved location for patient data/);
     // The hardware-backed sentence may survive only as the recorded correction.
     expect(body).not.toMatch(/stored in the Android keystore, which is backed by hardware/);
     expect(body.match(/hardware-backed/g) ?? []).toHaveLength(2);
@@ -149,7 +164,9 @@ describe('terms of use describe the real build', () => {
     // docs/play-listing.md bans these words in listing text for the same reason:
     // claiming an accreditation the product does not have is an Impersonation
     // violation, and here the app is at least honest about not having it.
-    expect(terms).toMatch(/not HIPAA-compliant, NABL-accredited, ISO-certified, CE-marked or SOC 2 audited/);
+    expect(terms).toMatch(
+      /not HIPAA-compliant, NABL-accredited, ISO-certified, CE-marked or SOC 2 audited/,
+    );
   });
 });
 
@@ -168,6 +185,9 @@ describe('hosted policy agrees with the in-app policy on the load-bearing facts'
     ['the no-tracker claim', /no advertising, analytics|advertising, analytics, crash-reporting/i],
     ['the no-dangerous-permission claim', /no camera, microphone, location/i],
     ['the deletion-in-app claim', /Erase all data|erase all data/i],
+    ['the multi-operator claim', /up to 21 local operator accounts/i],
+    ['the Windows Hello claim', /Windows Hello\/WebAuthn/i],
+    ['the production web block', /production browser build is marketing-only/i],
   ])('both documents state %s', (label, pattern) => {
     expect(inApp, `in-app policy: ${label}`).toMatch(pattern);
     expect(hosted, `hosted policy: ${label}`).toMatch(pattern);
@@ -181,7 +201,9 @@ describe('hosted policy agrees with the in-app policy on the load-bearing facts'
       ['in-app', inApp],
       ['hosted', hosted],
     ] as const) {
-      expect(text, name).not.toMatch(/cloud sync|synced automatically|sync(?:s|ed)? to (?:a )?server|access from anywhere|remote backup|remote access/i);
+      expect(text, name).not.toMatch(
+        /cloud sync|synced automatically|sync(?:s|ed)? to (?:a )?server|access from anywhere|remote backup|remote access/i,
+      );
     }
   });
 });

@@ -118,8 +118,8 @@ describe('nothing on the printed page runs into anything else', () => {
       source.indexOf('function itemCells'),
     );
     expect(grid.length).toBeGreaterThan(0);
-    expect(grid).toMatch(/splitTextToSize\(valueA, cellWidth\)/);
-    expect(grid).toMatch(/splitTextToSize\(valueB, cellWidth\)/);
+    expect(grid).toMatch(/splitTextToSize\(pdfText\(valueA\), cellWidth\)/);
+    expect(grid).toMatch(/splitTextToSize\(pdfText\(valueB\), cellWidth\)/);
     // The row has to grow with the wrapped value, or the next label prints on top
     // of the second line.
     expect(grid).toMatch(/Math\.max\(linesA\.length, linesB\.length, 1\)/);
@@ -127,20 +127,19 @@ describe('nothing on the printed page runs into anything else', () => {
 });
 
 describe('pdfMoney', () => {
-  it('writes the rupee as "Rs." because the built-in font cannot draw ₹', () => {
-    expect(pdfMoney(400)).toBe('Rs. 400');
-    expect(pdfMoney(400)).not.toContain('₹');
+  it('preserves the rupee glyph through the embedded Unicode font', () => {
+    expect(pdfMoney(400)).toBe('₹ 400');
   });
 
   it('groups Indian digits and keeps paise only when there are some', () => {
-    expect(pdfMoney(12500)).toBe('Rs. 12,500');
-    expect(pdfMoney(150000)).toBe('Rs. 1,50,000');
-    expect(pdfMoney(1234.5)).toBe('Rs. 1,234.50');
+    expect(pdfMoney(12500)).toBe('₹ 12,500');
+    expect(pdfMoney(150000)).toBe('₹ 1,50,000');
+    expect(pdfMoney(1234.5)).toBe('₹ 1,234.50');
   });
 
   it('prints a non-finite amount as zero rather than NaN', () => {
-    expect(pdfMoney(Number.NaN)).toBe('Rs. 0');
-    expect(pdfMoney(Infinity)).toBe('Rs. 0');
+    expect(pdfMoney(Number.NaN)).toBe('₹ 0');
+    expect(pdfMoney(Infinity)).toBe('₹ 0');
   });
 });
 

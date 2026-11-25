@@ -107,10 +107,13 @@ function WebStorageNotice({ children }: { children: ReactNode }) {
           <ShieldAlert className="mx-auto mb-4 h-10 w-10 text-error" aria-hidden="true" />
           <h2 className="text-2xl font-bold">Clinical workspace is disabled on the web</h2>
           <p className="mt-3 text-sm leading-relaxed text-on-surface-variant">
-            The production browser build cannot protect patient records at rest. Use the Android or Windows app
-            for clinical data; this website provides product information only.
+            The production browser build cannot protect patient records at rest. Use the Android or
+            Windows app for clinical data; this website provides product information only.
           </p>
-          <a href="/" className="mt-6 inline-flex h-12 w-full items-center justify-center rounded-full bg-primary px-6 text-sm font-bold text-on-primary">
+          <a
+            href="/"
+            className="mt-6 inline-flex h-12 w-full items-center justify-center rounded-full bg-primary px-6 text-sm font-bold text-on-primary"
+          >
             Return to the website
           </a>
         </div>
@@ -212,18 +215,38 @@ function FeaturePanel() {
       <h1 className="text-[34px] font-extrabold leading-[1.05] tracking-[-0.03em] text-on-surface sm:text-[40px] lg:text-[44px] xl:text-[52px]">
         Your lab.
         <br />
-        <span className="text-secondary">{isShell ? 'Offline and encrypted.' : 'Local demo workspace.'}</span>
+        <span className="text-secondary">
+          {isShell ? 'Offline and encrypted.' : 'Local demo workspace.'}
+        </span>
       </h1>
       <p className="mt-5 max-w-md text-[15px] font-medium leading-relaxed text-on-surface-variant">
         Protect patient records, ensure data security and keep your lab workflows running smoothly
         with PathoMitra.
       </p>
       <ul className="mt-9 space-y-6">
-        {(isShell ? FEATURES : [
-          { icon: ShieldAlert, tint: 'bg-error/10 text-error', title: 'Demo data only', body: 'Browser records are readable and are not encrypted.' },
-          { icon: Lock, tint: 'bg-primary/10 text-primary', title: 'No cloud account', body: 'Nothing is transmitted by the application itself.' },
-          { icon: BarChart3, tint: 'bg-accent/10 text-accent', title: 'Workflow preview', body: 'Explore the interface without real patient information.' },
-        ]).map(feature => (
+        {(isShell
+          ? FEATURES
+          : [
+              {
+                icon: ShieldAlert,
+                tint: 'bg-error/10 text-error',
+                title: 'Demo data only',
+                body: 'Browser records are readable and are not encrypted.',
+              },
+              {
+                icon: Lock,
+                tint: 'bg-primary/10 text-primary',
+                title: 'No cloud account',
+                body: 'Nothing is transmitted by the application itself.',
+              },
+              {
+                icon: BarChart3,
+                tint: 'bg-accent/10 text-accent',
+                title: 'Workflow preview',
+                body: 'Explore the interface without real patient information.',
+              },
+            ]
+        ).map(feature => (
           <li key={feature.title} className="flex items-start gap-4">
             <span
               className={cn(
@@ -523,17 +546,25 @@ function CreateAccountForm() {
       <Shell>
         <div className="text-center">
           <ShieldCheck className="mx-auto mb-4 h-10 w-10 text-secondary" aria-hidden="true" />
-          <h2 className="text-[28px] font-bold tracking-[-0.03em] text-on-surface">Save your recovery key</h2>
+          <h2 className="text-[28px] font-bold tracking-[-0.03em] text-on-surface">
+            Save your recovery key
+          </h2>
           <p className="mt-2 text-sm leading-relaxed text-on-surface-variant">
-            This one-time key resets the administrator passcode without deleting patient records. Store it offline, separate from this device.
+            This one-time key resets the administrator passcode without deleting patient records.
+            Store it offline, separate from this device.
           </p>
         </div>
         <div className="my-6 rounded-2xl border border-outline-variant/60 bg-surface p-4">
-          <code className="block break-all text-center text-lg font-bold tracking-wide text-on-surface">{recoveryKey}</code>
+          <code className="block break-all text-center text-lg font-bold tracking-wide text-on-surface">
+            {recoveryKey}
+          </code>
           <button
             type="button"
             onClick={() => {
-              void navigator.clipboard?.writeText(recoveryKey).then(() => setCopied(true)).catch(() => setCopied(false));
+              void navigator.clipboard
+                ?.writeText(recoveryKey)
+                .then(() => setCopied(true))
+                .catch(() => setCopied(false));
             }}
             className="mt-4 h-11 w-full rounded-full bg-surface-container-high text-sm font-semibold text-on-surface"
           >
@@ -541,7 +572,12 @@ function CreateAccountForm() {
           </button>
         </div>
         <label className="flex min-h-12 items-start gap-3 text-sm text-on-surface">
-          <input type="checkbox" checked={recoverySaved} onChange={event => setRecoverySaved(event.target.checked)} className="mt-1 h-5 w-5 shrink-0" />
+          <input
+            type="checkbox"
+            checked={recoverySaved}
+            onChange={event => setRecoverySaved(event.target.checked)}
+            className="mt-1 h-5 w-5 shrink-0"
+          />
           I stored the recovery key in a safe offline location.
         </label>
         <button
@@ -689,43 +725,108 @@ function RecoveryForm({ onCancel }: { onCancel: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const [replacementKey, setReplacementKey] = useState('');
   const submit = async () => {
     setError(null);
-    if (!isValidPasscode(password)) { setError(PIN_ERROR); return; }
-    if (password !== confirm) { setError('Passcodes do not match.'); return; }
+    if (!isValidPasscode(password)) {
+      setError(PIN_ERROR);
+      return;
+    }
+    if (password !== confirm) {
+      setError('Passcodes do not match.');
+      return;
+    }
     setBusy(true);
     try {
-      await recoverPassword(key, password);
+      setReplacementKey(await recoverPassword(key, password));
       setDone(true);
     } catch (cause) {
       setError((cause as Error).message || 'Recovery failed.');
-    } finally { setBusy(false); }
+    } finally {
+      setBusy(false);
+    }
   };
   return (
     <>
       <div className="mb-6 text-center">
-        <h2 className="text-[28px] font-bold tracking-[-0.03em] text-on-surface">Recover administrator access</h2>
-        <p className="mt-2 text-sm text-on-surface-variant">The clinical database is not deleted or replaced.</p>
+        <h2 className="text-[28px] font-bold tracking-[-0.03em] text-on-surface">
+          Recover administrator access
+        </h2>
+        <p className="mt-2 text-sm text-on-surface-variant">
+          The clinical database is not deleted or replaced.
+        </p>
       </div>
       <ErrorNote message={error} />
       {done ? (
-        <div role="status" className="rounded-2xl bg-secondary/10 p-4 text-sm font-semibold text-secondary">
-          Passcode reset. Return to sign in with the new passcode.
+        <div
+          role="status"
+          className="space-y-3 rounded-2xl bg-secondary/10 p-4 text-sm text-secondary"
+        >
+          <p className="font-semibold">Passcode reset. The used recovery key is now invalid.</p>
+          <label htmlFor="replacement-recovery-key" className="block text-xs font-bold">
+            New one-time recovery key
+          </label>
+          <input
+            id="replacement-recovery-key"
+            readOnly
+            value={replacementKey}
+            onFocus={event => event.currentTarget.select()}
+            className="w-full rounded-xl border border-secondary/30 bg-surface p-3 font-mono text-sm text-on-surface"
+          />
+          <p className="text-xs">
+            Store this key securely. It is shown only now and replaces the key you just used.
+          </p>
         </div>
       ) : (
         <div className="space-y-4">
           <div>
             <FieldLabel htmlFor="recovery-key">Recovery key</FieldLabel>
-            <input id="recovery-key" value={key} onChange={event => setKey(event.target.value)} className={inputClass} autoComplete="off" />
+            <input
+              id="recovery-key"
+              value={key}
+              onChange={event => setKey(event.target.value)}
+              className={inputClass}
+              autoComplete="off"
+            />
           </div>
-          <PasswordField id="recovery-new-passcode" label="New passcode" value={password} onChange={setPassword} placeholder="Create a new passcode" autoComplete="new-password" mode="letters" maxLength={MAX_PIN_LENGTH} />
-          <PasswordField id="recovery-confirm-passcode" label="Confirm new passcode" value={confirm} onChange={setConfirm} placeholder="Re-enter it" autoComplete="new-password" mode="letters" maxLength={MAX_PIN_LENGTH} onEnter={submit} />
-          <button type="button" onClick={submit} disabled={busy || !key || !isValidPasscode(password)} className="h-12 w-full rounded-full bg-primary text-sm font-bold text-on-primary disabled:opacity-50">
+          <PasswordField
+            id="recovery-new-passcode"
+            label="New passcode"
+            value={password}
+            onChange={setPassword}
+            placeholder="Create a new passcode"
+            autoComplete="new-password"
+            mode="letters"
+            maxLength={MAX_PIN_LENGTH}
+          />
+          <PasswordField
+            id="recovery-confirm-passcode"
+            label="Confirm new passcode"
+            value={confirm}
+            onChange={setConfirm}
+            placeholder="Re-enter it"
+            autoComplete="new-password"
+            mode="letters"
+            maxLength={MAX_PIN_LENGTH}
+            onEnter={submit}
+          />
+          <button
+            type="button"
+            onClick={submit}
+            disabled={busy || !key || !isValidPasscode(password)}
+            className="h-12 w-full rounded-full bg-primary text-sm font-bold text-on-primary disabled:opacity-50"
+          >
             {busy ? 'Resetting…' : 'Reset administrator passcode'}
           </button>
         </div>
       )}
-      <button type="button" onClick={onCancel} className="mt-4 h-11 w-full rounded-full bg-surface-container-high text-sm font-semibold text-on-surface">Back to sign in</button>
+      <button
+        type="button"
+        onClick={onCancel}
+        className="mt-4 h-11 w-full rounded-full bg-surface-container-high text-sm font-semibold text-on-surface"
+      >
+        Back to sign in
+      </button>
     </>
   );
 }
@@ -758,7 +859,11 @@ function UnlockForm() {
 
   useEffect(() => {
     let active = true;
-    void listOperatorProfiles().then(items => { if (active) setProfiles(items.filter(item => !item.disabled)); }).catch(() => {});
+    void listOperatorProfiles()
+      .then(items => {
+        if (active) setProfiles(items.filter(item => !item.disabled));
+      })
+      .catch(() => {});
     void getAccount()
       .then(account => {
         if (!active || !account?.name) return;
@@ -829,7 +934,7 @@ function UnlockForm() {
   const doBiometric = async () => {
     setError(null);
     const profile = profiles.find(item => item.username === username);
-    const ok = !!profile && await unlockWithBiometric(profile.uid);
+    const ok = !!profile && (await unlockWithBiometric(profile.uid));
     if (!ok) setError('Biometric unlock did not succeed. Use your passcode.');
   };
 
@@ -842,7 +947,12 @@ function UnlockForm() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [biometricEnabled, profiles.length]);
 
-  if (recoveryMode) return <Shell><RecoveryForm onCancel={() => setRecoveryMode(false)} /></Shell>;
+  if (recoveryMode)
+    return (
+      <Shell>
+        <RecoveryForm onCancel={() => setRecoveryMode(false)} />
+      </Shell>
+    );
 
   return (
     <Shell>
@@ -860,9 +970,27 @@ function UnlockForm() {
       <div className="space-y-4">
         <div>
           <FieldLabel htmlFor="operator-username">Operator</FieldLabel>
-          <select id="operator-username" value={username} onChange={event => setUsername(event.target.value)} className={cn(inputClass, 'appearance-none')}>
-            {(profiles.length ? profiles : [{ uid: LOCAL_UID_FALLBACK, username: 'admin', name: 'Administrator', role: 'admin' as const, disabled: false }]).map(profile => (
-              <option key={profile.uid} value={profile.username}>{profile.name} ({profile.username})</option>
+          <select
+            id="operator-username"
+            value={username}
+            onChange={event => setUsername(event.target.value)}
+            className={cn(inputClass, 'appearance-none')}
+          >
+            {(profiles.length
+              ? profiles
+              : [
+                  {
+                    uid: LOCAL_UID_FALLBACK,
+                    username: 'admin',
+                    name: 'Administrator',
+                    role: 'admin' as const,
+                    disabled: false,
+                  },
+                ]
+            ).map(profile => (
+              <option key={profile.uid} value={profile.username}>
+                {profile.name} ({profile.username})
+              </option>
             ))}
           </select>
         </div>
@@ -899,7 +1027,13 @@ function UnlockForm() {
           {busy ? 'Unlocking…' : locked ? `Locked · ${formatWait(waitSeconds)}` : 'Unlock'}
         </motion.button>
 
-        <button type="button" onClick={() => setRecoveryMode(true)} className="mx-auto block text-xs font-semibold text-accent hover:underline">Use an offline recovery key</button>
+        <button
+          type="button"
+          onClick={() => setRecoveryMode(true)}
+          className="mx-auto block text-xs font-semibold text-accent hover:underline"
+        >
+          Use an offline recovery key
+        </button>
 
         {biometricEnabled && (
           <motion.button

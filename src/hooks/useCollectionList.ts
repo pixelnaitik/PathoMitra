@@ -11,7 +11,6 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getRepository } from '../data';
-import { applyQuery } from '../data/query';
 import type { EntityName, LocalDoc, WhereOp } from '../data/types';
 
 /** Anything with an `id` — the identity used for de-duplication. */
@@ -111,6 +110,7 @@ export function useCollectionList<T extends Identified>(
           setLoading(false);
           onErrorRef.current?.(error);
         },
+        { where: filters ?? [], orderBy: orderField, direction },
       );
     } catch (err) {
       if (active) {
@@ -128,12 +128,11 @@ export function useCollectionList<T extends Identified>(
     // identity would re-read the collection each render. It is only used in the
     // rare synchronous-throw path above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, pageSize]);
+  }, [path, pageSize, filterKey, orderField, direction]);
 
-  /** Filter + sort the live documents, then map through the domain readers. */
+  /** The repository already applied the filter and ordering for this subscription. */
   const mapped = useMemo(() => {
-    const queried = applyQuery(docs, { where: filters ?? [], orderBy: orderField, direction });
-    return map(queried);
+    return map(docs);
     // `filterKey` stands in for the inline `filters` array; `map` is a stable
     // module-level reader (`readReports`, `readPatients`, …) at every call site.
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -27,15 +27,24 @@ export function StorageModeBanner() {
 export function WebClinicalGate() {
   if (!isUnprotectedProductionStore()) return null;
   return (
-    <main id="main-content" className="flex min-h-screen items-center justify-center bg-background p-6">
+    <main
+      id="main-content"
+      className="flex min-h-screen items-center justify-center bg-background p-6"
+    >
       <section className="max-w-xl rounded-3xl border border-error/30 bg-surface p-8 text-center shadow-float">
         <ShieldAlert className="mx-auto mb-5 h-12 w-12 text-error" aria-hidden="true" />
-        <h1 className="text-2xl font-bold text-on-surface">Clinical workspace is disabled on the web</h1>
+        <h1 className="text-2xl font-bold text-on-surface">
+          Clinical workspace is disabled on the web
+        </h1>
         <p className="mt-3 text-sm leading-relaxed text-on-surface-variant">
-          This production browser build does not provide encrypted clinical storage. To protect patient data,
-          patient, order, sample, report, billing, and settings workflows are available only in the Android or Windows app.
+          This production browser build does not provide encrypted clinical storage. To protect
+          patient data, patient, order, sample, report, billing, and settings workflows are
+          available only in the Android or Windows app.
         </p>
-        <a href="/" className="mt-6 inline-flex min-h-11 items-center rounded-full bg-primary px-5 text-sm font-semibold text-on-primary">
+        <a
+          href="/"
+          className="mt-6 inline-flex min-h-11 items-center rounded-full bg-primary px-5 text-sm font-semibold text-on-primary"
+        >
           Return to the PathoMitra website
         </a>
       </section>

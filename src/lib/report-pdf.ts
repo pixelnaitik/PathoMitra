@@ -63,12 +63,11 @@
  * *is* the artwork, and `Page 2 of 3` is the only thing that tells a lab a sheet
  * went missing in the tray.
  *
- * What is NOT claimed: jspdf-autotable v5 has no per-cell or per-row `pageBreak`
- * style (verified against the installed `index.d.ts` — only the table-level
- * `pageBreak` and `rowPageBreak` exist), so a section band can still land as the
- * last row on a page. Earlier drafts of this file said otherwise; the honest
- * mitigation is that the band is now *attached to the flow* rather than to a
- * forced sheet, which is the smaller of the two evils.
+ * Orphan control. jspdf-autotable v5 has no per-row `pageBreak` style, so the
+ * builder records where each section/panel band lands relative to its first
+ * result. A pass that leaves a band at a page bottom is rerendered with that
+ * section forced onto a fresh sheet; unresolved geometry fails closed instead of
+ * handing a patient a heading separated from its findings.
  *
  * Compaction used to be a guess — it fired only when `lastTestPage ===
  * totalPages - 1`, ran once, and could silently print 9.3 pt text against a
@@ -86,6 +85,7 @@
  * punctuation.
  */
 import type { LabSettings } from './settings';
+import { captureError } from './telemetry';
 import type { PatientRecord, ReportRecord } from './models';
 import { ageAsNumber } from './models';
 import type { ReportLegalLines } from './report-compliance';
@@ -128,6 +128,7 @@ interface SectionRow {
 }
 
 interface Section {
+  key: string;
   category: string;
   rows: SectionRow[];
 }
@@ -235,12 +236,18 @@ export function buildReportModel(
   Object.keys(report.resultData || {}).forEach(push);
 
   const legacyFinal = report.status === 'final' && !report.issuanceSnapshot;
-  const age = legacyFinal || !patient ? undefined : ageAsNumber(patient);
+  const age =
+    legacyFinal || !patient
+      ? undefined
+      : ageAsNumber(patient, new Date(report.issuanceSnapshot?.createdAt ?? report.createdAt));
   const gender = legacyFinal ? undefined : patient?.gender;
   const results = (report.resultData || {}) as Record<string, unknown>;
   const methods = new Map<string, string[]>();
-  const snapshotTests = new Map((report.issuanceSnapshot?.tests ?? []).map(test => [test.name, test]));
-  const infoFor = (name: string) => legacyFinal ? undefined : snapshotTests.get(name) ?? findTestInfo(name);
+  const snapshotTests = new Map(
+    (report.issuanceSnapshot?.tests ?? []).map(test => [test.name, test]),
+  );
+  const infoFor = (name: string) =>
+    legacyFinal ? undefined : (snapshotTests.get(name) ?? findTestInfo(name));
   const categoryOf = (name: string) => infoFor(name)?.category || 'GENERAL';
 
   // Sections in print order. 'byCategory' merges a category's tests into one
@@ -280,9 +287,17 @@ export function buildReportModel(
       return;
     }
 
-    const range = snapshot?.range ?? (legacyFinal
-      ? { kind: 'none' as const, label: 'Not captured', values: null, unverifiedForPatient: true, reason: 'Legacy report — original reference context was not captured' }
-      : resolveReferenceRange(legacyInfo?.ranges, age, gender));
+    const range =
+      snapshot?.range ??
+      (legacyFinal
+        ? {
+            kind: 'none' as const,
+            label: 'Not captured',
+            values: null,
+            unverifiedForPatient: true,
+            reason: 'Legacy report — original reference context was not captured',
+          }
+        : resolveReferenceRange(legacyInfo?.ranges, age, gender));
     let flag: 'up' | 'down' | null = null;
     const value = result ? parseNumericResult(String(result)) : null;
     if (value !== null && range.values) {
@@ -307,8 +322,7 @@ export function buildReportModel(
       name,
       result,
       unit: info?.unit || '',
-      refLabel:
-        `${dashRange(range.label)}${range.unverifiedForPatient ? ` [UNVERIFIED: ${range.reason ?? 'range requires laboratory approval'}]` : ''}${range.lastReviewed ? ` · reviewed ${range.lastReviewed}` : ''}`,
+      refLabel: `${dashRange(range.label)}${range.unverifiedForPatient ? ` [UNVERIFIED: ${range.reason ?? 'range requires laboratory approval'}]` : ''}${range.lastReviewed ? ` · reviewed ${range.lastReviewed}` : ''}`,
       flag,
       isGroupRow: false,
     });
@@ -327,10 +341,12 @@ export function buildReportModel(
       }
       byCat.get(upper)!.push(...g.rows);
     });
-    order.forEach(category => sections.push({ category, rows: byCat.get(category)! }));
+    order.forEach(category =>
+      sections.push({ key: category, category, rows: byCat.get(category)! }),
+    );
   } else {
     groups.forEach(g =>
-      sections.push({ category: g.category.toUpperCase(), rows: g.rows }),
+      sections.push({ key: g.key, category: g.category.toUpperCase(), rows: g.rows }),
     );
   }
 
@@ -408,6 +424,9 @@ interface PassContext {
    * bookkeeping, so both paths share one set.
    */
   drawnPages: Set<number>;
+  forcedBreakSections: Set<string>;
+  pendingBands: Array<{ key: string; page: number }>;
+  orphanedBands: Set<string>;
   input: ReportPdfInput;
   layout: ResolvedReportLayout;
   palette: ReportPalette;
@@ -451,7 +470,7 @@ function drawTail(ctx: PassContext, startY: number): number {
    */
   const paragraph = (text: string, opts?: { bold?: boolean; gray?: boolean; indent?: number }) => {
     const indent = opts?.indent ?? 0;
-    const lines = doc.splitTextToSize(text, width - indent) as string[];
+    const lines = doc.splitTextToSize(pdfText(text), width - indent) as string[];
     const lineHeight = Math.max(
       3.2,
       (opts?.gray ? layout.notesFont : layout.notesFont) * PT_TO_MM * 1.2,
@@ -476,11 +495,17 @@ function drawTail(ctx: PassContext, startY: number): number {
   y += SPACE.md;
 
   if (report.status === 'final' && !report.issuanceSnapshot) {
-    paragraph('LEGACY REPORT — original patient demographics, laboratory settings, and reference ranges were not captured. This reprint is non-reproducible.', { bold: true });
+    paragraph(
+      'LEGACY REPORT — original patient demographics, laboratory settings, and reference ranges were not captured. This reprint is non-reproducible.',
+      { bold: true },
+    );
     y += SPACE.sm;
   }
   if (report.issuanceSignature) {
-    paragraph(`Issuance signature: ECDSA P-256 · manifest SHA-256 ${report.issuanceSignature.manifestHash}`, { gray: true });
+    paragraph(
+      `Issuance signature: ECDSA P-256 · manifest SHA-256 ${report.issuanceSignature.manifestHash}`,
+      { gray: true },
+    );
     y += SPACE.sm;
   }
 
@@ -542,7 +567,7 @@ function drawTail(ctx: PassContext, startY: number): number {
   // document, which is what a referring doctor expects to find and what the
   // record actually knows.
   if (layout.showSignatureArea && !legacy) {
-    const name = pdfText(signerName || '');
+    const name = signerName || '';
     const blockHeight = SPACE.lg + 8;
     newPageIfNeeded(blockHeight);
     const lineY = y + SPACE.lg;
@@ -552,7 +577,7 @@ function drawTail(ctx: PassContext, startY: number): number {
     doc.setFont(PDF_FONT, 'normal');
     doc.setFontSize(Math.max(7.5, layout.footerFont - 2.5));
     ink(doc, palette.INK_SOFT);
-    doc.text(name || 'Issuing operator', mLeft, lineY + 3.6);
+    doc.text(pdfText(name) || 'Issuing operator', mLeft, lineY + 3.6);
     doc.text('Reported by / Signature', mLeft, lineY + 7.2);
     y = lineY + 9;
   }
@@ -635,7 +660,7 @@ function drawFullHeader(ctx: PassContext): number {
         textX = mLeft + 14.6;
       } catch (err) {
         // A logo that cannot be decoded must not take the report with it.
-        console.error('report-pdf: brand logo could not be drawn, using keystone', err);
+        captureError(err, { scope: 'report-pdf:brand-logo', entity: 'reports' });
         paint(doc, palette.BRAND);
         doc.roundedRect(mLeft, y - 4.2, 1.7, 10.5, 0.85, 0.85, 'F');
       }
@@ -675,17 +700,15 @@ function drawFullHeader(ctx: PassContext): number {
     doc.line(mLeft, y + 9, right, y + 9);
 
     if (layout.showLabIdentity) {
-      const address = pdfText(settings.address || '');
-      const contact = pdfText(
-        [settings.phone, settings.email].filter(Boolean).join('  \u00b7  '),
-      );
-      const credential = pdfText(legal.accreditation || legal.licence || '');
+      const address = settings.address || '';
+      const contact = [settings.phone, settings.email].filter(Boolean).join('  \u00b7  ');
+      const credential = legal.accreditation || legal.licence || '';
       let iy = y + 13.2;
       doc.setFont(PDF_FONT, 'normal');
       doc.setFontSize(7.5);
       ink(doc, palette.INK_SOFT);
       for (const line of [address, contact, credential].filter(Boolean)) {
-        doc.text(line, right, iy, { align: 'right', maxWidth: width * 0.52 });
+        doc.text(pdfText(line), right, iy, { align: 'right', maxWidth: width * 0.52 });
         iy += 3.4;
       }
       if (iy > y + 13.2) y = iy - 4.2;
@@ -698,6 +721,8 @@ function drawFullHeader(ctx: PassContext): number {
   if (legacy) ctx.padContentTopMm = startY;
   const lh = p.ptLineHeight;
   const nameText = `: ${patient?.name || report.patientName || ''}`;
+  const nameFont = pdfCellFont(nameText);
+  doc.setFont(nameFont, 'normal');
   const ptNameLines = doc.splitTextToSize(pdfText(nameText), width * (55 / 180)) as string[];
   const nameOffset = (ptNameLines.length - 1) * lh;
   const boxTop = startY - 12;
@@ -743,7 +768,7 @@ function drawFullHeader(ctx: PassContext): number {
       : 'N/A';
 
   label('Patient Name', mLeft, startY);
-  doc.setFont(PDF_FONT, 'normal');
+  doc.setFont(nameFont, 'normal');
   ink(doc, legacy ? palette.BLACK : palette.INK);
   doc.setCharSpace(0);
   doc.text(ptNameLines, mLeft + 27, startY);
@@ -922,7 +947,7 @@ function paintBackground(ctx: PassContext): void {
     doc.addImage(image, marker === 'PNG' ? 'PNG' : 'JPEG', 0, 0, A4.widthMm, A4.heightMm);
   } catch (err) {
     // A broken letterhead must not eat the report: the findings are the document.
-    console.error('report-pdf: share letterhead could not be drawn', err);
+    captureError(err, { scope: 'report-pdf:share-letterhead', entity: 'reports' });
   }
 }
 
@@ -936,7 +961,7 @@ function labTitle(layout: ResolvedReportLayout): string {
 // --------------------------------------------------------------------------
 
 /** One row group: a section band plus its measurement rows, as autoTable cells. */
-function sectionBandRow(ctx: PassContext, category: string): any[] {
+function sectionBandRow(ctx: PassContext, category: string, key: string): any[] {
   const { layout, palette, p } = ctx;
   const legacy = layout.template === 'blank';
   const bandPadding = (multiplier: number, floor: number, left: number) => ({
@@ -950,6 +975,7 @@ function sectionBandRow(ctx: PassContext, category: string): any[] {
       {
         content: category,
         colSpan: 4,
+        pmSectionKey: key,
         styles: {
           fontStyle: 'bold',
           fillColor: false,
@@ -965,6 +991,7 @@ function sectionBandRow(ctx: PassContext, category: string): any[] {
       {
         content: category,
         colSpan: 4,
+        pmSectionKey: key,
         styles: {
           fontStyle: 'bold',
           fillColor: false,
@@ -982,6 +1009,7 @@ function sectionBandRow(ctx: PassContext, category: string): any[] {
       {
         content: category,
         colSpan: 4,
+        pmSectionKey: key,
         styles: {
           fontStyle: 'bold',
           fillColor: palette.BRAND_SOFT,
@@ -1013,7 +1041,7 @@ function sectionBandRow(ctx: PassContext, category: string): any[] {
   ];
 }
 
-function groupBandRow(ctx: PassContext, row: SectionRow): any[] {
+function groupBandRow(ctx: PassContext, row: SectionRow, key: string): any[] {
   const { layout, palette, p } = ctx;
   const legacy = layout.template === 'blank';
   const fill = legacy ? false : layout.template === 'modern' ? palette.BRAND_TINT : false;
@@ -1037,6 +1065,7 @@ function groupBandRow(ctx: PassContext, row: SectionRow): any[] {
     {
       content: row.name,
       colSpan: 4,
+      pmSectionKey: key,
       styles: {
         fontStyle: 'bold',
         fillColor: fill,
@@ -1118,10 +1147,10 @@ function buildTableOptions(ctx: PassContext, startY: number, sections: Section[]
     // reference-range column silently disappeared from every report. The
     // accompanying console noise was autoTable's
     // "Of the table content, 53 units width could not fit page".
-    body.push(sectionBandRow(ctx, section.category));
+    body.push(sectionBandRow(ctx, section.category, section.key));
     section.rows.forEach(row => {
       if (row.isGroupRow) {
-        body.push(groupBandRow(ctx, row));
+        body.push(groupBandRow(ctx, row, section.key));
         return;
       }
       const flag = row.flag;
@@ -1196,6 +1225,19 @@ function buildTableOptions(ctx: PassContext, startY: number, sections: Section[]
       if (data.section !== 'body') return;
       const isBand =
         data.cell.raw && typeof data.cell.raw === 'object' && (data.cell.raw as any).colSpan;
+      const bandKey =
+        data.cell.raw && typeof data.cell.raw === 'object'
+          ? String((data.cell.raw as any).pmSectionKey ?? '')
+          : '';
+      if (data.column.index === 0 && bandKey) {
+        ctx.pendingBands.push({ key: bandKey, page: doc.internal.getCurrentPageInfo().pageNumber });
+      } else if (data.column.index === 0 && !isBand) {
+        const page = doc.internal.getCurrentPageInfo().pageNumber;
+        ctx.pendingBands.forEach(band => {
+          if (band.page !== page) ctx.orphanedBands.add(band.key);
+        });
+        ctx.pendingBands = [];
+      }
 
       if (rowRules && data.column.index === 3 && !isBand) {
         stroke(doc, legacy ? palette.BLACK : palette.HAIRLINE);
@@ -1326,7 +1368,8 @@ function renderPass(
   model: ReportModel,
   version: number,
   statusView: ReturnType<typeof reportStatusView>,
-): void {
+  forcedBreakSections: Set<string>,
+): Set<string> {
   const ctx: PassContext & { drawnPages: Set<number> } = {
     doc,
     autoTable,
@@ -1338,6 +1381,9 @@ function renderPass(
     version,
     statusView,
     drawnPages: new Set<number>(),
+    forcedBreakSections,
+    pendingBands: [],
+    orphanedBands: new Set<string>(),
   };
   const startY = drawFullHeader(ctx);
   ctx.drawnPages.add(doc.internal.getCurrentPageInfo().pageNumber);
@@ -1347,6 +1393,11 @@ function renderPass(
   // forced — autoTable breaks the flow itself when a row would cross the bottom
   // margin, which is what lets Blood Sugar and Widal sit on one sheet.
   let y = startY;
+  const renderChunk = (chunk: Section[]) => {
+    if (chunk.length === 0) return;
+    autoTable(doc, buildTableOptions(ctx, y, chunk));
+    y = doc.lastAutoTable?.finalY ?? y;
+  };
   pageUnits(model).forEach((unit, index) => {
     if (index > 0) {
       doc.addPage();
@@ -1356,11 +1407,23 @@ function renderPass(
       ctx.drawnPages.add(doc.internal.getCurrentPageInfo().pageNumber);
       y = startContinuationPage(ctx);
     }
-    autoTable(doc, buildTableOptions(ctx, y, unit));
-    y = doc.lastAutoTable?.finalY ?? y;
+    let chunk: Section[] = [];
+    unit.forEach(section => {
+      if (chunk.length > 0 && forcedBreakSections.has(section.key)) {
+        renderChunk(chunk);
+        chunk = [];
+        doc.addPage();
+        ctx.drawnPages.add(doc.internal.getCurrentPageInfo().pageNumber);
+        y = startContinuationPage(ctx);
+      }
+      chunk.push(section);
+    });
+    renderChunk(chunk);
   });
+  ctx.pendingBands.forEach(band => ctx.orphanedBands.add(band.key));
   drawTail(ctx, y + Math.max(params.sectionGap, SPACE.md));
   drawFooters(ctx);
+  return ctx.orphanedBands;
 }
 
 /**
@@ -1388,37 +1451,57 @@ export async function buildReportDocument(input: ReportPdfInput): Promise<Report
   const filename = reportFilename(input.report);
   const base = paramsFrom(layout);
 
-  const render = (params: RenderParams) => {
-    const doc = new jsPDF();
-    ensurePdfFont(doc);
-    doc.setProperties({
-      title: filename,
-      ...(input.report.issuanceSignature
-        ? { subject: `Issuance manifest SHA-256: ${input.report.issuanceSignature.manifestHash}` }
-        : {}),
-    });
-    renderPass(doc, autoTable, input, layout, palette, params, model, version, statusView);
-    return doc;
+  const render = (params: RenderParams, inheritedBreaks = new Set<string>()) => {
+    const forcedBreaks = new Set(inheritedBreaks);
+    let doc: import('jspdf').jsPDF;
+    // autoTable v5 cannot keep a band with the next row. Render once to locate
+    // orphaned bands, then force those sections onto a fresh sheet and repeat.
+    for (let attempt = 0; attempt <= model.sections.length; attempt += 1) {
+      doc = new jsPDF();
+      ensurePdfFont(doc, input);
+      doc.setProperties({
+        title: filename,
+        ...(input.report.issuanceSignature
+          ? { subject: `Issuance manifest SHA-256: ${input.report.issuanceSignature.manifestHash}` }
+          : {}),
+      });
+      const orphans = renderPass(
+        doc,
+        autoTable,
+        input,
+        layout,
+        palette,
+        params,
+        model,
+        version,
+        statusView,
+        forcedBreaks,
+      );
+      const unresolved = [...orphans].filter(key => !forcedBreaks.has(key));
+      if (unresolved.length === 0) break;
+      unresolved.forEach(key => forcedBreaks.add(key));
+      if (attempt === model.sections.length) {
+        throw new Error('A report section heading could not be kept with its first result row.');
+      }
+    }
+    return { doc: doc!, forcedBreaks };
   };
 
   const standard = render(base);
-  let doc = standard;
+  let doc = standard.doc;
   let compacted = false;
 
-  // The floor is one sheet per page unit: a package claims its sheet, so nothing
-  // below `floor` pages is reachable however small the type goes. The ladder is
-  // still worth running above that floor — it is what keeps a 26-row CBC from
-  // spilling its last three lines onto a sheet of their own.
-  const floor = pageUnits(model).length;
+  // The floor is one sheet per page unit plus any safety break required to keep
+  // a section band with its first result. The ladder is still worth running above
+  // that floor — it keeps a 26-row CBC from spilling onto a sheet of its own.
+  const floor = pageUnits(model).length + standard.forcedBreaks.size;
 
-  if (layout.fitToOnePage && standard.getNumberOfPages() > floor) {
+  if (layout.fitToOnePage && standard.doc.getNumberOfPages() > floor) {
     let candidate = shrinkOnce(base);
-    // Bound the search: each notch is a 10 % reduction against a hard floor, so
-    // eight passes exhausts the ladder on any sane setting.
     for (let step = 0; step < 8; step += 1) {
-      const trial = render(candidate);
-      if (trial.getNumberOfPages() <= floor) {
-        doc = trial;
+      const trial = render(candidate, standard.forcedBreaks);
+      if (trial.doc.getNumberOfPages() <= floor) {
+        doc = trial.doc;
         compacted = true;
         break;
       }

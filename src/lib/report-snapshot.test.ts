@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildReportIssuanceSnapshot } from './report-snapshot';
+import {
+  buildReportIssuanceSnapshot,
+  resolveIssuanceValueStatus,
+  type ReportIssuanceSnapshot,
+} from './report-snapshot';
 import { DEFAULT_SETTINGS, writeCustomTests } from './settings';
 import { ReportIssuanceSnapshotSchema, type PatientRecord } from './models';
 
@@ -29,28 +33,30 @@ describe('report issuance snapshot', () => {
   });
 
   it('freezes catalogue and range governance provenance', () => {
-    writeCustomTests([{
-      id: 'custom_governed',
-      name: 'Governed Assay',
-      category: 'CUSTOM',
-      kind: 'numeric',
-      unit: 'mg/dL',
-      method: 'Validated photometric method',
-      version: 3,
-      effectiveFrom: '2026-11-01',
-      reviewedBy: 'Dr Reviewer',
-      ranges: {
-        general: {
-          text: '1.0 - 2.0',
-          source: 'In-house validation',
-          verification: 'approved',
-          lastReviewed: '2026-10-31',
-          reviewedBy: 'Dr Reviewer',
-          effectiveFrom: '2026-11-01',
-          version: 3,
+    writeCustomTests([
+      {
+        id: 'custom_governed',
+        name: 'Governed Assay',
+        category: 'CUSTOM',
+        kind: 'numeric',
+        unit: 'mg/dL',
+        method: 'Validated photometric method',
+        version: 3,
+        effectiveFrom: '2026-11-01',
+        reviewedBy: 'Dr Reviewer',
+        ranges: {
+          general: {
+            text: '1.0 - 2.0',
+            source: 'In-house validation',
+            verification: 'approved',
+            lastReviewed: '2026-10-31',
+            reviewedBy: 'Dr Reviewer',
+            effectiveFrom: '2026-11-01',
+            version: 3,
+          },
         },
       },
-    }]);
+    ]);
     const snapshot = buildReportIssuanceSnapshot(
       { patientId: patient.id, testSelection: ['Governed Assay'], resultData: {} },
       patient,
@@ -66,6 +72,33 @@ describe('report issuance snapshot', () => {
     });
     expect(ReportIssuanceSnapshotSchema.safeParse(snapshot).success).toBe(true);
     writeCustomTests([]);
+  });
+
+  it('flags historical values only against the frozen issuance range', () => {
+    const snapshot: ReportIssuanceSnapshot = {
+      version: 1,
+      createdAt: '2026-11-24T10:00:00.000Z',
+      patient: { id: 'p1', name: 'Asha Rao', age: 30, gender: 'female', createdAt: '' },
+      settings: { ...DEFAULT_SETTINGS } as ReportIssuanceSnapshot['settings'],
+      tests: [
+        {
+          name: 'Sodium',
+          unit: 'mmol/L',
+          range: { label: '135–145', values: { min: 135, max: 145 }, unverifiedForPatient: false },
+        },
+      ],
+    };
+    expect(resolveIssuanceValueStatus(snapshot, 'Sodium', '150')).toMatchObject({
+      status: 'high',
+      rangeLabel: '135–145',
+    });
+    expect(resolveIssuanceValueStatus(snapshot, 'Sodium', '< 140')).toMatchObject({
+      status: 'normal',
+    });
+    expect(resolveIssuanceValueStatus(undefined, 'Sodium', '150')).toMatchObject({
+      status: null,
+      rangeLabel: '',
+    });
   });
 
   it('does not mutate when live patient or lab settings change later', () => {

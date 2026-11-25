@@ -16,18 +16,42 @@ import { SqliteRepository } from './sqliteRepository';
 import { DesktopRepository } from './desktopRepository';
 import { WebRepository } from './webRepository';
 import { guardRepository } from './write-guard';
+import { AuthorizedRepository, type RepositoryActor } from './authorized-repository';
 
 let instance: DataRepository | null = null;
 let guardedInstance: DataRepository | null = null;
+let authorizedInstance: AuthorizedRepository | null = null;
 
-/** Lazily create (once) the repository appropriate for this platform. */
-export function getRepository(): DataRepository {
+/** Raw guarded repository for pre-auth bootstrap and recovery only. */
+export function getSystemRepository(): DataRepository {
   if (!instance) {
     if (isDesktopShell()) instance = new DesktopRepository();
     else instance = Capacitor.isNativePlatform() ? new SqliteRepository() : new WebRepository();
   }
   if (!guardedInstance) guardedInstance = guardRepository(instance);
   return guardedInstance;
+}
+
+/** Lazily create (once) the repository appropriate for this platform. */
+export function getRepository(): DataRepository {
+  if (!authorizedInstance) {
+    const testActor =
+      import.meta.env.MODE === 'test' ? { uid: 'test-admin', role: 'admin' as const } : null;
+    authorizedInstance = new AuthorizedRepository(getSystemRepository(), testActor);
+  }
+  return authorizedInstance;
+}
+
+/** Bind mutations to the authenticated operator; null immediately denies writes. */
+export function setRepositoryActor(actor: RepositoryActor | null): void {
+  getRepository();
+  if (!(authorizedInstance instanceof AuthorizedRepository))
+    throw new Error('Authorized repository is not initialized.');
+  authorizedInstance.setActor(actor);
+}
+
+export function clearRepositoryActor(): void {
+  setRepositoryActor(null);
 }
 
 /** Open/encrypt the store and return it. Call once during app bootstrap. */

@@ -48,6 +48,8 @@ export interface RangeBand {
   lastReviewed?: string;
   /** Operator who approved the band for clinical issue. */
   reviewedBy?: string;
+  reviewedByUid?: string;
+  reviewedByRole?: 'pathologist' | 'admin';
   /** Date this approved version becomes effective. */
   effectiveFrom?: string;
   /** Monotonic clinical-definition version, frozen on issued reports. */
@@ -94,6 +96,8 @@ export interface PathologyTest {
   version?: number;
   effectiveFrom?: string;
   reviewedBy?: string;
+  reviewedByUid?: string;
+  reviewedByRole?: 'pathologist' | 'admin';
   notes?: string[];
   clinicalSignificance?: string;
   isGroup?: boolean;

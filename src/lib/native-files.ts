@@ -19,6 +19,7 @@
  * behaviour, and none of the native plugins are even loaded there.
  */
 import { Capacitor, registerPlugin } from '@capacitor/core';
+import { captureError } from './telemetry';
 import type { Directory as DirectoryKind } from '@capacitor/filesystem';
 import { desktopBridge } from './desktop-bridge';
 import { readSettings } from './settings';
@@ -154,7 +155,7 @@ async function writeOnDevice(
       // Reached only when public exports have been switched on and a scoped-
       // storage rule refused the write — falling through to the app-private
       // directory is the intended path, not an error.
-      console.warn(`PathoMitra: could not write to ${candidate}, trying the next directory`, err);
+      captureError(err, { scope: 'native-files:directory-fallback', operation: 'write' });
     }
   }
   throw lastError instanceof Error
@@ -237,7 +238,10 @@ export async function readAppTextFile(path: string): Promise<string> {
 /** Atomically rename an app-private file after its temporary write is verified. */
 export async function renameAppFile(from: string, to: string): Promise<void> {
   const bridge = desktopBridge();
-  if (bridge) { await bridge.files.rename(from, to); return; }
+  if (bridge) {
+    await bridge.files.rename(from, to);
+    return;
+  }
   const { Directory, Filesystem } = await appExternal();
   await Filesystem.rename({ from, to, directory: Directory.External });
 }
@@ -399,7 +403,13 @@ export async function eraseAppOutputs(): Promise<void> {
   }
   if (Capacitor.isNativePlatform()) {
     const { Directory, Filesystem } = await appExternal();
-    for (const directory of [Directory.Data, Directory.Cache, Directory.Documents, Directory.External, Directory.ExternalCache]) {
+    for (const directory of [
+      Directory.Data,
+      Directory.Cache,
+      Directory.Documents,
+      Directory.External,
+      Directory.ExternalCache,
+    ]) {
       for (const folder of ['PathoMitra', 'PathLab OS']) {
         try {
           await Filesystem.rmdir({ path: folder, directory, recursive: true });

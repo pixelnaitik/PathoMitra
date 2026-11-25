@@ -1,20 +1,28 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import {
-  collection,
-  query,
-  onSnapshot,
-  getDocs,
-  limit,
-  orderBy,
-  where,
-  db,
-} from '../../data/fs';
+import { collection, query, onSnapshot, getDocs, limit, orderBy, where, db } from '../../data/fs';
 import { getRepository } from '../../data';
 import { archivePatient, deleteReportCascade } from '../../lib/cascades';
-import { operatorStamp, readReports, readPatients, readOrders, readSamples, readInvoices } from '../../lib/models';
+import {
+  operatorStamp,
+  readReports,
+  readPatients,
+  readOrders,
+  readSamples,
+  readInvoices,
+} from '../../lib/models';
 import { handleFirestoreError, OperationType } from '../../lib/firestore-errors';
-import { Users, FileText, Plus, Trash2, UserPlus, IndianRupee, ChevronRight, ClipboardList, FlaskConical } from 'lucide-react';
+import {
+  Users,
+  FileText,
+  Plus,
+  Trash2,
+  UserPlus,
+  IndianRupee,
+  ChevronRight,
+  ClipboardList,
+  FlaskConical,
+} from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { getBillingPrefs } from '../../lib/price-list';
 import { readSettings } from '../../lib/settings';
@@ -112,39 +120,68 @@ export default function OverviewPage({
     const loadStats = async () => {
       try {
         const repo = getRepository();
-        const [patientDocs, reportDocs, orderDocs, sampleDocs, invoiceDocs] = await Promise.all([
-          repo.list('patients'),
-          repo.list('reports'),
-          repo.list('orders'),
-          repo.list('samples'),
-          repo.list('invoices'),
-        ]);
-        if (cancelled) return;
-        const patients = readPatients(patientDocs);
-        const reports = readReports(reportDocs);
-        const orders = readOrders(orderDocs);
-        const samples = readSamples(sampleDocs);
-        const invoices = readInvoices(invoiceDocs);
-        const activeOrders = orders.filter(order => !['cancelled', 'amended', 'billed'].includes(order.status));
-        const activeSamples = samples.filter(sample => ['expected', 'collected', 'received', 'processing'].includes(sample.status));
-        const nonVoidInvoices = invoices.filter(invoice => invoice.status !== 'void');
-        const billedReportIds = new Set(nonVoidInvoices.map(invoice => invoice.reportId).filter(Boolean));
-        const finalReports = reports.filter(report => report.status === 'final');
-        const draftHours = readSettings().notificationPrefs?.draftHours ?? 24;
-        const now = Date.now();
-        setStats({
-          patients: patients.length,
-          reports: finalReports.length,
-          revenue: nonVoidInvoices.reduce((sum, invoice) => sum + Math.max(0, invoice.paidAmount ?? 0), 0),
-          pendingOrders: activeOrders.length,
-          pendingSamples: activeSamples.length,
-          rejectedSamples: samples.filter(sample => sample.status === 'rejected').length,
-          overdueDrafts: reports.filter(report => report.status === 'draft' && now - Date.parse(report.updatedAt ?? report.createdAt) >= draftHours * 3_600_000).length,
-          unbilledReports: finalReports.filter(report => !billedReportIds.has(report.id)).length,
-          outstanding: nonVoidInvoices.reduce((sum, invoice) => sum + Math.max(0, invoice.amount - (invoice.paidAmount ?? 0)), 0),
+        let nextStats: typeof stats | undefined;
+        // One read transaction gives every KPI the same committed snapshot. A
+        // report/invoice write landing midway through a Promise.all cannot mix
+        // pre-write and post-write values in one refresh.
+        await repo.transaction(async tx => {
+          const [patientDocs, reportDocs, orderDocs, sampleDocs, invoiceDocs] = await Promise.all([
+            tx.list('patients'),
+            tx.list('reports'),
+            tx.list('orders'),
+            tx.list('samples'),
+            tx.list('invoices'),
+          ]);
+          const patients = readPatients(patientDocs);
+          const reports = readReports(reportDocs);
+          const orders = readOrders(orderDocs);
+          const samples = readSamples(sampleDocs);
+          const invoices = readInvoices(invoiceDocs);
+          const activeOrders = orders.filter(
+            order => !['cancelled', 'amended', 'billed'].includes(order.status),
+          );
+          const activeSamples = samples.filter(sample =>
+            ['expected', 'collected', 'received', 'processing'].includes(sample.status),
+          );
+          const nonVoidInvoices = invoices.filter(invoice => invoice.status !== 'void');
+          // Billing may link directly to a report or only to its order aggregate.
+          const billedLinks = new Set(
+            nonVoidInvoices.flatMap(invoice => [invoice.reportId, invoice.orderId]).filter(Boolean),
+          );
+          const finalReports = reports.filter(report => report.status === 'final');
+          const draftHours = readSettings().notificationPrefs?.draftHours ?? 24;
+          const now = Date.now();
+          nextStats = {
+            patients: patients.length,
+            reports: finalReports.length,
+            revenue: nonVoidInvoices.reduce(
+              (sum, invoice) => sum + Math.max(0, invoice.paidAmount ?? 0),
+              0,
+            ),
+            pendingOrders: activeOrders.length,
+            pendingSamples: activeSamples.length,
+            rejectedSamples: samples.filter(sample => sample.status === 'rejected').length,
+            overdueDrafts: reports.filter(
+              report =>
+                report.status === 'draft' &&
+                now - Date.parse(report.updatedAt ?? report.createdAt) >= draftHours * 3_600_000,
+            ).length,
+            unbilledReports: finalReports.filter(
+              report =>
+                !billedLinks.has(report.id) && !(report.orderId && billedLinks.has(report.orderId)),
+            ).length,
+            outstanding: nonVoidInvoices.reduce(
+              (sum, invoice) => sum + Math.max(0, invoice.amount - (invoice.paidAmount ?? 0)),
+              0,
+            ),
+          };
         });
+        if (!cancelled && nextStats) setStats(nextStats);
       } catch (error) {
-        if (!cancelled) setStatsError('Dashboard totals could not be loaded. This is not an empty lab or zero revenue.');
+        if (!cancelled)
+          setStatsError(
+            'Dashboard totals could not be loaded. This is not an empty lab or zero revenue.',
+          );
         handleFirestoreError(error, OperationType.GET, 'stats');
       }
     };
@@ -175,11 +212,17 @@ export default function OverviewPage({
     const unsubInvoices = onSnapshot(qInvoices, scheduleStatsRefresh, error => {
       handleFirestoreError(error, OperationType.GET, 'invoices');
     });
-    const qOrders = query(collection(db, 'orders'), where('status', 'in', ['ordered', 'collected', 'processing', 'resulted', 'issued']));
+    const qOrders = query(
+      collection(db, 'orders'),
+      where('status', 'in', ['ordered', 'collected', 'processing', 'resulted', 'issued']),
+    );
     const unsubOrders = onSnapshot(qOrders, scheduleStatsRefresh, error => {
       handleFirestoreError(error, OperationType.GET, 'orders');
     });
-    const qSamples = query(collection(db, 'samples'), where('status', 'in', ['expected', 'collected', 'received', 'processing', 'rejected']));
+    const qSamples = query(
+      collection(db, 'samples'),
+      where('status', 'in', ['expected', 'collected', 'received', 'processing', 'rejected']),
+    );
     const unsubSamples = onSnapshot(qSamples, scheduleStatsRefresh, error => {
       handleFirestoreError(error, OperationType.GET, 'samples');
     });
@@ -211,19 +254,21 @@ export default function OverviewPage({
     const ids = recentPatients.map(patient => patient.id);
     if (ids.length === 0) return;
     let active = true;
-    void getDocs(query(
-      collection(db, 'reports'),
-      where('patientId', 'in', ids),
-      orderBy('createdAt', 'desc'),
-    )).then(snapshot => {
-      if (!active) return;
-      const latest = new Map<string, any>();
-      for (const report of readReports(snapshot.docs)) {
-        if (!latest.has(report.patientId)) latest.set(report.patientId, report);
-      }
-      setLatestPatientReports(latest);
-    }).catch(error => handleFirestoreError(error, OperationType.GET, 'reports'));
-    return () => { active = false; };
+    void getDocs(
+      query(collection(db, 'reports'), where('patientId', 'in', ids), orderBy('createdAt', 'desc')),
+    )
+      .then(snapshot => {
+        if (!active) return;
+        const latest = new Map<string, any>();
+        for (const report of readReports(snapshot.docs)) {
+          if (!latest.has(report.patientId)) latest.set(report.patientId, report);
+        }
+        setLatestPatientReports(latest);
+      })
+      .catch(error => handleFirestoreError(error, OperationType.GET, 'reports'));
+    return () => {
+      active = false;
+    };
   }, [recentPatients]);
 
   const combinedReports = React.useMemo(() => {
@@ -303,7 +348,8 @@ export default function OverviewPage({
     <div className="space-y-6">
       {/* First-run guidance — shown only to a completely empty lab. The activity
           lists have the final say before claiming there is nothing. */}
-      {!statsError && stats.patients === 0 &&
+      {!statsError &&
+        stats.patients === 0 &&
         stats.reports === 0 &&
         recentPatients.length === 0 &&
         recentReports.length === 0 && (
@@ -333,101 +379,149 @@ export default function OverviewPage({
         )}
 
       {statsError && (
-        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-error/30 bg-error-container/40 p-4">
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-error/30 bg-error-container/40 p-4"
+        >
           <p className="text-sm font-semibold text-error">{statsError}</p>
-          <Button size="sm" variant="outline" onClick={() => { setStatsError(''); setStatsReload(value => value + 1); }}>Retry totals</Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setStatsError('');
+              setStatsReload(value => value + 1);
+            }}
+          >
+            Retry totals
+          </Button>
         </div>
       )}
 
       {/* Operational and financial tiles: two across on a folded phone, three
           across from lg up. */}
-      {!statsError && <><div className="grid grid-cols-1 fold:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
-        {cards.map((card, idx) => {
-          // A tile is only a control when it names a tab *and* the shell can
-          // actually switch tabs — otherwise it would advertise itself as
-          // clickable and do nothing when pressed.
-          const target = card.to && setActiveTab ? card.to : undefined;
-          return (
-            <motion.div
-              key={card.label}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{
-                delay: Math.min(idx * 0.08, 0.32),
-                type: 'spring',
-                stiffness: 260,
-                damping: 24,
-              }}
-            >
-              <Card
-                interactive
-                className="group relative overflow-hidden"
-                {...(target
-                  ? {
-                      role: 'button' as const,
-                      tabIndex: 0,
-                      'aria-label': `${card.label}: ${card.prefix ?? ''}${card.value.toLocaleString('en-IN')} \u2014 open ${target}`,
-                      onClick: () => setActiveTab?.(target),
-                      onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => {
-                        if (event.key !== 'Enter' && event.key !== ' ') return;
-                        // Space would otherwise scroll the page instead of
-                        // activating the card, like any real button.
-                        event.preventDefault();
-                        setActiveTab?.(target);
-                      },
-                    }
-                  : {})}
-              >
-                <div className="flex items-center gap-4">
-                  <div
-                    className={cn(
-                      'flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl transition-transform duration-300 group-hover:scale-110',
-                      card.tint,
-                    )}
-                  >
-                    <card.icon className="w-6 h-6" aria-hidden="true" />
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-on-surface-variant">
-                      {card.label}
-                    </p>
-                    <h4 className="text-[28px] font-bold leading-tight tracking-[-0.03em] text-on-surface tabular-nums">
-                      {card.prefix && (
-                        <span aria-hidden="true" className="mr-0.5">
-                          {card.prefix}
-                        </span>
-                      )}
-                      <CountUp value={Number(card.value)} />
-                    </h4>
-                  </div>
-                  <p className="ml-auto hidden shrink-0 text-[11px] font-medium text-outline sm:block">
-                    {card.meta}
-                  </p>
-                  {target && (
-                    <ChevronRight
-                      className="hidden h-4 w-4 shrink-0 text-outline transition-transform duration-300 group-hover:translate-x-0.5 sm:block"
-                      aria-hidden="true"
-                    />
+      {!statsError && (
+        <>
+          <div className="grid grid-cols-1 fold:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
+            {cards.map((card, idx) => {
+              // A tile is only a control when it names a tab *and* the shell can
+              // actually switch tabs — otherwise it would advertise itself as
+              // clickable and do nothing when pressed.
+              const target = card.to && setActiveTab ? card.to : undefined;
+              return (
+                <motion.div
+                  key={card.label}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{
+                    delay: Math.min(idx * 0.08, 0.32),
+                    type: 'spring',
+                    stiffness: 260,
+                    damping: 24,
+                  }}
+                >
+                  {target ? (
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab?.(target)}
+                      onPointerMove={event => {
+                        const rect = event.currentTarget.getBoundingClientRect();
+                        event.currentTarget.style.setProperty(
+                          '--spot-x',
+                          `${event.clientX - rect.left}px`,
+                        );
+                        event.currentTarget.style.setProperty(
+                          '--spot-y',
+                          `${event.clientY - rect.top}px`,
+                        );
+                      }}
+                      className="card-hover spotlight group relative w-full overflow-hidden rounded-3xl border border-[var(--elevated-border)] bg-surface-container-lowest p-5 text-left shadow-card"
+                    >
+                      <div className="flex items-center gap-4">
+                        <div
+                          className={cn(
+                            'flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl transition-transform duration-300 group-hover:scale-110',
+                            card.tint,
+                          )}
+                        >
+                          <card.icon className="w-6 h-6" aria-hidden="true" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-on-surface-variant">
+                            {card.label}
+                          </p>
+                          <h4 className="text-[28px] font-bold leading-tight tracking-[-0.03em] text-on-surface tabular-nums">
+                            {card.prefix && (
+                              <span aria-hidden="true" className="mr-0.5">
+                                {card.prefix}
+                              </span>
+                            )}
+                            <CountUp value={Number(card.value)} />
+                          </h4>
+                        </div>
+                        <p className="ml-auto hidden shrink-0 text-[11px] font-medium text-on-surface-variant sm:block">
+                          {card.meta}
+                        </p>
+                        <ChevronRight
+                          className="hidden h-4 w-4 shrink-0 text-outline transition-transform duration-300 group-hover:translate-x-0.5 sm:block"
+                          aria-hidden="true"
+                        />
+                      </div>
+                      <span className="sr-only">Open {target}</span>
+                    </button>
+                  ) : (
+                    <Card className="group relative overflow-hidden">
+                      <div className="flex items-center gap-4">
+                        <div
+                          className={cn(
+                            'flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl transition-transform duration-300 group-hover:scale-110',
+                            card.tint,
+                          )}
+                        >
+                          <card.icon className="w-6 h-6" aria-hidden="true" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-on-surface-variant">
+                            {card.label}
+                          </p>
+                          <h4 className="text-[28px] font-bold leading-tight tracking-[-0.03em] text-on-surface tabular-nums">
+                            {card.prefix && (
+                              <span aria-hidden="true" className="mr-0.5">
+                                {card.prefix}
+                              </span>
+                            )}
+                            <CountUp value={Number(card.value)} />
+                          </h4>
+                        </div>
+                        <p className="ml-auto hidden shrink-0 text-[11px] font-medium text-on-surface-variant sm:block">
+                          {card.meta}
+                        </p>
+                      </div>
+                    </Card>
                   )}
-                </div>
-              </Card>
-            </motion.div>
-          );
-        })}
-      </div>
+                </motion.div>
+              );
+            })}
+          </div>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        {[
-          { label: 'Rejected samples', value: stats.rejectedSamples, tab: 'samples' },
-          { label: 'Overdue drafts', value: stats.overdueDrafts, tab: 'reports' },
-          { label: 'Unbilled issued reports', value: stats.unbilledReports, tab: 'bills' },
-        ].map(item => (
-          <button key={item.label} type="button" onClick={() => setActiveTab?.(item.tab)} className="flex items-center justify-between gap-3 rounded-2xl border border-outline-variant/40 bg-surface-container-low px-4 py-3 text-left transition hover:bg-surface-container">
-            <span className="text-xs font-semibold text-on-surface-variant">{item.label}</span>
-            <span className="text-lg font-bold tabular-nums text-on-surface">{item.value}</span>
-          </button>
-        ))}
-      </div></>}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            {[
+              { label: 'Rejected samples', value: stats.rejectedSamples, tab: 'samples' },
+              { label: 'Overdue drafts', value: stats.overdueDrafts, tab: 'reports' },
+              { label: 'Unbilled issued reports', value: stats.unbilledReports, tab: 'bills' },
+            ].map(item => (
+              <button
+                key={item.label}
+                type="button"
+                onClick={() => setActiveTab?.(item.tab)}
+                className="flex items-center justify-between gap-3 rounded-2xl border border-outline-variant/40 bg-surface-container-low px-4 py-3 text-left transition hover:bg-surface-container"
+              >
+                <span className="text-xs font-semibold text-on-surface-variant">{item.label}</span>
+                <span className="text-lg font-bold tabular-nums text-on-surface">{item.value}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Patients Registry */}
@@ -798,8 +892,8 @@ export default function OverviewPage({
         message={
           <>
             Archive{' '}
-            <strong className="font-semibold text-on-surface">{patientToDelete?.name}</strong>? Their
-            issued reports, amendments, and invoices remain in the retained history.
+            <strong className="font-semibold text-on-surface">{patientToDelete?.name}</strong>?
+            Their issued reports, amendments, and invoices remain in the retained history.
           </>
         }
         onConfirm={async () => {
@@ -840,12 +934,20 @@ export default function OverviewPage({
               setReportToDelete(null);
               toast.success('Report deleted');
             } else {
-              await archivePatient(reportToDelete.id, operatorStamp(user), 'Archived from overview');
+              await archivePatient(
+                reportToDelete.id,
+                operatorStamp(user),
+                'Archived from overview',
+              );
               setReportToDelete(null);
               toast.success('Patient archived; retained history is unchanged');
             }
           } catch (err) {
-            handleFirestoreError(err, isReport ? OperationType.DELETE : OperationType.UPDATE, 'reports');
+            handleFirestoreError(
+              err,
+              isReport ? OperationType.DELETE : OperationType.UPDATE,
+              'reports',
+            );
             toast.error('Could not archive or delete the record');
           }
         }}

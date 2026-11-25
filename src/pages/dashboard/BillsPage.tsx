@@ -15,7 +15,7 @@
  * that silently prints `₹0` for a test the lab forgot to price is not a bug the
  * operator sees until a patient complains, and by then the money has gone.
  */
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import {
   Banknote,
   Receipt,
@@ -80,6 +80,7 @@ import {
   type PaymentMode,
   type DoctorRecord,
 } from '../../lib/models';
+import { captureError } from '../../lib/telemetry';
 import {
   formatMoney,
   getBillingPrefs,
@@ -94,7 +95,12 @@ import { downloadCsv, toCsv } from '../../lib/export-csv';
 import { createdAtRangeFilters } from '../../lib/date-range';
 import { PrintDialog, type PrintJob } from '../../components/PrintDialog';
 import { createOrderWithSamples } from '../../lib/clinical-workflow';
-import { closeCashShift, getOpenCashShift, openCashShift, type CashShift } from '../../lib/cash-drawer';
+import {
+  closeCashShift,
+  getOpenCashShift,
+  openCashShift,
+  type CashShift,
+} from '../../lib/cash-drawer';
 
 type StatusFilter = 'all' | 'outstanding' | 'paid' | 'void';
 
@@ -111,6 +117,15 @@ export default function BillsPage() {
   const { user, role } = useAuth();
   const toast = useToast();
   const actor = operatorStamp(user);
+  const paymentOperations = useRef(new Map<string, string>());
+  const refundOperations = useRef(new Map<string, string>());
+  const operationFor = (map: Map<string, string>, key: string) => {
+    const existing = map.get(key);
+    if (existing) return existing;
+    const created = globalThis.crypto.randomUUID();
+    map.set(key, created);
+    return created;
+  };
   const canBilling = can(role, 'manageBilling');
 
   const [searchTerm, setSearchTerm] = useState('');
@@ -148,7 +163,9 @@ export default function BillsPage() {
   const [cashBusy, setCashBusy] = useState(false);
 
   useEffect(() => {
-    void getOpenCashShift().then(setCashShift).catch(() => setCashShift(null));
+    void getOpenCashShift()
+      .then(setCashShift)
+      .catch(() => setCashShift(null));
   }, []);
 
   /**
@@ -281,12 +298,26 @@ export default function BillsPage() {
         `Bill ${invoice.invoiceNo || invoice.id}.pdf`,
         action,
         `Bill ${invoice.invoiceNo || invoice.id} — ${invoice.patientName}`,
-        { actor, recordId: invoice.id },
+        {
+          actor,
+          actorUid: user?.uid ?? '',
+          actorRole: role ?? 'guest',
+          entityType: 'invoices' as const,
+          recordId: invoice.id,
+        },
       );
-      if (job) setPrintJob({ ...job, actor, recordId: invoice.id });
+      if (job)
+        setPrintJob({
+          ...job,
+          actor,
+          actorUid: user?.uid ?? '',
+          actorRole: role ?? 'guest',
+          entityType: 'invoices',
+          recordId: invoice.id,
+        });
       else if (message) toast.info(message);
     } catch (err) {
-      console.error('Bill output failed:', err);
+      captureError(err, { scope: 'bills:output', entity: 'invoices' });
       toast.error('Could not build the bill PDF.');
     } finally {
       setBusyId(null);
@@ -398,12 +429,15 @@ export default function BillsPage() {
         mode: payMode,
         actor,
         actorRole: role ?? undefined,
+        operationId: operationFor(paymentOperations.current, payTarget.id),
+        shiftId: cashShift?.id,
       });
       toast.success(
         updated.status === 'paid'
           ? `${updated.patientName}'s bill is settled.`
           : `Recorded ${formatMoney(updated.paidAmount)} of ${formatMoney(updated.amount)}.`,
       );
+      paymentOperations.current.delete(payTarget.id);
       setPayTarget(null);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Payment not recorded.');
@@ -430,7 +464,11 @@ export default function BillsPage() {
     try {
       const closed = await closeCashShift(cashShift.id, Number(countedCash), actor);
       setCashShift(null);
-      toast.success(closed.difference === 0 ? 'Cash drawer reconciled.' : `Cash drawer closed with a ${formatMoney(closed.difference ?? 0)} difference.`);
+      toast.success(
+        closed.difference === 0
+          ? 'Cash drawer reconciled.'
+          : `Cash drawer closed with a ${formatMoney(closed.difference ?? 0)} difference.`,
+      );
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Cash shift could not be closed.');
     } finally {
@@ -449,8 +487,11 @@ export default function BillsPage() {
         actorRole: role ?? undefined,
         reason: refundReason,
         reference: refundReference,
+        operationId: operationFor(refundOperations.current, refundTarget.id),
+        shiftId: cashShift?.id,
       });
       toast.success(`Refund recorded. ${formatMoney(updated.paidAmount)} remains collected.`);
+      refundOperations.current.delete(refundTarget.id);
       setRefundTarget(null);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Refund not recorded.');
@@ -460,6 +501,10 @@ export default function BillsPage() {
   };
 
   const exportRegister = async () => {
+    if (!can(role, 'exportData')) {
+      toast.error('Only an administrator can export the bill register.');
+      return;
+    }
     const csv = toCsv(
       [
         { label: 'Bill No', value: (i: InvoiceRecord) => i.invoiceNo || i.id },
@@ -489,6 +534,9 @@ export default function BillsPage() {
     );
     const saved = await downloadCsv(`pathomitra-bills-${Date.now()}.csv`, csv, {
       actor,
+      actorUid: user?.uid ?? '',
+      actorRole: role ?? 'guest',
+      entityType: 'exports' as const,
       rowCount: allRows.length,
       filters: { fromDate, toDate, status: statusFilter },
     });
@@ -508,7 +556,12 @@ export default function BillsPage() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" size="lg" onClick={exportRegister} disabled={rows.length === 0}>
+          <Button
+            variant="outline"
+            size="lg"
+            onClick={exportRegister}
+            disabled={rows.length === 0 || !can(role, 'exportData')}
+          >
             <FileDown className="h-4 w-4" aria-hidden="true" />
             Export CSV
           </Button>
@@ -617,7 +670,10 @@ export default function BillsPage() {
         />
       </div>
 
-      <Card pad="sm" className="flex flex-col gap-3 fold:flex-row fold:items-center fold:justify-between">
+      <Card
+        pad="sm"
+        className="flex flex-col gap-3 fold:flex-row fold:items-center fold:justify-between"
+      >
         <div>
           <p className="text-sm font-bold text-primary">Cash drawer</p>
           <p className="text-xs text-on-surface-variant">
@@ -630,18 +686,41 @@ export default function BillsPage() {
           {cashShift ? (
             <>
               <Field label="Counted cash">
-                <TextInput type="number" min={0} step="0.01" value={countedCash} onChange={e => setCountedCash(e.target.value)} />
+                <TextInput
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={countedCash}
+                  onChange={e => setCountedCash(e.target.value)}
+                />
               </Field>
-              <Button variant="outline" loading={cashBusy} disabled={countedCash === '' || !canBilling} onClick={() => void finishCashShift()}>
+              <Button
+                variant="outline"
+                loading={cashBusy}
+                disabled={countedCash === '' || !canBilling}
+                onClick={() => void finishCashShift()}
+              >
                 Close &amp; reconcile
               </Button>
             </>
           ) : (
             <>
               <Field label="Opening float">
-                <TextInput type="number" min={0} step="0.01" value={openingFloat} onChange={e => setOpeningFloat(e.target.value)} />
+                <TextInput
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={openingFloat}
+                  onChange={e => setOpeningFloat(e.target.value)}
+                />
               </Field>
-              <Button loading={cashBusy} disabled={!canBilling} onClick={() => void startCashShift()}>Open shift</Button>
+              <Button
+                loading={cashBusy}
+                disabled={!canBilling}
+                onClick={() => void startCashShift()}
+              >
+                Open shift
+              </Button>
             </>
           )}
         </div>
@@ -1153,7 +1232,9 @@ export default function BillsPage() {
       <Sheet
         open={!!refundTarget}
         onClose={() => setRefundTarget(null)}
-        title={refundTarget ? `Refund bill ${refundTarget.invoiceNo || refundTarget.id}` : 'Refund bill'}
+        title={
+          refundTarget ? `Refund bill ${refundTarget.invoiceNo || refundTarget.id}` : 'Refund bill'
+        }
         width="sm"
         footer={
           <div className="flex gap-3">
@@ -1175,18 +1256,33 @@ export default function BillsPage() {
       >
         <div className="space-y-3 py-1">
           <p className="text-sm text-on-surface-variant">
-            Collected: {formatMoney(refundTarget?.paidAmount ?? 0)}. The original receipt stays in the ledger.
+            Collected: {formatMoney(refundTarget?.paidAmount ?? 0)}. The original receipt stays in
+            the ledger.
           </p>
           <Field label="Refund amount" required>
-            <TextInput type="number" min={0} step="0.01" value={refundAmount} onChange={e => setRefundAmount(e.target.value)} />
+            <TextInput
+              type="number"
+              min={0}
+              step="0.01"
+              value={refundAmount}
+              onChange={e => setRefundAmount(e.target.value)}
+            />
           </Field>
           <Field label="Refund mode" required>
             <Select value={refundMode} onChange={e => setRefundMode(e.target.value as PaymentMode)}>
-              {Object.entries(MODE_LABEL).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              {Object.entries(MODE_LABEL).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
             </Select>
           </Field>
           <Field label="Reason" required>
-            <TextInput value={refundReason} onChange={e => setRefundReason(e.target.value)} placeholder="Duplicate collection" />
+            <TextInput
+              value={refundReason}
+              onChange={e => setRefundReason(e.target.value)}
+              placeholder="Duplicate collection"
+            />
           </Field>
           <Field label="Reference" hint="Optional bank/UPI reference.">
             <TextInput value={refundReference} onChange={e => setRefundReference(e.target.value)} />
@@ -1264,7 +1360,7 @@ export default function BillsPage() {
             setDeleteTarget(null);
           } catch (err) {
             toast.error('Delete failed.');
-            console.error(err);
+            captureError(err, { scope: 'bills:delete', entity: 'invoices' });
           }
         }}
       />

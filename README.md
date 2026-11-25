@@ -8,11 +8,12 @@
 ![Android](https://github.com/pixelnaitik/PathoMitra/actions/workflows/android.yml/badge.svg)
 ![Release](https://github.com/pixelnaitik/PathoMitra/actions/workflows/release.yml/badge.svg)
 
-**PathoMitra** is built with React 19, Vite, Tailwind CSS, Electron, and Capacitor 8. It runs as a
-desktop application on Windows, an Android mobile app, and a web app during development. Every clinical record
-lives in an encrypted on-device database. It requests **no `INTERNET` permission** for the clinical app, talks
-to no tracking backend, and contains zero third-party analytics or invasive crash reporting — the laboratory
-owns and controls its data locally.
+**PathoMitra** is built with React 19, Vite, Tailwind CSS, Electron, and Capacitor 8. Android and Windows
+Desktop are the clinical platforms. The production Web/PWA build is marketing-only and blocks clinical
+workspaces; a local development server may exercise the demo with synthetic data. Every clinical record in
+a supported app lives in an encrypted on-device database. The Android app requests **no `INTERNET`
+permission**, Desktop blocks remote navigation/requests, and neither app includes analytics, tracking, or
+remote crash reporting.
 
 ---
 
@@ -42,13 +43,13 @@ owns and controls its data locally.
 - **Dashboard & Analytics** — Revenue, test volume, new patients and pending-report KPIs with charts, plus exportable CSVs.
 - **Patient & Doctor Management** — Registration, quick search, doctor directories, and referral registers with calendar range filtering.
 - **Billing & Invoices** — Built-in laboratory pricing management, billing receipts, and referral statement calculations.
-- **Pathology Catalogue & Report Generation** — 160+ clinical test definitions (CBC, LFT, Lipid, Thyroid, Renal, Urine, etc.) rendered into clean PDFs with multiple design templates (*Modern*, *Classic*, *Minimalist*, *Pre-printed Letterhead*).
+- **Pathology Catalogue & Report Generation** — 160+ clinical test definitions (CBC, LFT, Lipid, Thyroid, Renal, Urine, etc.) rendered into clean PDFs with multiple design templates (_Modern_, _Classic_, _Minimalist_, _Pre-printed Letterhead_).
 - **Keyboard-First Result Entry** — Rapid data entry designed for clinical lab technicians.
 - **Custom Tests & Profiles** — Define custom test parameters, categories, units, and demographic reference ranges.
-- **Drafts & Amendment Auditing** — Drafts remain strictly confidential; finalized reports record amendment history and issuing technician metadata.
+- **Drafts, Amendments & Issuance Signatures** — Drafts remain confidential; issued reports are immutable, require separate pathologist review, retain amendment history, and carry a device-backed ECDSA P-256 issuance signature with a frozen clinical snapshot.
 - **Encrypted On-Device Database** — SQLCipher (AES-256) database with hardware-backed key management (Android Keystore / OS Keychain).
 - **Notification Center** — Derives actionable local reminders for pending reports, unissued drafts, and stale bills with no remote push servers.
-- **Local Authentication** — Single-operator security with PBKDF2 passcode hashing, rate-limiting lockout backoff, and optional biometric unlock.
+- **Local Authentication** — Up to 21 role-based operator accounts with PBKDF2 passcode hashing, rate-limiting lockout backoff, Android biometrics, and Windows Hello; every mutation is actor- and permission-bound.
 
 There is deliberately **no QR verification service and no external signing endpoint** —
 the offline build has no server, so a report states what actually happened (who issued
@@ -59,14 +60,15 @@ licence text prints only if the laboratory enters and attests to it in Settings.
 
 ## Privacy & Security Model
 
-| Control        | Implementation                                                                     |
-| -------------- | ---------------------------------------------------------------------------------- |
-| Network        | No `INTERNET` permission; no analytics, tracking or remote crash reporting         |
-| Database       | SQLCipher (AES-256) via `@capacitor-community/sqlite`; key in the Android Keystore |
-| Authentication | Single local operator; PBKDF2-hashed passcode; optional biometric unlock           |
-| Sessions       | Re-lock on background / idle; rising lockout after failed unlocks                  |
-| Release build  | `debuggable false`, R8 minification + resource shrinking                           |
-| Backups        | Operator-created JSON snapshots; the app never transmits them                      |
+| Control        | Implementation                                                                                               |
+| -------------- | ------------------------------------------------------------------------------------------------------------ |
+| Network        | Android has no `INTERNET` permission; Desktop blocks remote requests; no analytics or remote crash reporting |
+| Database       | SQLCipher (AES-256); Android Keystore or Windows Credential Locker protects the key                          |
+| Authentication | Up to 21 local operators; action permissions; PBKDF2 passcode; Android biometrics / Windows Hello            |
+| Sessions       | Re-lock on background, idle, minimize, suspend, or OS lock; rising lockout after failed unlocks              |
+| Release build  | `debuggable false`, R8 minification + resource shrinking; signed release jobs fail closed without secrets    |
+| Backups        | AES-256-GCM encrypted snapshots, scheduled local copies, verified off-device destinations, restore drills    |
+| Output audit   | Append-only actor uid, entity type, content hash, actual destination, and completion/cancellation/failure    |
 
 ---
 
@@ -92,10 +94,11 @@ licence text prints only if the laboratory enters and attests to it in Settings.
 │   ├── PULL_REQUEST_TEMPLATE.md
 │   ├── dependabot.yml
 │   └── workflows/
-│       ├── ci.yml               # PR checks (lint, tests, build)
+│       ├── ci.yml               # PR format, lint, coverage, browser/a11y/PDF, build and budget gates
 │       ├── deploy.yml           # main → Cloudflare Pages + privacy-site artifact
 │       ├── release.yml          # tag → signed AAB + GitHub Release
-│       └── android.yml          # tag / manual → AAB + APK artifacts
+│       ├── android.yml          # tag / manual → signed AAB + APK artifacts
+│       └── desktop-release.yml  # tag / manual → signed Windows MSI + provenance manifest
 ├── android/                     # Capacitor native project (Gradle wrapper, signing via ignored files)
 ├── docs/
 │   ├── README.md                # Documentation index
@@ -140,8 +143,9 @@ npm ci
 npm run dev
 ```
 
-Open `http://localhost:3000`. Data persists in browser storage in the web build; the
-production product targets are the encrypted Electron Desktop build and Android build below.
+Open `http://localhost:3000`. The local browser demo persists synthetic data in browser storage and
+shows an explicit unencrypted-storage warning. Production Web/PWA serves product information only; use the
+encrypted Electron Desktop or Android build for clinical work.
 
 ---
 
@@ -190,14 +194,14 @@ Outputs are generated under `dist-electron/` and `release-desktop/`.
 app — set them in `.env` (see [`.env.example`](.env.example)):
 
 ```bash
-VITE_SUPPORT_EMAIL="privacy@your-lab-domain.example"
-VITE_PRIVACY_URL="https://policy.your-lab-domain.example/"
+VITE_SUPPORT_EMAIL="pathomitra@healthcarediagnosticscenter.in"
+VITE_PRIVACY_URL="https://pathomitra.pages.dev/"
 ```
 
 The guard (`scripts/check-release-config.mjs`) exists because a comment survives a build
 while an unreachable contact does not survive Play review.
 
-### 2. Configure signing (optional for local builds)
+### 2. Configure signing (required for release artifacts)
 
 Copy the template and point `storeFile` at your keystore:
 
@@ -206,10 +210,10 @@ cp android/keystore.properties.example android/keystore.properties
 ```
 
 `android/keystore.properties`, `*.jks` and `*.keystore` are **git-ignored** — signing
-material must never be committed. CI instead decodes a `KEYSTORE_BASE64` secret and reads
+material must never be committed. CI decodes a `KEYSTORE_BASE64` secret and reads
 `KEYSTORE_KEY_ALIAS` / `KEYSTORE_KEY_PASSWORD` / `KEYSTORE_STORE_PASSWORD` (see
-`android/app/build.gradle`). Without any keystore the build still succeeds and produces
-an _unsigned_ artifact, with a loud warning.
+`android/app/build.gradle`). Release workflows fail closed when any secret is absent. Local unsigned test
+builds use the explicit `*:test` scripts and must not be distributed as release artifacts.
 
 ### 3. Build
 
@@ -240,26 +244,30 @@ npm run build:privacy    # outputs privacy-site/
 
 ## Command Reference
 
-| Command                           | What it does                                                             |
-| --------------------------------- | ------------------------------------------------------------------------ |
-| `npm run dev`                     | Vite dev server on port 3000                                             |
-| `npm run build`                   | Production web bundle to `dist/`                                         |
-| `npm run preview`                 | Serve the built bundle locally                                           |
-| `npm run build:android`           | `VITE_TARGET=native` web build + release-config & asset guards           |
-| `npm run sync:android`            | `build:android` + `cap sync android` + synced-asset guard                |
-| `npm run android:apk`             | Gradle `assembleRelease` (installable APK)                               |
-| `npm run android:aab`             | Gradle `bundleRelease` (Play artifact)                                   |
-| `npm run verify:android`          | `build:android` + AAB, the native pre-release gauntlet                   |
-| `npm run build:privacy`           | Render the static privacy-policy site                                    |
-| `npm run typecheck`               | `tsc --noEmit`, strict                                                   |
-| `npm run lint`                    | Typecheck + ESLint, uncapped                                             |
-| `npm run lint:ci`                 | Same, with `--max-warnings=23` as a ratchet: CI fails if the count rises |
-| `npm run format` / `format:check` | Prettier over `src/**/*.{ts,tsx,css}`                                    |
-| `npm test` / `test:watch`         | Vitest (jsdom)                                                           |
-| `npm run test:coverage`           | Vitest + coverage gate on the data-integrity layer                       |
-| `npm run verify`                  | `lint:ci` → `test:coverage` → `build`                                    |
-| `npm run release` / `release:dry` | standard-version bump + changelog                                        |
-| `npm run clean`                   | Remove `dist/`                                                           |
+| Command                           | What it does                                                               |
+| --------------------------------- | -------------------------------------------------------------------------- |
+| `npm run dev`                     | Vite dev server on port 3000                                               |
+| `npm run build`                   | Production web bundle to `dist/`                                           |
+| `npm run preview`                 | Serve the built bundle locally                                             |
+| `npm run build:android`           | `VITE_TARGET=native` web build + release-config & asset guards             |
+| `npm run sync:android`            | `build:android` + `cap sync android` + synced-asset guard                  |
+| `npm run android:apk`             | Gradle `assembleRelease` (installable APK)                                 |
+| `npm run android:aab`             | Gradle `bundleRelease` (Play artifact)                                     |
+| `npm run verify:android`          | `build:android` + AAB, the native pre-release gauntlet                     |
+| `npm run build:privacy`           | Render the static privacy-policy site                                      |
+| `npm run typecheck`               | `tsc --noEmit`, strict                                                     |
+| `npm run lint`                    | Typecheck + ESLint, uncapped                                               |
+| `npm run lint:ci`                 | Typecheck + ESLint with `--max-warnings=22` as a ratchet                   |
+| `npm run format` / `format:check` | Prettier over source, Electron, tests, scripts, workflows, and public docs |
+| `npm test` / `test:watch`         | Vitest (jsdom)                                                             |
+| `npm run test:coverage`           | Vitest + coverage gate on the data-integrity layer                         |
+| `npm run test:a11y`               | Playwright axe, keyboard, contrast, 360 px, 200% zoom, reduced motion      |
+| `npm run test:pdf`                | Platform-neutral Unicode/pagination PDF visual fixtures                    |
+| `npm run perf:budget`             | Enforce built JavaScript/font/chunk budgets                                |
+| `npm run perf:benchmark`          | Synthetic 50,000-record paged-query benchmark                              |
+| `npm run verify`                  | `format:check` → `lint:ci` → `test:coverage` → `build`                     |
+| `npm run release` / `release:dry` | standard-version bump + changelog                                          |
+| `npm run clean`                   | Remove `dist/`                                                             |
 
 To debug a production stack trace, build with `SOURCEMAP=true npm run build`; Vite emits
 hidden `.map` files — upload them to your error tracker and delete them from `dist/`
@@ -275,8 +283,11 @@ before distributing anything.
 - **Vitest coverage gate** — `vitest.config.ts` pins thresholds on the modules whose
   silent failure would corrupt clinical output (document parsing, settings persistence,
   pagination, notification derivation).
-- **Build guards** — `scripts/check-native-assets.mjs` proves the APK carries no
-  web-deployment artifacts (robots, sitemap, service worker, `_headers`); no placeholders.
+- **Formatting gate** — `format:check` covers source, Electron, tests, scripts, workflows, and maintained public documentation.
+- **Browser accessibility gate** — axe plus keyboard, all-palette contrast, 360 px, 200% zoom, and reduced-motion tests. Manual Narrator/TalkBack acceptance remains an external release gate.
+- **PDF visual gate** — approved page-image fixtures cover Devanagari/Bengali names, currency/math symbols, legacy caveats, amendments, and multi-page pagination.
+- **Performance gates** — Vite build budgets, `perf:budget`, and the synthetic paged-query benchmark.
+- **Build guards** — `scripts/check-native-assets.mjs` proves the APK carries no web-deployment artifacts (robots, sitemap, service worker, `_headers`); no placeholders.
 - **Pre-commit hook** — husky + lint-staged lint and format staged files; installed by
   `npm ci`.
 
@@ -284,14 +295,15 @@ before distributing anything.
 
 ## CI/CD & Releases
 
-Four GitHub Actions workflows:
+Five GitHub Actions workflows:
 
-| Workflow      | Trigger           | What it does                                                                                                             |
-| ------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `ci.yml`      | PRs to `main`     | `lint:ci`, `test:coverage`, `build`                                                                                      |
-| `deploy.yml`  | push to `main`    | Same gates, then deploys `dist/` to **Cloudflare Pages** (`pathomitra` project) and uploads the `privacy-site/` artifact |
-| `release.yml` | `v*` tag          | Builds the signed AAB, verifies 16 KB native page alignment, creates the GitHub Release with the AAB attached            |
-| `android.yml` | `v*` tag / manual | Builds the AAB and an installable APK as build artifacts                                                                 |
+| Workflow              | Trigger           | What it does                                                                                                             |
+| --------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `ci.yml`              | PRs to `main`     | Format, lint, coverage, smoke, accessibility, PDF visuals, build, bundle/query budgets                                   |
+| `deploy.yml`          | push to `main`    | Same gates, then deploys `dist/` to **Cloudflare Pages** (`pathomitra` project) and uploads the `privacy-site/` artifact |
+| `release.yml`         | `v*` tag          | Builds the signed AAB, verifies 16 KB native page alignment, creates the GitHub Release with the AAB attached            |
+| `android.yml`         | `v*` tag / manual | Builds signed AAB/APK artifacts with fail-closed keystore secrets                                                        |
+| `desktop-release.yml` | `v*` tag / manual | Builds a signed Windows MSI and provenance manifest; fails closed without Authenticode secrets                           |
 
 **Secrets / variables to configure** (Settings → Secrets and variables → Actions):
 
@@ -299,11 +311,12 @@ Four GitHub Actions workflows:
 | ------------------------------------------------------------------------ | --------- | ---------------------------------------------------- |
 | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`                          | secrets   | `deploy.yml` (Pages deploy)                          |
 | `KEYSTORE_BASE64`                                                        | secret    | `release.yml`, `android.yml` (base64-encoded `.jks`) |
-| `KEYSTORE_KEY_ALIAS`, `KEYSTORE_KEY_PASSWORD`, `KEYSTORE_STORE_PASSWORD` | secrets   | release signing                                      |
-| `VITE_SUPPORT_EMAIL`, `VITE_PRIVACY_URL`                                 | variables | `deploy.yml` privacy-site build                      |
+| `KEYSTORE_KEY_ALIAS`, `KEYSTORE_KEY_PASSWORD`, `KEYSTORE_STORE_PASSWORD` | secrets   | Android release signing                              |
+| `WIN_CSC_LINK`, `WIN_CSC_KEY_PASSWORD`                                   | secrets   | `desktop-release.yml` Authenticode signing           |
+| `VITE_SUPPORT_EMAIL`, `VITE_PRIVACY_URL`                                 | variables | release-config and privacy-site builds               |
 
-A run without signing secrets still completes and produces an unsigned artifact — a fork
-gets a compilable result instead of a hard failure.
+Release jobs fail closed when signing secrets are absent. Local unsigned test artifacts use explicit
+`*:test` scripts, are not release artifacts, and must not be submitted to a store.
 
 ---
 

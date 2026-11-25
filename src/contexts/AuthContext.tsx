@@ -22,10 +22,22 @@ import {
 } from '../lib/operator-accounts';
 import { authenticate, checkBiometric, setupBiometric } from '../lib/biometric';
 import { can } from '../lib/permissions';
-import { getRepository } from '../data';
+import { captureError } from '../lib/telemetry';
+import {
+  clearRepositoryActor,
+  getRepository,
+  getSystemRepository,
+  setRepositoryActor,
+} from '../data';
 import { installSessionLock } from '../lib/session-lock';
+import { desktopBridge } from '../lib/desktop-bridge';
 import { eraseLocalArtifacts } from '../lib/erase-data';
-import { SETTINGS_UPDATED_EVENT, DEFAULT_SETTINGS, readSettings, writeSettings } from '../lib/settings';
+import {
+  SETTINGS_UPDATED_EVENT,
+  DEFAULT_SETTINGS,
+  readSettings,
+  writeSettings,
+} from '../lib/settings';
 
 /** Fixed uid retained for the original administrator so existing audit rows remain valid. */
 export const LOCAL_UID = 'local-admin';
@@ -74,7 +86,7 @@ interface AuthContextType {
   setBiometric: (enabled: boolean) => Promise<void>;
   changePassword: (nextPassword: string, currentPassword: string) => Promise<void>;
   renameAccount: (name: string) => Promise<void>;
-  recoverPassword: (recoveryKey: string, nextPassword: string) => Promise<void>;
+  recoverPassword: (recoveryKey: string, nextPassword: string) => Promise<string>;
   rotateRecoveryKey: (currentPassword: string) => Promise<string>;
   lock: () => void;
   logout: () => Promise<void>;
@@ -82,13 +94,28 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType>({
-  status: 'loading', user: null, operator: null, role: null, loading: true, isAdmin: false,
-  biometricAvailable: false, biometricEnabled: false, termsPending: true,
-  createAccount: async () => '', completeOnboarding: () => {}, acceptCurrentTerms: async () => {},
+  status: 'loading',
+  user: null,
+  operator: null,
+  role: null,
+  loading: true,
+  isAdmin: false,
+  biometricAvailable: false,
+  biometricEnabled: false,
+  termsPending: true,
+  createAccount: async () => '',
+  completeOnboarding: () => {},
+  acceptCurrentTerms: async () => {},
   unlockWithPassword: async () => ({ ok: false, reason: 'wrong', attemptsLeft: 0 }),
-  unlockWithBiometric: async () => false, setBiometric: async () => {},
-  changePassword: async () => {}, renameAccount: async () => {}, recoverPassword: async () => {},
-  rotateRecoveryKey: async () => '', lock: () => {}, logout: async () => {}, eraseAllData: async () => {},
+  unlockWithBiometric: async () => false,
+  setBiometric: async () => {},
+  changePassword: async () => {},
+  renameAccount: async () => {},
+  recoverPassword: async () => '',
+  rotateRecoveryKey: async () => '',
+  lock: () => {},
+  logout: async () => {},
+  eraseAllData: async () => {},
 });
 
 export const useAuth = () => useContext(AuthContext);
@@ -120,12 +147,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let active = true;
     void (async () => {
       let bio = { available: false };
-      try { bio = await checkBiometric(); } catch (error) {
-        console.error('PathoMitra: biometric probe failed, continuing without it', error);
+      try {
+        bio = await checkBiometric();
+      } catch (error) {
+        captureError(error, { scope: 'auth:biometric-probe' });
       }
       let account;
-      try { account = await getAccount(); } catch (error) {
-        console.error('PathoMitra: secure storage could not be read', error);
+      try {
+        account = await getAccount();
+      } catch (error) {
+        captureError(error, { scope: 'auth:secure-storage' });
         if (active) setStatus('error');
         return;
       }
@@ -140,50 +171,72 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setStatus('onboarding');
       }
     })();
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, []);
 
   const enterUnlocked = useCallback((next: OperatorIdentity) => {
     if (next.disabled) throw new Error('This operator account is disabled.');
+    setRepositoryActor({ uid: next.uid, role: next.role });
     setOperator(next);
     setStatus('unlocked');
   }, []);
 
-  const createAccount = useCallback(async (
-    name: string,
-    password: string,
-    enableBiometric: boolean,
-    termsAccepted: boolean,
-  ): Promise<string> => {
-    const trimmed = name.trim();
-    if (!trimmed) throw new Error('Please enter your lab name.');
-    if (!isValidPasscode(password)) throw new Error(PIN_ERROR);
-    if (!termsAccepted) throw new Error('Please accept the Terms to continue.');
-    let useBiometric = enableBiometric;
-    if (enableBiometric) {
-      const bio = await checkBiometric();
-      if (!bio.available) useBiometric = false;
-    }
-    const { account, recoveryKey } = await createAccountWithRecovery(
-      trimmed, password, useBiometric, new Date().toISOString(),
-    );
-    const profile: OperatorIdentity = {
-      uid: LOCAL_UID, username: 'admin', name: account.name, role: 'admin', disabled: false,
-    };
-    try {
-      await getRepository().set('users', LOCAL_UID, {
-        name: account.name, username: 'admin', role: 'admin', createdAt: account.createdAt,
-      });
-    } catch (error) {
-      console.error('PathoMitra: failed to seed local user profile', error);
-    }
-    setPendingOperator(profile);
-    setBiometricAvailable(useBiometric ? true : biometricAvailable);
-    setBiometricEnabled(useBiometric);
-    setTermsPending(false);
-    adoptLabNameFromAccount(account.name);
-    return recoveryKey;
-  }, [biometricAvailable]);
+  const createAccount = useCallback(
+    async (
+      name: string,
+      password: string,
+      enableBiometric: boolean,
+      termsAccepted: boolean,
+    ): Promise<string> => {
+      const trimmed = name.trim();
+      if (!trimmed) throw new Error('Please enter your lab name.');
+      if (!isValidPasscode(password)) throw new Error(PIN_ERROR);
+      if (!termsAccepted) throw new Error('Please accept the Terms to continue.');
+      let useBiometric = enableBiometric;
+      if (enableBiometric) {
+        const bio = await checkBiometric();
+        if (!bio.available) useBiometric = false;
+      }
+      const { account, recoveryKey } = await createAccountWithRecovery(
+        trimmed,
+        password,
+        useBiometric,
+        new Date().toISOString(),
+      );
+      const bridge = desktopBridge();
+      if (bridge && !(await bridge.session.open('admin', password))) {
+        throw new Error(
+          'The desktop session could not be established. Unlock again with the new passcode.',
+        );
+      }
+      const profile: OperatorIdentity = {
+        uid: LOCAL_UID,
+        username: 'admin',
+        name: account.name,
+        role: 'admin',
+        disabled: false,
+      };
+      try {
+        await getSystemRepository().set('users', LOCAL_UID, {
+          name: account.name,
+          username: 'admin',
+          role: 'admin',
+          createdAt: account.createdAt,
+        });
+      } catch (error) {
+        captureError(error, { scope: 'auth:seed-profile' });
+      }
+      setPendingOperator(profile);
+      setBiometricAvailable(useBiometric ? true : biometricAvailable);
+      setBiometricEnabled(useBiometric);
+      setTermsPending(false);
+      adoptLabNameFromAccount(account.name);
+      return recoveryKey;
+    },
+    [biometricAvailable],
+  );
 
   const completeOnboarding = useCallback(() => {
     if (!pendingOperator) return;
@@ -191,80 +244,145 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setPendingOperator(null);
   }, [pendingOperator, enterUnlocked]);
 
-  const unlockWithPassword = useCallback(async (identifier: string, password: string): Promise<UnlockResult> => {
-    const result = await verifyOperatorPassword(identifier || 'admin', password);
-    if (!result.ok) return result;
-    const profile = await findOperator(identifier || 'admin');
-    if (!profile) return { ok: false, reason: 'wrong', attemptsLeft: 0 };
-    enterUnlocked(profile);
-    return { ok: true };
-  }, [enterUnlocked]);
+  const unlockWithPassword = useCallback(
+    async (identifier: string, password: string): Promise<UnlockResult> => {
+      const result = await verifyOperatorPassword(identifier || 'admin', password);
+      if (!result.ok) return result;
+      const profile = await findOperator(identifier || 'admin');
+      if (!profile) return { ok: false, reason: 'wrong', attemptsLeft: 0 };
+      const bridge = desktopBridge();
+      if (bridge) {
+        const session = await bridge.session.open(identifier || 'admin', password);
+        if (
+          !session ||
+          session.principal.uid !== profile.uid ||
+          session.principal.role !== profile.role
+        ) {
+          return { ok: false, reason: 'wrong', attemptsLeft: 0 };
+        }
+      }
+      enterUnlocked(profile);
+      return { ok: true };
+    },
+    [enterUnlocked],
+  );
 
-  const unlockWithBiometric = useCallback(async (operatorId: string): Promise<boolean> => {
-    const result = await authenticate('Unlock PathoMitra');
-    if (!result.ok) return false;
-    const profile = await findOperator(operatorId);
-    if (!profile) return false;
-    try { enterUnlocked(profile); } catch { return false; }
-    return true;
-  }, [enterUnlocked]);
+  const unlockWithBiometric = useCallback(
+    async (operatorId: string): Promise<boolean> => {
+      const account = await getAccount();
+      if (!account?.biometricEnabled || account.biometricOwnerUid !== operatorId) return false;
+      const result = await authenticate(
+        `Unlock PathoMitra as ${operatorId === LOCAL_UID ? 'administrator' : operatorId}`,
+      );
+      if (!result.ok) return false;
+      const profile = await findOperator(operatorId);
+      if (!profile) return false;
+      const bridge = desktopBridge();
+      if (bridge) {
+        const session = await bridge.session.openBiometric(operatorId);
+        if (
+          !session ||
+          session.principal.uid !== profile.uid ||
+          session.principal.role !== profile.role
+        )
+          return false;
+      }
+      try {
+        enterUnlocked(profile);
+      } catch {
+        return false;
+      }
+      return true;
+    },
+    [enterUnlocked],
+  );
 
-  const setBiometric = useCallback(async (enabled: boolean) => {
-    if (enabled) {
-      const result = await setupBiometric('Enable biometric unlock');
-      if (!result.ok) throw new Error(result.error || 'Biometric setup was cancelled.');
-    }
-    await persistBiometricEnabled(enabled);
-    setBiometricEnabled(enabled);
-  }, []);
+  const setBiometric = useCallback(
+    async (enabled: boolean) => {
+      if (enabled) {
+        const result = await setupBiometric('Enable biometric unlock');
+        if (!result.ok) throw new Error(result.error || 'Biometric setup was cancelled.');
+      }
+      await persistBiometricEnabled(enabled, operator?.uid ?? LOCAL_UID);
+      setBiometricEnabled(enabled);
+    },
+    [operator?.uid],
+  );
 
-  const changePassword = useCallback(async (nextPassword: string, currentPassword: string) => {
-    if (!isValidPasscode(nextPassword)) throw new Error(PIN_ERROR);
-    if (!operator) throw new Error('No operator is signed in.');
-    if (operator.uid === LOCAL_UID) {
-      await changeLocalPassword(nextPassword, currentPassword);
-      return;
-    }
-    const verified = await verifyOperatorPassword(operator.username, currentPassword);
-    if (!verified.ok) throw new Error('Current passcode is incorrect or locked.');
-    const { changeOwnOperatorPassword } = await import('../lib/operator-accounts');
-    await changeOwnOperatorPassword(operator.uid, nextPassword);
-  }, [operator]);
+  const changePassword = useCallback(
+    async (nextPassword: string, currentPassword: string) => {
+      if (!isValidPasscode(nextPassword)) throw new Error(PIN_ERROR);
+      if (!operator) throw new Error('No operator is signed in.');
+      if (operator.uid === LOCAL_UID) {
+        await changeLocalPassword(nextPassword, currentPassword);
+        return;
+      }
+      const verified = await verifyOperatorPassword(operator.username, currentPassword);
+      if (!verified.ok) throw new Error('Current passcode is incorrect or locked.');
+      const { changeOwnOperatorPassword } = await import('../lib/operator-accounts');
+      await changeOwnOperatorPassword(operator.uid, nextPassword);
+    },
+    [operator],
+  );
 
-  const renameAccount = useCallback(async (name: string) => {
-    const trimmed = name.trim();
-    if (!trimmed) throw new Error('Name cannot be empty.');
-    if (!operator) return;
-    if (operator.uid === LOCAL_UID) {
-      const previous = (await getAccount())?.name ?? '';
-      await updateAccountName(trimmed);
-      try { await getRepository().update('users', LOCAL_UID, { name: trimmed }); } catch { /* mirror is non-authoritative */ }
-      adoptLabNameFromAccount(trimmed, previous);
-    } else {
-      await updateOperator(operator.uid, { name: trimmed }, { uid: operator.uid, role: operator.role });
-    }
-    setOperator({ ...operator, name: trimmed });
-  }, [operator]);
+  const renameAccount = useCallback(
+    async (name: string) => {
+      const trimmed = name.trim();
+      if (!trimmed) throw new Error('Name cannot be empty.');
+      if (!operator) return;
+      if (operator.uid === LOCAL_UID) {
+        const previous = (await getAccount())?.name ?? '';
+        await updateAccountName(trimmed);
+        try {
+          await getRepository().update('users', LOCAL_UID, { name: trimmed });
+        } catch {
+          /* mirror is non-authoritative */
+        }
+        adoptLabNameFromAccount(trimmed, previous);
+      } else {
+        await updateOperator(
+          operator.uid,
+          { name: trimmed },
+          { uid: operator.uid, role: operator.role },
+        );
+      }
+      setOperator({ ...operator, name: trimmed });
+    },
+    [operator],
+  );
 
   const recoverPassword = useCallback(async (recoveryKey: string, nextPassword: string) => {
     if (!isValidPasscode(nextPassword)) throw new Error(PIN_ERROR);
-    await recoverAccountPassword(recoveryKey, nextPassword);
-    await getRepository().set('auditEvents', `auth-recovery-${Date.now()}`, {
-      action: 'auth.recovery', entity: 'users', entityId: LOCAL_UID,
-      actor: LOCAL_UID, at: new Date().toISOString(), detail: { method: 'offline-recovery-key' },
+    const replacementKey = await recoverAccountPassword(recoveryKey, nextPassword);
+    await getSystemRepository().set('auditEvents', `auth-recovery-${Date.now()}`, {
+      action: 'auth.recovery',
+      entity: 'users',
+      entityId: LOCAL_UID,
+      actor: LOCAL_UID,
+      at: new Date().toISOString(),
+      detail: { method: 'offline-recovery-key', keyRotated: true },
     });
+    return replacementKey;
   }, []);
 
-  const rotateRecoveryKey = useCallback(async (currentPassword: string) => {
-    if (operator?.uid !== LOCAL_UID) throw new Error('Only the primary administrator can rotate the recovery key.');
-    return rotateLocalRecoveryKey(currentPassword);
-  }, [operator]);
+  const rotateRecoveryKey = useCallback(
+    async (currentPassword: string) => {
+      if (operator?.uid !== LOCAL_UID)
+        throw new Error('Only the primary administrator can rotate the recovery key.');
+      return rotateLocalRecoveryKey(currentPassword);
+    },
+    [operator],
+  );
 
   const lock = useCallback(() => {
+    void desktopBridge()?.session.close();
+    clearRepositoryActor();
     setOperator(null);
-    setStatus(previous => previous === 'onboarding' ? 'onboarding' : 'locked');
+    setStatus(previous => (previous === 'onboarding' ? 'onboarding' : 'locked'));
   }, []);
-  const logout = useCallback(async () => { lock(); }, [lock]);
+  const logout = useCallback(async () => {
+    lock();
+  }, [lock]);
 
   const acceptCurrentTerms = useCallback(async () => {
     await persistTermsAcceptance();
@@ -272,11 +390,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const eraseAllData = useCallback(async () => {
-    try { await getRepository().clearAll(); } catch (error) {
-      throw new Error('Clinical records could not be fully erased. Your account and this device lock were left in place. Please try again.', { cause: error });
+    try {
+      await getRepository().clearAll();
+    } catch (error) {
+      throw new Error(
+        'Clinical records could not be fully erased. Your account and this device lock were left in place. Please try again.',
+        { cause: error },
+      );
     }
-    try { await eraseLocalArtifacts(); } catch (error) {
-      throw new Error('Clinical records were cleared, but backups, exports, settings, or diagnostics could not all be removed. Your account was retained so you can retry.', { cause: error });
+    try {
+      await eraseLocalArtifacts();
+    } catch (error) {
+      throw new Error(
+        'Clinical records were cleared, but backups, exports, settings, or diagnostics could not all be removed. Your account was retained so you can retry.',
+        { cause: error },
+      );
     }
     await deleteAccount();
     await deleteOperators();
@@ -289,7 +417,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const unlocked = status === 'unlocked';
   const user = unlocked && operator ? toUser(operator) : null;
-  const role = unlocked ? operator?.role ?? null : null;
+  const role = unlocked ? (operator?.role ?? null) : null;
   const [lockConfigVersion, setLockConfigVersion] = useState(0);
   useEffect(() => {
     const resync = () => setLockConfigVersion(version => version + 1);
@@ -299,19 +427,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     if (status !== 'unlocked') return undefined;
     return installSessionLock({
-      onLock: () => setStatus(previous => previous === 'unlocked' ? 'locked' : previous),
+      onLock: () => setStatus(previous => (previous === 'unlocked' ? 'locked' : previous)),
       idleMs: Math.max(0, readSettings().autoLockSeconds) * 1000,
     });
   }, [status, lockConfigVersion]);
 
   return (
-    <AuthContext.Provider value={{
-      status, user, operator, role, loading: status === 'loading',
-      isAdmin: can(role, 'manageOperators'), biometricAvailable, biometricEnabled, termsPending,
-      createAccount, completeOnboarding, acceptCurrentTerms, unlockWithPassword, unlockWithBiometric,
-      setBiometric, changePassword, renameAccount, recoverPassword, rotateRecoveryKey,
-      lock, logout, eraseAllData,
-    }}>
+    <AuthContext.Provider
+      value={{
+        status,
+        user,
+        operator,
+        role,
+        loading: status === 'loading',
+        isAdmin: can(role, 'manageOperators'),
+        biometricAvailable,
+        biometricEnabled,
+        termsPending,
+        createAccount,
+        completeOnboarding,
+        acceptCurrentTerms,
+        unlockWithPassword,
+        unlockWithBiometric,
+        setBiometric,
+        changePassword,
+        renameAccount,
+        recoverPassword,
+        rotateRecoveryKey,
+        lock,
+        logout,
+        eraseAllData,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

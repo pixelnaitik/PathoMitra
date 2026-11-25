@@ -172,7 +172,10 @@ export function ReportViewerDashboard({
   const [cached, setCached] = useState<ReportRecord | null>(report);
   if (report && report !== cached) setCached(report);
   const shown = report ?? cached;
-  const [signatureStatus, setSignatureStatus] = useState<{ valid: boolean; reason?: string } | null>(null);
+  const [signatureStatus, setSignatureStatus] = useState<{
+    valid: boolean;
+    reason?: string;
+  } | null>(null);
   useEffect(() => {
     let active = true;
     if (!shown || shown.status !== 'final') {
@@ -182,14 +185,18 @@ export function ReportViewerDashboard({
     void verifyReportIssuance(shown).then(result => {
       if (active) setSignatureStatus(result);
     });
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, [shown]);
   const legacyFinal = shown?.status === 'final' && !shown.issuanceSnapshot;
   const contextPatient = shown?.issuanceSnapshot?.patient ?? (legacyFinal ? undefined : patient);
 
   const rows = useMemo<ResultRow[]>(() => {
     if (!shown) return [];
-    const age = contextPatient ? ageAsNumber(contextPatient) : undefined;
+    const age = contextPatient
+      ? ageAsNumber(contextPatient, new Date(shown.issuanceSnapshot?.createdAt ?? shown.createdAt))
+      : undefined;
     const gender = contextPatient?.gender;
     // Ordered panels *plus* every value that was actually recorded.
     //
@@ -204,7 +211,9 @@ export function ReportViewerDashboard({
         key => !(shown.testSelection || []).includes(key),
       ),
     ];
-    const snapshotTests = new Map((shown.issuanceSnapshot?.tests ?? []).map(test => [test.name, test]));
+    const snapshotTests = new Map(
+      (shown.issuanceSnapshot?.tests ?? []).map(test => [test.name, test]),
+    );
     return names.map<ResultRow>(name => {
       const snapshot = snapshotTests.get(name);
       const legacyInfo = legacyFinal || snapshot ? undefined : findTestInfo(name);
@@ -215,9 +224,17 @@ export function ReportViewerDashboard({
         return { name, category, value: '', unit: '', refLabel: '', flag: null, group: true };
       }
       const value = String(shown.resultData?.[name] ?? '').trim();
-      const range = snapshot?.range ?? (legacyFinal
-        ? { kind: 'none' as const, label: 'Not captured', values: null, unverifiedForPatient: true, reason: 'Legacy report — original reference context was not captured' }
-        : resolveReferenceRange(legacyInfo?.ranges, age, gender));
+      const range =
+        snapshot?.range ??
+        (legacyFinal
+          ? {
+              kind: 'none' as const,
+              label: 'Not captured',
+              values: null,
+              unverifiedForPatient: true,
+              reason: 'Legacy report — original reference context was not captured',
+            }
+          : resolveReferenceRange(legacyInfo?.ranges, age, gender));
       const notes = [...(legacyInfo?.notes || []), legacyInfo?.clinicalSignificance || '']
         .filter(Boolean)
         .join(' ');
@@ -261,7 +278,8 @@ export function ReportViewerDashboard({
 
   const meta = useMemo(() => {
     if (!shown) return null;
-    const s = (shown.issuanceSnapshot?.settings ?? (legacyFinal ? DEFAULT_SETTINGS : readSettings())) as ReturnType<typeof readSettings>;
+    const s = (shown.issuanceSnapshot?.settings ??
+      (legacyFinal ? DEFAULT_SETTINGS : readSettings())) as ReturnType<typeof readSettings>;
     const signer = resolveSigner(shown);
     const legal = buildReportLegalLines({
       accreditationBody: s.accreditationBody,
@@ -288,7 +306,9 @@ export function ReportViewerDashboard({
   if (!shown || !meta) return null;
 
   const draft = shown.status === 'draft';
-  const age = contextPatient ? ageAsNumber(contextPatient) : undefined;
+  const age = contextPatient
+    ? ageAsNumber(contextPatient, new Date(shown.issuanceSnapshot?.createdAt ?? shown.createdAt))
+    : undefined;
   const genderInitial = (contextPatient?.gender || 'other').charAt(0).toUpperCase();
   const patientLine =
     `Patient: ${shown.patientName}` +
@@ -377,19 +397,30 @@ export function ReportViewerDashboard({
 
         {shown.verification && (
           <p className="text-xs text-on-surface-variant">
-            Independently verified by {shown.verification.reviewedBy} · {formatDate(shown.verification.reviewedAt)}
+            Independently verified by {shown.verification.reviewedBy} ·{' '}
+            {formatDate(shown.verification.reviewedAt)}
           </p>
         )}
         {!draft && signatureStatus && (
-          <p role="status" className={cn('text-xs font-semibold', signatureStatus.valid ? 'text-success' : 'text-warning')}>
+          <p
+            role="status"
+            className={cn(
+              'text-xs font-semibold',
+              signatureStatus.valid ? 'text-success' : 'text-warning',
+            )}
+          >
             {signatureStatus.valid
-              ? `Issuance signature valid · ${shown.issuanceSignature?.manifestHash}`
+              ? `Issuance signature valid · Device key ${shown.issuanceSignature?.keyId ?? 'legacy'} · Time source: device clock`
               : signatureStatus.reason}
           </p>
         )}
         {legacyFinal && (
-          <p role="status" className="rounded-xl border border-warning/40 bg-warning-container/40 p-3 text-xs text-on-surface">
-            Legacy report: the original patient demographics, laboratory settings, and reference ranges were not captured. This reprint is explicitly non-reproducible.
+          <p
+            role="status"
+            className="rounded-xl border border-warning/40 bg-warning-container/40 p-3 text-xs text-on-surface"
+          >
+            Legacy report: the original patient demographics, laboratory settings, and reference
+            ranges were not captured. This reprint is explicitly non-reproducible.
           </p>
         )}
 
@@ -533,10 +564,8 @@ export function ReportViewerDashboard({
           </section>
         )}
 
-        {/* Issue & compliance block. Named "issue" not "signature" because
-            the build produces no verifiable digital signature (see
-            lib/report-compliance.ts) — the section describes who pressed
-            "Issue" and when, not an assurance a third party could check. */}
+        {/* Issue & compliance block. The device signature is verified above;
+            this section records the operator action and legal signer text. */}
         <section
           aria-label="Issue details"
           className="rounded-2xl border border-outline-variant/30 bg-surface-container-low p-4"
@@ -554,13 +583,7 @@ export function ReportViewerDashboard({
             </span>
             <div className="min-w-0">
               <p className="truncate text-[13px] font-bold text-on-surface">
-                {draft
-                  ? 'Not yet issued'
-                  : // The build writes no verifiable signature (see
-                    // lib/report-compliance.ts); `meta.signer` is the
-                    // display name captured at issue time. Saying "Issued
-                    // by" describes the operation the app really does.
-                    `Issued by ${meta.signer || 'the lab operator'}`}
+                {draft ? 'Not yet issued' : `Issued by ${meta.signer || 'the lab operator'}`}
               </p>
               <p className="text-[11px] text-on-surface-variant">
                 {draft

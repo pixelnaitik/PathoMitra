@@ -39,7 +39,9 @@ type LocalNotificationsModule = typeof import('@capacitor/local-notifications');
  * by then they are just `number`. Casting through the real parameter type keeps
  * the rule testable without loosening the types anywhere else.
  */
-type ChannelOptions = Parameters<LocalNotificationsModule['LocalNotifications']['createChannel']>[0];
+type ChannelOptions = Parameters<
+  LocalNotificationsModule['LocalNotifications']['createChannel']
+>[0];
 
 /** Android 8+ groups banners under a channel the user can silence in settings. */
 const ALERT_CHANNEL_ID = 'pathomitra-alerts';
@@ -295,6 +297,42 @@ export async function showBannerWithPermission(options: BannerOptions): Promise<
   return showBanner(options);
 }
 
+/** Schedule one inexact, non-PHI follow-up for an actionable Android alert. */
+export async function scheduleAlertReminder(options: BannerOptions): Promise<boolean> {
+  if (!Capacitor.isNativePlatform() || (await currentPermission()) !== 'granted') return false;
+  try {
+    const m = await loadNative();
+    if (!m) return false;
+    const channelId = options.channelId ?? ALERT_CHANNEL_ID;
+    await ensureChannel(m, channelId);
+    const reminder = {
+      id: bannerIdFor(`reminder:${options.key}`),
+      title: options.title,
+      body: options.body,
+      channelId,
+      autoCancel: true,
+      isExactNotification: false,
+      on: new Date(Date.now() + 30 * 60_000),
+      extra: { alertKey: options.key, reminder: true },
+    };
+    await m.LocalNotifications.schedule({ notifications: [reminder] });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function cancelAlertReminder(key: string): Promise<void> {
+  if (!Capacitor.isNativePlatform()) return;
+  try {
+    const m = await loadNative();
+    if (!m) return;
+    await m.LocalNotifications.cancel({ notifications: [{ id: bannerIdFor(`reminder:${key}`) }] });
+  } catch {
+    /* best effort */
+  }
+}
+
 export const DAILY_REMINDER_KEY = 'system:daily-work-review';
 
 /** Privacy-safe daily reminder specification; inexact so no exact-alarm permission is needed. */
@@ -315,7 +353,7 @@ export function dailyReminderSpec() {
 /** Schedule a daily, non-PHI reminder on Android. Re-arming the same id is idempotent. */
 export async function scheduleDailyReminder(): Promise<boolean> {
   if (!Capacitor.isNativePlatform()) return false;
-  if (await currentPermission() !== 'granted') return false;
+  if ((await currentPermission()) !== 'granted') return false;
   try {
     const m = await loadNative();
     if (!m) return false;

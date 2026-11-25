@@ -37,10 +37,38 @@ describe('report draft autosave', () => {
     });
   });
 
+  it('round-trips reviewer and clinical-review metadata with result edits', async () => {
+    await saveReportDraft({
+      reportId: 'r1',
+      baseVersion: 2,
+      resultData: { Sodium: '180' },
+      reviewer: { uid: 'path-1', name: 'Dr Reviewer', role: 'pathologist', note: 'Checked trace' },
+      criticalReviewReason: 'Repeat confirmed',
+      amendReason: 'Transcription correction',
+      deltaReviewReason: 'Expected after treatment',
+    });
+    expect(await loadReportDraft('r1')).toMatchObject({
+      reviewer: { uid: 'path-1', name: 'Dr Reviewer', role: 'pathologist', note: 'Checked trace' },
+      criticalReviewReason: 'Repeat confirmed',
+      amendReason: 'Transcription correction',
+      deltaReviewReason: 'Expected after treatment',
+    });
+  });
+
   it('rejects malformed or mismatched draft documents', async () => {
-    store.docs.set('report-draft:r1', { version: 1, reportId: 'other', baseVersion: 1, resultData: {} });
+    store.docs.set('report-draft:r1', {
+      version: 1,
+      reportId: 'other',
+      baseVersion: 1,
+      resultData: {},
+    });
     expect(await loadReportDraft('r1')).toBeNull();
-    store.docs.set('report-draft:r1', { version: 1, reportId: 'r1', baseVersion: 0, resultData: {} });
+    store.docs.set('report-draft:r1', {
+      version: 1,
+      reportId: 'r1',
+      baseVersion: 0,
+      resultData: {},
+    });
     expect(await loadReportDraft('r1')).toBeNull();
   });
 

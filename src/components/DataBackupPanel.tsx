@@ -46,10 +46,12 @@ import {
   createBackup,
   deleteBackup,
   listBackups,
+  readBackupPayload,
   restoreBackupByName,
   restoreBackupFromText,
   RestoreConflictError,
   type RestoreConflict,
+  type RestoreResult,
   shareBackup,
   type BackupSummary,
 } from '../lib/backup';
@@ -67,6 +69,21 @@ import { captureError } from '../lib/telemetry';
 import { downloadCsv } from '../lib/export-csv';
 import { auditDataIntegrity, type IntegrityReport } from '../lib/data-integrity';
 import { enableSafeMode } from '../lib/safe-mode';
+import { can } from '../lib/permissions';
+import {
+  backupDestinationStatus,
+  chooseBackupDestination,
+  copyBackupToDestination,
+} from '../lib/backup-destination';
+import { measureRestoreDrill } from '../lib/continuity';
+
+function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return '0s';
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 60) return `${Math.max(1, minutes)}m`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
 
 type Pending =
   | { kind: 'restore'; file: BackupSummary }
@@ -76,12 +93,16 @@ type Pending =
 
 export default function DataBackupPanel() {
   const toast = useToast();
-  const { user } = useAuth();
+  const { user, role } = useAuth();
+  const canBackup = can(role, 'manageBackup');
+  const canRestore = can(role, 'restoreData');
+  const canDiagnostics = can(role, 'viewAudit');
   const [backups, setBackups] = useState<BackupSummary[]>([]);
   const [records, setRecords] = useState<number | null>(null);
   const [crashes, setCrashes] = useState<CrashEntry[]>([]);
   const [integrity, setIntegrity] = useState<IntegrityReport | null>(null);
   const [destination, setDestination] = useState(() => readSettings().backupDestination ?? '');
+  const [destinationReady, setDestinationReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<Pending>(null);
   const [workingFile, setWorkingFile] = useState<string | null>(null);
@@ -119,6 +140,7 @@ export default function DataBackupPanel() {
   >(null);
   /** Bumped after any mutation; the effect below is the only place that writes state. */
   const [reloadToken, setReloadToken] = useState(0);
+  const [clock, setClock] = useState(() => Date.now());
   const fileInput = useRef<HTMLInputElement>(null);
   const backupHealth = useMemo(() => {
     const settings = readSettings();
@@ -126,17 +148,68 @@ export default function DataBackupPanel() {
     if (!settings.lastOffDeviceBackupAt) return 'empty';
     const timestamp = new Date(settings.lastOffDeviceBackupAt);
     if (Number.isNaN(timestamp.getTime())) return 'unknown';
-    const ageDays = (Date.now() - timestamp.getTime()) / 86_400_000;
+    const ageDays = (clock - timestamp.getTime()) / 86_400_000;
     return ageDays > settings.backupReminderDays ? 'stale' : 'current';
-  }, [backups, records, reloadToken]);
-  const recordOffDeviceCopy = () => {
-    if (!destination.trim()) { toast.error('Name the off-device destination first.'); return; }
-    writeSettings({ ...readSettings(), backupDestination: destination.trim().slice(0, 160), lastOffDeviceBackupAt: new Date().toISOString(), updatedBy: user?.uid ?? 'operator' });
-    setReloadToken(token => token + 1);
-    toast.success('Off-device backup confirmation recorded.');
+  }, [clock, records, reloadToken]);
+  const selectDestination = async () => {
+    if (!canBackup) {
+      toast.error('Only an administrator can choose a backup destination.');
+      return;
+    }
+    try {
+      const selected = await chooseBackupDestination();
+      if (!selected) return;
+      setDestination(selected.label.slice(0, 160));
+      setDestinationReady(true);
+      writeSettings({
+        ...readSettings(),
+        backupDestination: selected.label.slice(0, 160),
+        updatedBy: user?.uid ?? 'operator',
+      });
+      toast.success('Off-device backup destination selected.');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not select the destination.');
+    }
   };
-  const recordRestoreDrill = () => {
-    writeSettings({ ...readSettings(), lastRestoreDrillAt: new Date().toISOString(), updatedBy: user?.uid ?? 'operator' });
+
+  const copyLatestOffDevice = async (fileName?: string) => {
+    if (!canBackup) {
+      toast.error('Only an administrator can copy a full backup.');
+      return;
+    }
+    const target = fileName ?? backups.find(item => item.fileName)?.fileName;
+    if (!target) {
+      toast.error('Create a backup first.');
+      return;
+    }
+    try {
+      const copied = await copyBackupToDestination(target, await readBackupPayload(target));
+      if (!copied.verified) throw new Error('The destination copy could not be verified.');
+      writeSettings({
+        ...readSettings(),
+        lastOffDeviceBackupAt: new Date().toISOString(),
+        updatedBy: user?.uid ?? 'operator',
+      });
+      setReloadToken(token => token + 1);
+      toast.success(`Verified off-device copy: ${copied.fileName}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Off-device copy failed.');
+    }
+  };
+  const recordRestoreDrill = (result: RestoreResult, startedAt: number) => {
+    if (!canRestore) return;
+    const completedAt = Date.now();
+    const measured = measureRestoreDrill(result, startedAt, completedAt);
+    writeSettings({
+      ...readSettings(),
+      lastRestoreDrillAt: new Date(completedAt).toISOString(),
+      lastRestoreDrillDurationMs: measured.durationMs,
+      lastRestoreDrillRpoMs: measured.rpoMs,
+      lastRestoreDrillRecords: measured.records,
+      lastRestoreDrillSnapshot: measured.snapshot,
+      lastRestoreDrillOutcome: measured.outcome,
+      updatedBy: user?.uid ?? 'operator',
+    });
   };
 
   // Reading the backups folder, the row counts and the crash log is three
@@ -147,15 +220,19 @@ export default function DataBackupPanel() {
     let cancelled = false;
     void (async () => {
       try {
-        const [snapshots, total, log] = await Promise.all([
+        const [snapshots, total, log, selectedDestination] = await Promise.all([
           listBackups(),
           countRecords(),
           readCrashLog(),
+          backupDestinationStatus(),
         ]);
         if (cancelled) return;
         setBackups(snapshots);
         setRecords(total);
         setCrashes(log);
+        setClock(Date.now());
+        setDestinationReady(!!selectedDestination);
+        if (selectedDestination) setDestination(selectedDestination.label.slice(0, 160));
       } catch (err) {
         if (!cancelled) captureError(err, { scope: 'settings:data-refresh' });
       }
@@ -174,7 +251,10 @@ export default function DataBackupPanel() {
     try {
       await action();
     } catch (err) {
-      console.error(`Settings → Data: ${label} failed`, err);
+      captureError(err, {
+        scope: 'data:operation',
+        operation: label.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+      });
       toast.error(err instanceof Error ? `${label} failed — ${err.message}` : `${label} failed.`);
     } finally {
       setBusy(false);
@@ -183,6 +263,7 @@ export default function DataBackupPanel() {
 
   const handleCreateBackup = () =>
     run('Backup', async () => {
+      if (!canBackup) throw new Error('Only an administrator can create a full backup.');
       if (seal) {
         // Never fall back to a plaintext file because the passphrase was thin —
         // the lab would get a readable export while believing it was sealed.
@@ -201,6 +282,7 @@ export default function DataBackupPanel() {
           ? `Backup sealed — ${summary.totalRecords} records encrypted. That passphrase is the only key: there is no reset, so keep it somewhere separate from the file.`
           : `Backup written — ${summary.totalRecords} records as readable JSON. Keep a copy somewhere you control.`,
       );
+      if (seal && destinationReady) await copyLatestOffDevice(summary.fileName);
     });
 
   /** Retry a sealed snapshot now that a passphrase has been supplied. */
@@ -208,17 +290,21 @@ export default function DataBackupPanel() {
     const target = sealed;
     if (!target) return;
     run('Restore', async () => {
+      const startedAt = Date.now();
       let result;
       try {
-        result = target.source === 'file'
-          ? await restoreBackupByName(target.value, unlock)
-          : await restoreBackupFromText(target.value, unlock);
+        result =
+          target.source === 'file'
+            ? await restoreBackupByName(target.value, unlock)
+            : await restoreBackupFromText(target.value, unlock);
       } catch (error) {
         if (error instanceof RestoreConflictError) {
           setConflicts(error.conflicts);
-          setConflictRetry(target.source === 'file'
-            ? { kind: 'file', fileName: target.value, passphrase: unlock }
-            : { kind: 'text', raw: target.value, passphrase: unlock });
+          setConflictRetry(
+            target.source === 'file'
+              ? { kind: 'file', fileName: target.value, passphrase: unlock }
+              : { kind: 'text', raw: target.value, passphrase: unlock },
+          );
           toast.info('Restore paused: review the records that would be overwritten.');
           return;
         }
@@ -230,7 +316,7 @@ export default function DataBackupPanel() {
         `Restored ${result.totalRecords} records from ${target.label}` +
           (result.skipped.length ? ` (skipped ${result.skipped.join(', ')})` : ''),
       );
-      recordRestoreDrill();
+      recordRestoreDrill(result, startedAt);
       await refresh();
     });
   };
@@ -263,13 +349,14 @@ export default function DataBackupPanel() {
     setWorkingFile(file.fileName ?? null);
     await run(pending.kind === 'restore' ? 'Restore' : 'Delete', async () => {
       if (pending.kind === 'restore') {
+        const startedAt = Date.now();
         try {
           const result = await restoreBackupByName(file.fileName!);
           toast.success(
             `Restored ${result.totalRecords} records from ${file.fileName}` +
               (result.skipped.length ? ` (skipped ${result.skipped.join(', ')})` : ''),
           );
-          recordRestoreDrill();
+          recordRestoreDrill(result, startedAt);
         } catch (err) {
           if (err instanceof RestoreConflictError) {
             setConflicts(err.conflicts);
@@ -303,10 +390,11 @@ export default function DataBackupPanel() {
       // The picker hands us the bytes, not a path, so the text is read once and
       // kept for the passphrase retry — a sealed file cannot be re-read by name.
       const text = await file.text();
+      const startedAt = Date.now();
       try {
         const result = await restoreBackupFromText(text);
         toast.success(`Restored ${result.totalRecords} records from ${file.name}.`);
-        recordRestoreDrill();
+        recordRestoreDrill(result, startedAt);
       } catch (err) {
         if (err instanceof RestoreConflictError) {
           setConflicts(err.conflicts);
@@ -329,12 +417,16 @@ export default function DataBackupPanel() {
     const retry = conflictRetry;
     if (!retry) return;
     return run('Restore', async () => {
-      const result = retry.kind === 'file'
-        ? await restoreBackupByName(retry.fileName, retry.passphrase, { overwriteConflicts: true })
-        : await restoreBackupFromText(retry.raw, retry.passphrase, { overwriteConflicts: true });
+      const startedAt = Date.now();
+      const result =
+        retry.kind === 'file'
+          ? await restoreBackupByName(retry.fileName, retry.passphrase, {
+              overwriteConflicts: true,
+            })
+          : await restoreBackupFromText(retry.raw, retry.passphrase, { overwriteConflicts: true });
       setConflictRetry(null);
       setConflicts([]);
-      recordRestoreDrill();
+      recordRestoreDrill(result, startedAt);
       toast.success(`Restored ${result.totalRecords} records with approved conflict overwrites.`);
       await refresh();
     });
@@ -366,6 +458,17 @@ export default function DataBackupPanel() {
       }
     });
 
+  if (!canBackup && !canRestore && !canDiagnostics) {
+    return (
+      <div
+        className="rounded-2xl border border-outline-variant/30 bg-surface-container-low p-5 text-sm text-on-surface-variant"
+        role="status"
+      >
+        Full backup, restore and diagnostics are restricted to an administrator account.
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -379,20 +482,72 @@ export default function DataBackupPanel() {
       {/* ---------------- Backup ---------------- */}
       <Card pad="lg">
         <SectionTitle title="Backup" />
-        <div className={`mb-4 rounded-2xl border p-4 text-sm ${backupHealth === 'current' ? 'border-success/30 bg-success-container text-on-success-container' : backupHealth === 'empty' ? 'border-outline-variant/30 bg-surface-container-low text-on-surface-variant' : 'border-warning/40 bg-warning-container text-on-warning-container'}`} role="status">
-          <strong className="font-bold">{backupHealth === 'current' ? 'Backup is current' : backupHealth === 'missing' ? 'No backup on this device' : backupHealth === 'stale' ? `Backup is older than ${readSettings().backupReminderDays} days` : backupHealth === 'unknown' ? 'Backup age could not be determined' : 'No clinical records to back up yet'}</strong>
-          <p className="mt-1 text-xs leading-relaxed">Every new snapshot is read back and compared before success is reported. Share the newest encrypted snapshot to lab-controlled storage and test a restore on a second device; this app has no server-side recovery.</p>
+        <div
+          className={`mb-4 rounded-2xl border p-4 text-sm ${backupHealth === 'current' ? 'border-success/30 bg-success-container text-on-success-container' : backupHealth === 'empty' ? 'border-outline-variant/30 bg-surface-container-low text-on-surface-variant' : 'border-warning/40 bg-warning-container text-on-warning-container'}`}
+          role="status"
+        >
+          <strong className="font-bold">
+            {backupHealth === 'current'
+              ? 'Backup is current'
+              : backupHealth === 'missing'
+                ? 'No backup on this device'
+                : backupHealth === 'stale'
+                  ? `Backup is older than ${readSettings().backupReminderDays} days`
+                  : backupHealth === 'unknown'
+                    ? 'Backup age could not be determined'
+                    : 'No clinical records to back up yet'}
+          </strong>
+          <p className="mt-1 text-xs leading-relaxed">
+            Every new snapshot is read back and compared before success is reported. Share the
+            newest encrypted snapshot to lab-controlled storage and test a restore on a second
+            device; this app has no server-side recovery.
+          </p>
         </div>
         <div className="mb-4 grid gap-3 rounded-2xl border border-outline-variant/30 bg-surface-container-low p-4 sm:grid-cols-[1fr_auto] sm:items-end">
           <label className="block text-xs font-semibold text-on-surface-variant">
             Off-device destination
-            <input value={destination} onChange={event => setDestination(event.target.value)} maxLength={160} placeholder="Lab USB drive, encrypted NAS, second workstation…" className="mt-1 w-full rounded-xl border border-outline-variant/40 bg-surface px-3 py-2 text-sm text-on-surface" />
+            <input
+              value={destination}
+              onChange={event => setDestination(event.target.value)}
+              maxLength={160}
+              placeholder="Lab USB drive, encrypted NAS, second workstation…"
+              className="mt-1 w-full rounded-xl border border-outline-variant/40 bg-surface px-3 py-2 text-sm text-on-surface"
+            />
           </label>
-          <Button variant="outline" size="sm" onClick={recordOffDeviceCopy} disabled={busy || !destination.trim()}>
-            <ShieldCheck className="w-4 h-4" aria-hidden="true" />
-            Confirm off-device copy
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void selectDestination()}
+            disabled={busy || !canBackup}
+          >
+            <FolderOpen className="w-4 h-4" aria-hidden="true" />
+            Choose folder
           </Button>
-          <p className="text-[11px] text-on-surface-variant sm:col-span-2">Last restore drill: {readSettings().lastRestoreDrillAt ? new Date(readSettings().lastRestoreDrillAt!).toLocaleString() : 'not recorded'}.</p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void copyLatestOffDevice()}
+            disabled={busy || !canBackup || !destinationReady || backups.length === 0}
+          >
+            <ShieldCheck className="w-4 h-4" aria-hidden="true" />
+            Verify off-device copy
+          </Button>
+          <p className="text-[11px] text-on-surface-variant sm:col-span-2">
+            Last restore drill:{' '}
+            {readSettings().lastRestoreDrillAt
+              ? new Date(readSettings().lastRestoreDrillAt!).toLocaleString()
+              : 'not recorded'}
+            .
+            {readSettings().lastRestoreDrillAt && (
+              <>
+                {' '}
+                Observed RTO {formatDuration(readSettings().lastRestoreDrillDurationMs ?? 0)}{' '}
+                (target 24h); snapshot age{' '}
+                {formatDuration(readSettings().lastRestoreDrillRpoMs ?? 0)} (target 8h);{' '}
+                {readSettings().lastRestoreDrillRecords ?? 0} records reconciled.
+              </>
+            )}
+          </p>
         </div>
 
         <div className="flex items-start gap-3 rounded-2xl bg-surface-container-low p-4">
@@ -463,7 +618,7 @@ export default function DataBackupPanel() {
             variant="primary"
             size="md"
             onClick={handleCreateBackup}
-            disabled={busy || records === 0}
+            disabled={busy || records === 0 || !canBackup}
           >
             <DatabaseBackup className="w-4 h-4" aria-hidden="true" />
             Back up now
@@ -472,7 +627,7 @@ export default function DataBackupPanel() {
             variant="outline"
             size="md"
             onClick={() => fileInput.current?.click()}
-            disabled={busy}
+            disabled={busy || !canRestore}
           >
             <Upload className="w-4 h-4" aria-hidden="true" />
             Restore from file
@@ -501,13 +656,22 @@ export default function DataBackupPanel() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => void run('Integrity check', async () => {
-              const report = await auditDataIntegrity();
-              setIntegrity(report);
-              if (report.issues.some(issue => issue.severity === 'P0')) enableSafeMode('Integrity check found a release-blocking orphan, duplicate, or arithmetic issue.');
-              toast[report.issues.length ? 'warning' : 'success'](report.issues.length ? `${report.issues.length} integrity issue(s) found.` : 'Integrity check passed.');
-            })}
-            disabled={busy}
+            onClick={() =>
+              void run('Integrity check', async () => {
+                const report = await auditDataIntegrity();
+                setIntegrity(report);
+                if (report.issues.some(issue => issue.severity === 'P0'))
+                  enableSafeMode(
+                    'Integrity check found a release-blocking orphan, duplicate, or arithmetic issue.',
+                  );
+                toast[report.issues.length ? 'warning' : 'success'](
+                  report.issues.length
+                    ? `${report.issues.length} integrity issue(s) found.`
+                    : 'Integrity check passed.',
+                );
+              })
+            }
+            disabled={busy || !canDiagnostics}
           >
             <ShieldCheck className="w-4 h-4" aria-hidden="true" />
             Check integrity
@@ -515,13 +679,41 @@ export default function DataBackupPanel() {
         </div>
 
         {integrity && (
-          <div className={`mt-4 rounded-2xl border p-4 ${integrity.issues.length ? 'border-error/40 bg-error-container' : 'border-success/30 bg-success-container'}`} role="status">
+          <div
+            className={`mt-4 rounded-2xl border p-4 ${integrity.issues.length ? 'border-error/40 bg-error-container' : 'border-success/30 bg-success-container'}`}
+            role="status"
+          >
             <div className="flex items-start gap-3">
-              {integrity.issues.length ? <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-error" aria-hidden="true" /> : <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-success" aria-hidden="true" />}
+              {integrity.issues.length ? (
+                <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-error" aria-hidden="true" />
+              ) : (
+                <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-success" aria-hidden="true" />
+              )}
               <div>
-                <h4 className="text-sm font-bold text-on-surface">{integrity.issues.length ? `${integrity.issues.length} integrity issue(s)` : 'No integrity issues found'}</h4>
-                <p className="mt-1 text-xs text-on-surface-variant">Scanned {Object.values(integrity.scanned).reduce((sum, count) => sum + count, 0).toLocaleString()} records across patients, orders, samples, reports, invoices, and report versions.</p>
-                {integrity.issues.length > 0 && <ul className="mt-3 space-y-2 text-xs text-on-error-container">{integrity.issues.slice(0, 20).map(issue => <li key={issue.id}><strong>{issue.severity} · {issue.entity}/{issue.entityId}</strong> — {issue.message}</li>)}</ul>}
+                <h4 className="text-sm font-bold text-on-surface">
+                  {integrity.issues.length
+                    ? `${integrity.issues.length} integrity issue(s)`
+                    : 'No integrity issues found'}
+                </h4>
+                <p className="mt-1 text-xs text-on-surface-variant">
+                  Scanned{' '}
+                  {Object.values(integrity.scanned)
+                    .reduce((sum, count) => sum + count, 0)
+                    .toLocaleString()}{' '}
+                  records across patients, orders, samples, reports, invoices, and report versions.
+                </p>
+                {integrity.issues.length > 0 && (
+                  <ul className="mt-3 space-y-2 text-xs text-on-error-container">
+                    {integrity.issues.slice(0, 20).map(issue => (
+                      <li key={issue.id}>
+                        <strong>
+                          {issue.severity} · {issue.entity}/{issue.entityId}
+                        </strong>{' '}
+                        — {issue.message}
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             </div>
           </div>
@@ -530,11 +722,27 @@ export default function DataBackupPanel() {
         <div className="mt-4 rounded-2xl border border-outline-variant/30 bg-surface-container-low p-4">
           <h4 className="text-sm font-bold text-primary">Continuity runbook</h4>
           <ol className="mt-2 list-decimal space-y-1 pl-5 text-xs leading-relaxed text-on-surface-variant">
-            <li>At shift close, create an encrypted backup, verify it, and copy it to the lab-controlled off-device destination.</li>
-            <li>Record the destination and backup time above. Target RPO: one shift; target RTO: one working day on a replacement device.</li>
-            <li>Monthly, restore that copy on a second device, run integrity checks, and record the drill. Never test over the only working database.</li>
-            <li>If storage is nearly full or integrity fails, safe mode pauses writes. Export/backup first, recover or restore, then an administrator resumes writes.</li>
-            <li>This edition is single-device at runtime. Staff accounts share one local database; use the manual backup/restore process for a second workstation, never simultaneous editing.</li>
+            <li>
+              At shift close, create an encrypted backup, verify it, and copy it to the
+              lab-controlled off-device destination.
+            </li>
+            <li>
+              Record the destination and backup time above. Target RPO: one shift; target RTO: one
+              working day on a replacement device.
+            </li>
+            <li>
+              Monthly, restore that copy on a second device, run integrity checks, and record the
+              drill. Never test over the only working database.
+            </li>
+            <li>
+              If storage is nearly full or integrity fails, safe mode pauses writes. Export/backup
+              first, recover or restore, then an administrator resumes writes.
+            </li>
+            <li>
+              This edition is single-device at runtime. Staff accounts share one local database; use
+              the manual backup/restore process for a second workstation, never simultaneous
+              editing.
+            </li>
           </ol>
         </div>
 
@@ -710,7 +918,7 @@ export default function DataBackupPanel() {
       <Card pad="lg">
         <SectionTitle title="Diagnostics" />
         <p className="text-sm text-on-surface-variant leading-relaxed">
-          The app keeps the last {crashes.length > 0 ? crashes.length : 'up to 50'} captured
+          The app keeps the last {crashes.length > 0 ? crashes.length : 'up to 20'} captured
           failures on this device — identifiers and contact details in them are redacted before they
           are stored, and nothing is ever sent anywhere.
         </p>
@@ -744,14 +952,8 @@ export default function DataBackupPanel() {
                         </p>
                         <p className="mt-0.5 text-xs text-on-surface-variant">
                           {new Date(entry.at).toLocaleString()}
-                          {entry.url ? ` · ${entry.url}` : ''}
                           {entry.name ? ` · ${entry.name}` : ''}
                         </p>
-                        {entry.stack ? (
-                          <pre className="mt-2 max-h-32 overflow-auto rounded-xl bg-surface-container-low p-2 text-[11px] leading-snug text-on-surface-variant whitespace-pre-wrap">
-                            {entry.stack}
-                          </pre>
-                        ) : null}
                       </div>
                     </div>
                   </li>
@@ -778,17 +980,27 @@ export default function DataBackupPanel() {
 
       <ConfirmSheet
         open={!!conflictRetry}
-        onClose={() => { setConflictRetry(null); setConflicts([]); }}
+        onClose={() => {
+          setConflictRetry(null);
+          setConflicts([]);
+        }}
         onConfirm={() => void applyConflictRestore()}
         title="Review restore conflicts"
         confirmLabel={`Overwrite ${conflicts.length} and restore`}
         message={
           <div className="space-y-2">
-            <p>The backup would replace these newer or undated records. Records absent from the backup are kept.</p>
+            <p>
+              The backup would replace these newer or undated records. Records absent from the
+              backup are kept.
+            </p>
             <ul className="max-h-40 space-y-1 overflow-auto text-left">
               {conflicts.slice(0, 12).map(conflict => (
-                <li key={`${conflict.entity}/${conflict.id}`} className="rounded-lg bg-surface-container-high px-2 py-1">
-                  {conflict.entity}/{conflict.id}: current {conflict.currentUpdatedAt || 'undated'}, backup {conflict.backupUpdatedAt || 'undated'}
+                <li
+                  key={`${conflict.entity}/${conflict.id}`}
+                  className="rounded-lg bg-surface-container-high px-2 py-1"
+                >
+                  {conflict.entity}/{conflict.id}: current {conflict.currentUpdatedAt || 'undated'},
+                  backup {conflict.backupUpdatedAt || 'undated'}
                 </li>
               ))}
             </ul>

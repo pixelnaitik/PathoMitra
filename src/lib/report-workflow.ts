@@ -31,6 +31,7 @@ export interface ReportContent {
   issuanceSignature?: ReportRecord['issuanceSignature'];
   verification?: ReportRecord['verification'];
   criticalReview?: ReportRecord['criticalReview'];
+  deltaReview?: ReportRecord['deltaReview'];
 }
 
 /** A stored report as the write layer needs to see it. */
@@ -61,6 +62,7 @@ export interface ReportWritePlan {
   nextVersion?: number;
   verification?: ReportRecord['verification'];
   criticalReview?: ReportRecord['criticalReview'];
+  deltaReview?: ReportRecord['deltaReview'];
 }
 
 /** A recorded value is a non-empty string, a finite number, a boolean, or an object. */
@@ -104,7 +106,10 @@ export function isReportContentChanged(existing: StoredReport, next: ReportConte
   const b = next.testSelection ?? [];
   if (a.length !== b.length) return true;
   if (a.some((name, i) => name !== b[i])) return true;
-  return JSON.stringify(existing.issuanceSnapshot ?? null) !== JSON.stringify(next.issuanceSnapshot ?? null);
+  return (
+    JSON.stringify(existing.issuanceSnapshot ?? null) !==
+    JSON.stringify(next.issuanceSnapshot ?? null)
+  );
 }
 
 const priorSnapshotId = (reportId: string, version: number): string => `${reportId}__v${version}`;
@@ -159,8 +164,13 @@ export function planReportWrite(args: {
   reason?: string;
   /** Required acknowledgement when a configured critical screen is exceeded. */
   criticalOverrideReason?: string;
+  /** Previous issued values used for material-delta review. */
+  previousResults?: Record<string, unknown>;
+  previousReportId?: string;
+  /** Required acknowledgement when a material delta is detected. */
+  deltaReviewReason?: string;
   /** Independent pathologist who verified this issued version. */
-  reviewer?: { name: string; role: 'pathologist'; note?: string };
+  reviewer?: { uid: string; name: string; role: 'pathologist'; note?: string };
   operator: string;
   /** Readable operator name used for independent-reviewer comparison. */
   operatorName?: string;
@@ -168,22 +178,36 @@ export function planReportWrite(args: {
   now: string;
 }): ReportWritePlan {
   const { existing, next, operator, now } = args;
-  if (args.actor && !can(args.actor.role, next.status === 'final' ? 'issueReports' : 'enterResults')) {
-    return { ok: false, ops: [], error: 'The signed-in operator role cannot perform this report action.' };
+  if (
+    args.actor &&
+    !can(args.actor.role, next.status === 'final' ? 'issueReports' : 'enterResults')
+  ) {
+    return {
+      ok: false,
+      ops: [],
+      error: 'The signed-in operator role cannot perform this report action.',
+    };
   }
   let criticalReview: ReportRecord['criticalReview'];
+  let deltaReview: ReportRecord['deltaReview'];
   let verification: ReportRecord['verification'];
   if (next.status === 'final') {
     const reviewerName = args.reviewer?.name.trim() ?? '';
-    if (!reviewerName || reviewerName.toLowerCase() === (args.operatorName ?? operator).trim().toLowerCase()) {
+    const reviewerUid = args.reviewer?.uid.trim() ?? '';
+    const sameIdentity = args.actor
+      ? reviewerUid === args.actor.uid
+      : reviewerName.toLowerCase() === (args.operatorName ?? operator).trim().toLowerCase();
+    if (!reviewerName || !reviewerUid || args.reviewer?.role !== 'pathologist' || sameIdentity) {
       return {
         ok: false,
         ops: [],
-        error: 'An independent pathologist reviewer, different from the issuing operator, is required.',
+        error:
+          'An independent pathologist reviewer, different from the issuing operator, is required.',
       };
     }
     verification = {
       reviewedBy: reviewerName,
+      reviewerUid,
       role: 'pathologist',
       reviewedAt: now,
       ...(args.reviewer?.note?.trim() ? { note: args.reviewer.note.trim() } : {}),
@@ -195,12 +219,22 @@ export function planReportWrite(args: {
       return { ok: false, ops: [], error: 'An issued report requires at least one ordered test.' };
     }
     if (!next.issuanceSnapshot) {
-      return { ok: false, ops: [], error: 'An issued report requires an immutable clinical snapshot.' };
+      return {
+        ok: false,
+        ops: [],
+        error: 'An issued report requires an immutable clinical snapshot.',
+      };
     }
+    const snapshotRanges = new Map(
+      (next.issuanceSnapshot?.tests ?? []).map(test => [test.name, test.range.values]),
+    );
     const validation = validateReportResults(
       expandTestSelection(next.testSelection),
       next.resultData,
       findTestInfo,
+      undefined,
+      name => snapshotRanges.get(name),
+      args.previousResults,
     );
     if (!validation.valid) {
       return {
@@ -230,11 +264,34 @@ export function planReportWrite(args: {
         tests: criticalWarnings.map(item => item.test),
       };
     }
+    const deltaWarnings = validation.warnings.filter(item =>
+      item.message.includes('changed materially'),
+    );
+    if (deltaWarnings.length > 0) {
+      const reason = args.deltaReviewReason?.trim();
+      if (!reason) {
+        return {
+          ok: false,
+          ops: [],
+          error:
+            'A result changed materially from the previous issued report. Record a delta review reason before issue.',
+        };
+      }
+      deltaReview = {
+        reason,
+        reviewedBy: operator,
+        reviewedAt: now,
+        tests: deltaWarnings.map(item => item.test),
+        ...(args.previousReportId ? { previousReportId: args.previousReportId } : {}),
+      };
+    }
   }
   const governedNext = {
     ...next,
+    ...(args.actor?.uid ? { issuerUid: args.actor.uid } : {}),
     ...(verification ? { verification } : {}),
     ...(criticalReview ? { criticalReview } : {}),
+    ...(deltaReview ? { deltaReview } : {}),
   };
   const id = existing?.id ?? args.newId;
   if (!id) {
@@ -250,6 +307,7 @@ export function planReportWrite(args: {
       issuing: next.status === 'final',
       ...(verification ? { verification } : {}),
       ...(criticalReview ? { criticalReview } : {}),
+      ...(deltaReview ? { deltaReview } : {}),
     };
   }
 
@@ -282,6 +340,7 @@ export function planReportWrite(args: {
       nextVersion,
       ...(verification ? { verification } : {}),
       ...(criticalReview ? { criticalReview } : {}),
+      ...(deltaReview ? { deltaReview } : {}),
       ops: [
         {
           entity: 'reportVersions',
@@ -317,6 +376,7 @@ export function planReportWrite(args: {
     nextVersion,
     ...(verification ? { verification } : {}),
     ...(criticalReview ? { criticalReview } : {}),
+    ...(deltaReview ? { deltaReview } : {}),
     ops: [{ entity: 'reports', id: existing.id, value }],
   };
 }

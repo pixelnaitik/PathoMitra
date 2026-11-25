@@ -32,6 +32,8 @@ export interface LocalAccount {
   createdAt: string;
   password: PasswordHash;
   biometricEnabled: boolean;
+  /** Operator uid allowed to use the enrolled platform authenticator. */
+  biometricOwnerUid?: string;
   /** Consecutive failed unlocks since the last success. */
   failedAttempts: number;
   /** Epoch ms the current lockout ends; 0 when not locked. */
@@ -81,6 +83,11 @@ function normalize(account: LocalAccount | null): LocalAccount | null {
     // something it never saw: these stay empty and re-prompt once on unlock.
     termsAcceptedAt: typeof account.termsAcceptedAt === 'string' ? account.termsAcceptedAt : '',
     termsVersion: typeof account.termsVersion === 'string' ? account.termsVersion : '',
+    biometricOwnerUid: account.biometricEnabled
+      ? typeof account.biometricOwnerUid === 'string'
+        ? account.biometricOwnerUid
+        : 'local-admin'
+      : undefined,
   };
 }
 
@@ -125,6 +132,7 @@ export async function createAccountWithRecovery(
     createdAt: new Date().toISOString(),
     password: hash,
     biometricEnabled,
+    biometricOwnerUid: biometricEnabled ? 'local-admin' : undefined,
     failedAttempts: 0,
     lockUntil: 0,
     lastAttemptAt: 0,
@@ -144,29 +152,33 @@ export async function createAccount(
   biometricEnabled = false,
   termsAcceptedAt = '',
 ): Promise<LocalAccount> {
-  return (await createAccountWithRecovery(name, password, biometricEnabled, termsAcceptedAt)).account;
+  return (await createAccountWithRecovery(name, password, biometricEnabled, termsAcceptedAt))
+    .account;
 }
 
 /** Reset the administrator passcode without touching the encrypted clinical database. */
-export async function recoverAccountPassword(
-  key: string,
-  nextPassword: string,
-): Promise<void> {
+export async function recoverAccountPassword(key: string, nextPassword: string): Promise<string> {
   const account = await getAccount();
   if (!account?.recoveryKeyHash) {
-    throw new Error('No recovery key is configured. An administrator can create one in Settings → Security.');
+    throw new Error(
+      'No recovery key is configured. An administrator can create one in Settings → Security.',
+    );
   }
   const normalized = key.trim().toUpperCase();
   if (!(await verifyPassword(normalized, account.recoveryKeyHash))) {
     throw new Error('Recovery key is incorrect.');
   }
+  const replacement = recoveryKey();
   await secureSet(KEY, {
     ...account,
     password: await hashPassword(nextPassword),
+    recoveryKeyHash: await hashPassword(replacement),
+    recoveryKeyCreatedAt: new Date().toISOString(),
     failedAttempts: 0,
     lockUntil: 0,
     lastAttemptAt: 0,
   });
+  return replacement;
 }
 
 /** Issue a replacement recovery key after proving the current administrator passcode. */
@@ -287,10 +299,17 @@ export async function verifyAccountPassword(password: string): Promise<UnlockRes
   };
 }
 
-export async function setBiometricEnabled(enabled: boolean): Promise<void> {
+export async function setBiometricEnabled(
+  enabled: boolean,
+  ownerUid = 'local-admin',
+): Promise<void> {
   const account = await getAccount();
   if (!account) return;
-  await secureSet(KEY, { ...account, biometricEnabled: enabled });
+  await secureSet(KEY, {
+    ...account,
+    biometricEnabled: enabled,
+    biometricOwnerUid: enabled ? ownerUid : undefined,
+  });
 }
 
 /**

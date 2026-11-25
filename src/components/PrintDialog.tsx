@@ -62,6 +62,9 @@ export interface PrintJob {
   pdfBase64: string;
   /** Audit attribution for the completed spool job. */
   actor?: string;
+  actorUid?: string;
+  actorRole?: string;
+  entityType?: 'reports' | 'invoices' | 'exports';
   recordId?: string;
   recordVersion?: number;
 }
@@ -90,19 +93,34 @@ const RANGE_LABELS: Record<PrintRangeMode, string> = {
 
 export function PrintDialog({ open, job, currentPage = 1, onClose, onPrinted }: Props) {
   const bridge = desktopBridge();
+  const auditPrint = (
+    outcome: 'completed' | 'cancelled' | 'failed',
+    destination: 'printer' | 'viewer' = 'printer',
+  ) => {
+    if (!job?.actorUid) return;
+    void recordOutputAudit({
+      actor: job.actor ?? '',
+      actorUid: job.actorUid,
+      actorRole: job.actorRole,
+      entityType: job.entityType,
+      action: 'print',
+      format: 'pdf',
+      content: job.pdfBase64,
+      recordId: job.recordId,
+      recordVersion: job.recordVersion,
+      destination,
+      destinationDetail:
+        destination === 'viewer' ? job.filename : settings?.deviceName || 'selected printer',
+      outcome,
+    }).catch(() => {});
+  };
   const notifyPrinted = () => {
-    if (job?.actor) {
-      void recordOutputAudit({
-        actor: job.actor,
-        action: 'print',
-        format: 'pdf',
-        content: job.pdfBase64,
-        recordId: job.recordId,
-        recordVersion: job.recordVersion,
-        destination: 'printer',
-      }).catch(() => {});
-    }
+    auditPrint('completed');
     onPrinted?.();
+  };
+  const closeWithAudit = () => {
+    if (!printing) auditPrint('cancelled');
+    onClose();
   };
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const paneRef = useRef<HTMLDivElement>(null);
@@ -221,9 +239,13 @@ export function PrintDialog({ open, job, currentPage = 1, onClose, onPrinted }: 
     // lives in the main process, which only sees the payload once every page has
     // already been drawn — so a mistake used to cost a minute of rendering before
     // being rejected.
-    const pixelsPerPage = Math.ceil((pdf.pageWidthMm * PRINT_RENDER_DPI) / 25.4) * Math.ceil((pdf.pageHeightMm * PRINT_RENDER_DPI) / 25.4);
+    const pixelsPerPage =
+      Math.ceil((pdf.pageWidthMm * PRINT_RENDER_DPI) / 25.4) *
+      Math.ceil((pdf.pageHeightMm * PRINT_RENDER_DPI) / 25.4);
     if (pixelsPerPage * pages.pages.length > MAX_PRINT_PIXELS) {
-      setError('This selection exceeds the print memory budget. Print fewer pages or use “Print via the PDF app”.');
+      setError(
+        'This selection exceeds the print memory budget. Print fewer pages or use “Print via the PDF app”.',
+      );
       return;
     }
     if (pages.pages.length > MAX_PRINT_PAGES) {
@@ -234,27 +256,12 @@ export function PrintDialog({ open, job, currentPage = 1, onClose, onPrinted }: 
     }
     setError(null);
     setPrinting(true);
+    let jobId: string | undefined;
     try {
       const rotation = settings.landscape ? 90 : 0;
-      const images: string[] = [];
-      for (let i = 0; i < pages.pages.length; i += 1) {
-        setProgress(
-          pages.pages.length > 1
-            ? `Preparing page ${pages.pages[i]} (${i + 1} of ${pages.pages.length})…`
-            : null,
-        );
-        images.push(
-          await renderPageToPng(pdf, {
-            pageNumber: pages.pages[i],
-            scale: PRINT_RENDER_SCALE,
-            rotationDeg: rotation,
-          }),
-        );
-      }
       const sheet = pageBoxMm(settings.pageSize, settings.landscape);
-      const result = await bridge.print.job({
+      const started = await bridge.print.begin({
         title: job?.title ?? 'PathoMitra report',
-        pages: images,
         sheetWidthMm: sheet.w,
         sheetHeightMm: sheet.h,
         imageWidthMm: rotation ? pdf.pageHeightMm : pdf.pageWidthMm,
@@ -269,7 +276,30 @@ export function PrintDialog({ open, job, currentPage = 1, onClose, onPrinted }: 
           scale: settings.scale,
         },
       });
+      if (!started.ok || !started.jobId) {
+        setError(started.error ?? 'The printer refused the job.');
+        setPrinting(false);
+        return;
+      }
+      jobId = started.jobId;
+      for (let i = 0; i < pages.pages.length; i += 1) {
+        setProgress(
+          pages.pages.length > 1
+            ? `Preparing page ${pages.pages[i]} (${i + 1} of ${pages.pages.length})…`
+            : null,
+        );
+        const png = await renderPageToPng(pdf, {
+          pageNumber: pages.pages[i],
+          scale: PRINT_RENDER_SCALE,
+          rotationDeg: rotation,
+        });
+        const staged = await bridge.print.page(jobId, png);
+        if (!staged.ok) throw new Error(staged.error ?? 'A print page could not be staged.');
+      }
+      const result = await bridge.print.commit(jobId);
+      jobId = undefined;
       if (!result.ok) {
+        auditPrint('failed');
         setError(result.error ?? 'The printer refused the job.');
         setPrinting(false);
         return;
@@ -279,6 +309,8 @@ export function PrintDialog({ open, job, currentPage = 1, onClose, onPrinted }: 
       notifyPrinted();
       onClose();
     } catch (err) {
+      if (jobId) await bridge.print.cancel(jobId).catch(() => {});
+      auditPrint('failed');
       setError(err instanceof Error ? err.message : 'Printing failed.');
       setPrinting(false);
     }
@@ -292,6 +324,8 @@ export function PrintDialog({ open, job, currentPage = 1, onClose, onPrinted }: 
     try {
       const saved = await saveBinaryDocument(job.filename, job.pdfBase64);
       const choice = await printSavedFile(saved);
+      if (choice === 'cancelled') auditPrint('cancelled', 'viewer');
+      else if (choice === 'opened') auditPrint('completed', 'viewer');
       if (choice === 'printed') {
         notifyPrinted();
         onClose();
@@ -306,7 +340,7 @@ export function PrintDialog({ open, job, currentPage = 1, onClose, onPrinted }: 
   return (
     <Sheet
       open={open}
-      onClose={onClose}
+      onClose={closeWithAudit}
       title="Print report"
       description={job?.title}
       width="xl"
@@ -317,7 +351,7 @@ export function PrintDialog({ open, job, currentPage = 1, onClose, onPrinted }: 
             {settings && describeJob(settings, selected, pageCount, selectedPrinter)}
           </p>
           <div className="flex shrink-0 gap-3">
-            <Button variant="primary" size="md" onClick={onClose} disabled={printing}>
+            <Button variant="primary" size="md" onClick={closeWithAudit} disabled={printing}>
               Cancel
             </Button>
             <Button

@@ -24,6 +24,8 @@ jobs:
           cache: npm
       - name: Install Dependencies
         run: npm ci
+      - name: Check Formatting
+        run: npm run format:check
       - name: Lint Code
         # lint:ci runs `tsc --noEmit` plus `eslint --max-warnings`, where the cap
         # is a ratchet maintained in package.json: CI fails if the warning count
@@ -35,9 +37,30 @@ jobs:
       - name: Install Playwright Browser
         run: npx playwright install --with-deps chromium
       - name: Run Browser E2E Smoke
-        run: npm run test:e2e
+        run: npm run test:e2e -- tests/e2e/smoke.spec.ts
+      - name: Run Accessibility and Responsive Gates
+        run: npm run test:a11y
+      - name: Run PDF Visual Regression Fixtures
+        run: npm run test:pdf
+      - name: Run PWA Cache and Offline Checks
+        run: npm run test:pwa
       - name: Build Project
         # The web bundle. Android is built by android.yml, which also proves the
         # native project still compiles and the plugins still sync — neither of
         # which any of the steps above can see.
         run: npm run build
+      - name: Generate source and build manifest
+        env:
+          PM_REQUIRE_CLEAN_MANIFEST: '1'
+        run: npm run release:manifest -- release-assets/ci-manifest.json dist
+      - name: Upload CI provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-provenance
+          path: release-assets/ci-manifest.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Check Bundle Budget
+        run: npm run perf:budget
+      - name: Check Query Performance Budget
+        run: npm run perf:benchmark

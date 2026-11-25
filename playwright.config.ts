@@ -3,6 +3,8 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './tests/e2e',
   timeout: 60_000,
+  workers: 1,
+  snapshotPathTemplate: '{testDir}/{testFileName}-snapshots/{arg}.png',
   use: {
     baseURL: 'http://127.0.0.1:4173',
     headless: true,
@@ -10,6 +12,7 @@ export default defineConfig({
   },
   webServer: {
     command: 'npm run dev -- --host 127.0.0.1 --port 4173',
+    env: { DISABLE_HMR: 'true' },
     url: 'http://127.0.0.1:4173',
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

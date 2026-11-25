@@ -27,11 +27,17 @@ import {
   type QueryConstraint,
 } from '../../data/fs';
 import { readPatients, readReports, type PatientRecord, type ReportRecord } from '../../lib/models';
-import { handleFirestoreError, OperationType } from '../../lib/firestore-errors';
 import { cn } from '../../lib/utils';
 import { collapseToProfiles, expandTestSelection, findTestInfo } from '../../lib/pathology-tests';
 import { groupByDoctorName } from '../../lib/doctor-registry';
-import { CalendarRangePicker, Card, EmptyState, SectionTitle, toIsoDay } from '../../components/ui';
+import {
+  Button,
+  CalendarRangePicker,
+  Card,
+  EmptyState,
+  SectionTitle,
+  toIsoDay,
+} from '../../components/ui';
 import { DURATION, listStaggerProps } from '../../lib/motion';
 import { localDayStartIso, localDayEndIso } from '../../lib/date-range';
 import { useRefreshHandler } from '../../hooks/useRefreshHandler';
@@ -82,6 +88,57 @@ interface TrendPoint {
   name: string;
   reports: number;
   tests: number;
+}
+
+function ChartDataTable({
+  title,
+  columns,
+  rows,
+}: {
+  title: string;
+  columns: string[];
+  rows: Array<{ label: string; values: Array<string | number> }>;
+}) {
+  return (
+    <details className="mt-2 shrink-0 rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2">
+      <summary className="cursor-pointer text-xs font-semibold text-on-surface-variant">
+        View data table: {title}
+      </summary>
+      <div
+        className="mt-2 max-h-40 overflow-auto"
+        role="region"
+        aria-label={`${title} data table`}
+        tabIndex={0}
+      >
+        <table className="w-full text-left text-xs">
+          <caption className="sr-only">{title}</caption>
+          <thead>
+            <tr>
+              {columns.map(column => (
+                <th key={column} scope="col" className="pb-1 pr-3 font-semibold">
+                  {column}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-outline-variant/20">
+            {rows.map((row, index) => (
+              <tr key={`${row.label}-${index}`}>
+                <th scope="row" className="py-1 pr-3 text-left font-medium">
+                  {row.label}
+                </th>
+                {row.values.map((value, index) => (
+                  <td key={`${row.label}-${index}`} className="py-1 pr-3 tabular-nums">
+                    {value}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  );
 }
 
 /**
@@ -159,6 +216,12 @@ export default function AnalyticsPage() {
    * turn every returning patient into "Unknown Doctor".
    */
   const [roster, setRoster] = useState<PatientRecord[]>([]);
+  const [sourceErrors, setSourceErrors] = useState({
+    reports: false,
+    patients: false,
+    roster: false,
+  });
+  const [reloadKey, setReloadKey] = useState(0);
 
   // Chart colors are resolved from CSS custom properties (never at module scope —
   // getComputedStyle would break SSR/tests) and re-read whenever the palette or
@@ -221,21 +284,27 @@ export default function AnalyticsPage() {
 
     const unsubReports = onSnapshot(
       query(collection(db, 'reports'), ...withinRange('createdAt')),
-      s => setReports(readReports(s.docs)),
-      error => handleFirestoreError(error, OperationType.GET, 'reports'),
+      s => {
+        setReports(readReports(s.docs));
+        setSourceErrors(previous => ({ ...previous, reports: false }));
+      },
+      () => setSourceErrors(previous => ({ ...previous, reports: true })),
     );
 
     const unsubPatients = onSnapshot(
       query(collection(db, 'patients'), ...withinRange('createdAt')),
-      s => setPatients(readPatients(s.docs)),
-      error => handleFirestoreError(error, OperationType.GET, 'patients'),
+      s => {
+        setPatients(readPatients(s.docs));
+        setSourceErrors(previous => ({ ...previous, patients: false }));
+      },
+      () => setSourceErrors(previous => ({ ...previous, patients: true })),
     );
 
     return () => {
       unsubReports();
       unsubPatients();
     };
-  }, [fromDate, toDate]);
+  }, [fromDate, toDate, reloadKey]);
 
   useEffect(() => {
     // One-shot read of the whole register, refreshed with the rest of the app on
@@ -245,21 +314,29 @@ export default function AnalyticsPage() {
     const loadRoster = () =>
       getDocs(query(collection(db, 'patients')))
         .then(snapshot => {
-          if (!cancelled) setRoster(readPatients(snapshot.docs));
+          if (!cancelled) {
+            setRoster(readPatients(snapshot.docs));
+            setSourceErrors(previous => ({ ...previous, roster: false }));
+          }
         })
-        .catch(error => handleFirestoreError(error, OperationType.GET, 'patients'));
+        .catch(() => {
+          if (!cancelled) setSourceErrors(previous => ({ ...previous, roster: true }));
+        });
     void loadRoster();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reloadKey]);
   // Pull-to-refresh now flows through the shared registry, so the gesture
   // awaits the roster read and can honestly say "refreshed" or report which
   // view failed instead of a fixed-delay toast.
   useRefreshHandler(() =>
     getDocs(query(collection(db, 'patients')))
-      .then(snapshot => setRoster(readPatients(snapshot.docs)))
-      .catch(error => handleFirestoreError(error, OperationType.GET, 'patients')),
+      .then(snapshot => {
+        setRoster(readPatients(snapshot.docs));
+        setSourceErrors(previous => ({ ...previous, roster: false }));
+      })
+      .catch(() => setSourceErrors(previous => ({ ...previous, roster: true }))),
   );
 
   const activeReportDates = useMemo(() => {
@@ -290,8 +367,8 @@ export default function AnalyticsPage() {
    * needs and keyed by ISO day so no two buckets can merge or be dropped.
    */
   const trend = useMemo(() => {
-    const start = new Date(fromDate || toDate || Date.now());
-    const end = new Date(toDate || fromDate || Date.now());
+    const start = new Date(fromDate || toDate);
+    const end = new Date(toDate || fromDate);
     start.setHours(0, 0, 0, 0);
     end.setHours(0, 0, 0, 0);
     if (end < start) end.setTime(start.getTime());
@@ -473,6 +550,35 @@ export default function AnalyticsPage() {
         />
       </Card>
 
+      {(sourceErrors.reports || sourceErrors.patients || sourceErrors.roster) && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-error/30 bg-error-container/40 p-4"
+        >
+          <p className="text-sm font-semibold text-error">
+            Analytics is partial or stale:{' '}
+            {[
+              sourceErrors.reports && 'report activity',
+              sourceErrors.patients && 'registrations',
+              sourceErrors.roster && 'patient roster',
+            ]
+              .filter(Boolean)
+              .join(', ')}{' '}
+            could not be read. Zeros below are not proof of no activity.
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setSourceErrors({ reports: false, patients: false, roster: false });
+              setReloadKey(value => value + 1);
+            }}
+          >
+            Retry analytics
+          </Button>
+        </div>
+      )}
+
       {/* KPI Cards */}
       <div className="grid grid-cols-1 fold:grid-cols-2 lg:grid-cols-4 gap-4">
         {[
@@ -601,6 +707,14 @@ export default function AnalyticsPage() {
                 </AreaChart>
               </ResponsiveContainer>
             </div>
+            <ChartDataTable
+              title="Report volume trend"
+              columns={['Period', 'Reports', 'Tests']}
+              rows={trendData.map(point => ({
+                label: point.name,
+                values: [point.reports, point.tests],
+              }))}
+            />
           </Card>
         </motion.div>
 
@@ -659,6 +773,14 @@ export default function AnalyticsPage() {
                 </AreaChart>
               </ResponsiveContainer>
             </div>
+            <ChartDataTable
+              title="Test volume trend"
+              columns={['Period', 'Reports', 'Tests']}
+              rows={trendData.map(point => ({
+                label: point.name,
+                values: [point.reports, point.tests],
+              }))}
+            />
           </Card>
         </motion.div>
       </div>
@@ -675,7 +797,7 @@ export default function AnalyticsPage() {
             >
               {categoryData.length === 0 ? (
                 <EmptyState
-                  className="-my-6"
+                  className="h-full py-6"
                   icon={<TestTube className="h-7 w-7" aria-hidden="true" />}
                   title="Nothing ordered yet"
                   description="Categories appear once a report in this window has tests on it."
@@ -729,6 +851,11 @@ export default function AnalyticsPage() {
                 </div>
               )}
             </div>
+            <ChartDataTable
+              title="Test category distribution"
+              columns={['Category', 'Tests']}
+              rows={categoryData.map(entry => ({ label: entry.name, values: [entry.value] }))}
+            />
           </Card>
         </motion.div>
 
@@ -804,6 +931,11 @@ export default function AnalyticsPage() {
                 </ResponsiveContainer>
               )}
             </div>
+            <ChartDataTable
+              title="Top tests by volume"
+              columns={['Test', 'Count']}
+              rows={topTestsData.map(entry => ({ label: entry.name, values: [entry.value] }))}
+            />
           </Card>
         </motion.div>
       </div>
@@ -867,6 +999,14 @@ export default function AnalyticsPage() {
                 </li>
               ))}
             </ul>
+            <ChartDataTable
+              title="Patient insights"
+              columns={['Reports per patient', 'Patients']}
+              rows={patientInsightsData.map(entry => ({
+                label: entry.name,
+                values: [entry.placeholder ? '—' : entry.value],
+              }))}
+            />
           </Card>
         </motion.div>
 

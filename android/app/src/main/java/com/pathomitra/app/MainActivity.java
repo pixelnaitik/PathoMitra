@@ -28,6 +28,10 @@ public class MainActivity extends BridgeActivity {
         // consumes, so an app-defined plugin has to be declared before that call.
         registerPlugin(PdfViewerPlugin.class);
         registerPlugin(WindowSecurityPlugin.class);
+        registerPlugin(ReportSigningPlugin.class);
+        registerPlugin(BackupDestinationPlugin.class);
+        registerPlugin(StoragePressurePlugin.class);
+        BackupCopyWorker.schedule(this);
 
         // Fail closed: protection is the starting state, and JS has to opt out.
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);

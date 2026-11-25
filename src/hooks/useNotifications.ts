@@ -55,6 +55,8 @@ import {
   requestPermission,
   scheduleDailyReminder,
   cancelDailyReminder,
+  scheduleAlertReminder,
+  cancelAlertReminder,
   showBanner,
   type BannerPermission,
 } from '../lib/desktop-notifications';
@@ -84,18 +86,18 @@ import {
 } from '../lib/notification-state';
 import { useAuth } from '../contexts/AuthContext';
 import { can } from '../lib/permissions';
-
+import {
+  NOTIFICATION_DELIVERY_EVENT,
+  notificationDeliverySummary,
+  recordNotificationDelivery,
+} from '../lib/notification-delivery';
 
 /** How far back to look for un-finished work. */
 const LOOKBACK_DAYS = 30;
 const PATIENT_WINDOW = 1000;
 const REPORT_WINDOW = 1000;
-/** An old draft is still an old draft, so this window is deliberately wider. */
-const DRAFT_WINDOW = 500;
-const AMENDED_WINDOW = 500;
-const DUE_WINDOW = 500;
-const ORDER_WINDOW = 5000;
-const SAMPLE_WINDOW = 10000;
+/** Every notification query is bounded; the UI discloses any reached ceiling. */
+const ACTIONABLE_WINDOW = 1000;
 
 /** Background re-check cadence while the dashboard stays open. */
 const AUTO_REFRESH_MS = 10 * 60_000;
@@ -115,6 +117,7 @@ export interface UseNotificationsResult {
   mutedCount: number;
   /** Query windows that reached their cap, so the UI cannot imply completeness. */
   truncatedSources: string[];
+  delivery: { delivered: number; failed: number; acknowledged: number };
   refresh: () => void;
   markRead: (id: string) => void;
   markAllRead: () => void;
@@ -148,6 +151,7 @@ export function useNotifications(): UseNotificationsResult {
   const [error, setError] = useState<string | null>(null);
   const [lastCheckedAt, setLastCheckedAt] = useState<string | null>(null);
   const [truncatedSources, setTruncatedSources] = useState<string[]>([]);
+  const [delivery, setDelivery] = useState(() => notificationDeliverySummary());
   const [prefs, setPrefs] = useState<NotificationPrefs>(() =>
     resolvePrefs(readSettings().notificationPrefs ?? DEFAULT_NOTIFICATION_PREFS),
   );
@@ -163,6 +167,14 @@ export function useNotifications(): UseNotificationsResult {
   const pushTimer = useRef(0);
   /** One desktop banner per alert id per session — never a repeating ping. */
   const announced = useRef<Set<string>>(new Set());
+  const scheduledReminders = useRef<Set<string>>(new Set());
+  const loadGeneration = useRef(0);
+
+  useEffect(() => {
+    const update = () => setDelivery(notificationDeliverySummary());
+    window.addEventListener(NOTIFICATION_DELIVERY_EVENT, update);
+    return () => window.removeEventListener(NOTIFICATION_DELIVERY_EVENT, update);
+  }, []);
 
   // Preferences are lab settings: re-read them whenever Settings writes.
   useEffect(() => {
@@ -194,6 +206,7 @@ export function useNotifications(): UseNotificationsResult {
 
   const load = useCallback(async () => {
     if (!active) return;
+    const generation = ++loadGeneration.current;
     setRefreshing(true);
     // Cutoff is computed once so a long-lived tab cannot drift the window.
     const since = new Date(Date.now() - LOOKBACK_DAYS * 86_400_000).toISOString();
@@ -222,20 +235,24 @@ export function useNotifications(): UseNotificationsResult {
           collection(db, 'reports'),
           where('status', '==', 'draft'),
           orderBy('createdAt', 'desc'),
-          limitDocs(DRAFT_WINDOW),
+          limitDocs(ACTIONABLE_WINDOW),
         ),
       ),
       // Ordered on `updatedAt`, which only exists on edited documents, so this
       // is already exactly the set of amendments — newest first.
       getDocs(
-        query(collection(db, 'reports'), orderBy('updatedAt', 'desc'), limitDocs(AMENDED_WINDOW)),
+        query(
+          collection(db, 'reports'),
+          orderBy('updatedAt', 'desc'),
+          limitDocs(ACTIONABLE_WINDOW),
+        ),
       ),
       getDocs(
         query(
           collection(db, 'invoices'),
           where('status', 'in', ['pending', 'partial']),
           orderBy('createdAt', 'desc'),
-          limitDocs(DUE_WINDOW),
+          limitDocs(ACTIONABLE_WINDOW),
         ),
       ),
       getDocs(
@@ -243,7 +260,7 @@ export function useNotifications(): UseNotificationsResult {
           collection(db, 'orders'),
           where('status', 'in', ['ordered', 'collected', 'processing', 'resulted', 'issued']),
           orderBy('createdAt', 'asc'),
-          limitDocs(ORDER_WINDOW),
+          limitDocs(ACTIONABLE_WINDOW),
         ),
       ),
       getDocs(
@@ -251,10 +268,12 @@ export function useNotifications(): UseNotificationsResult {
           collection(db, 'samples'),
           where('status', 'in', ['expected', 'collected', 'received', 'processing']),
           orderBy('createdAt', 'asc'),
-          limitDocs(SAMPLE_WINDOW),
+          limitDocs(ACTIONABLE_WINDOW),
         ),
       ),
     ]);
+
+    if (generation !== loadGeneration.current) return;
 
     const failures: string[] = [];
     // A rejected read is only an application error when it is not an expected
@@ -283,11 +302,24 @@ export function useNotifications(): UseNotificationsResult {
     consume(o, 'orders', snapshot => setOrders(readOrders(snapshot.docs)));
     consume(s, 'samples', snapshot => setSamples(readSamples(snapshot.docs)));
     const labels = ['patients', 'reports', 'drafts', 'amendments', 'invoices', 'orders', 'samples'];
-    const limits = [PATIENT_WINDOW, REPORT_WINDOW, DRAFT_WINDOW, AMENDED_WINDOW, DUE_WINDOW, ORDER_WINDOW, SAMPLE_WINDOW];
-    setTruncatedSources(windows.flatMap((outcome, index) =>
-      outcome.status === 'fulfilled' && outcome.value.size >= limits[index] ? [labels[index]] : [],
-    ));
+    const limits = [
+      PATIENT_WINDOW,
+      REPORT_WINDOW,
+      ACTIONABLE_WINDOW,
+      ACTIONABLE_WINDOW,
+      ACTIONABLE_WINDOW,
+      ACTIONABLE_WINDOW,
+      ACTIONABLE_WINDOW,
+    ];
+    setTruncatedSources(
+      windows.flatMap((outcome, index) =>
+        outcome.status === 'fulfilled' && outcome.value.size >= limits[index]
+          ? [labels[index]]
+          : [],
+      ),
+    );
 
+    if (generation !== loadGeneration.current) return;
     setLoading(false);
     setRefreshing(false);
     setLastCheckedAt(new Date().toISOString());
@@ -303,6 +335,9 @@ export function useNotifications(): UseNotificationsResult {
   useEffect(() => {
     if (!active) return;
     void load();
+    return () => {
+      loadGeneration.current += 1;
+    };
   }, [active, load]);
   // Pull-to-refresh goes through the shared registry instead of the raw
   // `app:refresh` CustomEvent, so the gesture can await `load()` and report
@@ -406,6 +441,19 @@ export function useNotifications(): UseNotificationsResult {
     if (pruned !== state) commit(pruned);
   }, [active, derived, state, commit]);
 
+  // A handled, muted, or resolved alert must not fire a later reminder.
+  useEffect(() => {
+    if (!active) return;
+    const activeKeys = new Set(
+      items.filter(item => !item.read && item.severity !== 'info').map(item => item.id),
+    );
+    for (const key of scheduledReminders.current) {
+      if (prefs.channels.desktop && bannerPermission === 'granted' && activeKeys.has(key)) continue;
+      scheduledReminders.current.delete(key);
+      void cancelAlertReminder(key);
+    }
+  }, [active, items, prefs.channels.desktop, bannerPermission]);
+
   // Banner for anything new that needs attention right now.
   useEffect(() => {
     if (!prefs.channels.desktop || !isSupported()) return;
@@ -431,24 +479,50 @@ export function useNotifications(): UseNotificationsResult {
       const banner = native
         ? { title: item.bannerTitle, body: item.bannerBody }
         : safeBannerFor(item);
-      void showBanner({ key: item.id, ...banner });
+      void showBanner({ key: item.id, ...banner }).then(delivered => {
+        void recordNotificationDelivery(item.id, delivered ? 'delivered' : 'failed');
+      });
+      if (native) {
+        void scheduleAlertReminder({ key: item.id, ...banner }).then(scheduled => {
+          if (scheduled) scheduledReminders.current.add(item.id);
+          void recordNotificationDelivery(item.id, scheduled ? 'scheduled' : 'failed');
+        });
+      }
     }
   }, [items, prefs.channels.desktop, bannerPermission]);
 
-  const markReadOne = useCallback((id: string) => commit(markRead(state, [id])), [commit, state]);
-
-  const markAllRead = useCallback(
-    () =>
-      commit(
-        markRead(
-          state,
-          items.map(item => item.id),
-        ),
-      ),
-    [commit, items, state],
+  const markReadOne = useCallback(
+    (id: string) => {
+      scheduledReminders.current.delete(id);
+      void cancelAlertReminder(id);
+      void recordNotificationDelivery(id, 'acknowledged');
+      commit(markRead(state, [id]));
+    },
+    [commit, state],
   );
 
-  const toggleMuteOne = useCallback((id: string) => commit(muteItem(state, id)), [commit, state]);
+  const markAllRead = useCallback(() => {
+    for (const item of items) {
+      scheduledReminders.current.delete(item.id);
+      void cancelAlertReminder(item.id);
+      void recordNotificationDelivery(item.id, 'acknowledged');
+    }
+    commit(
+      markRead(
+        state,
+        items.map(item => item.id),
+      ),
+    );
+  }, [commit, items, state]);
+
+  const toggleMuteOne = useCallback(
+    (id: string) => {
+      scheduledReminders.current.delete(id);
+      void cancelAlertReminder(id);
+      commit(muteItem(state, id));
+    },
+    [commit, state],
+  );
 
   const clearMutedAll = useCallback(() => commit(unmuteAll(state)), [commit, state]);
 
@@ -482,9 +556,10 @@ export function useNotifications(): UseNotificationsResult {
     loading,
     refreshing,
     error,
-        lastCheckedAt,
+    lastCheckedAt,
     mutedCount: state.mutedIds.length,
     truncatedSources,
+    delivery,
     refresh: () => void load(),
     markRead: markReadOne,
     markAllRead,

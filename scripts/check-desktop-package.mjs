@@ -31,10 +31,30 @@ import path from 'node:path';
 import process from 'node:process';
 
 const root = process.cwd();
-const unpacked =
-  process.argv[2] ?? path.join(root, 'release-desktop', 'win-unpacked');
-const installer = process.argv[3];
+const unpacked = process.argv[2] ?? path.join(root, 'release-desktop', 'win-unpacked');
+const releaseDir = path.join(root, 'release-desktop');
+const packageVersion = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+
+function discoverInstaller() {
+  if (!fs.existsSync(releaseDir)) return null;
+  const candidates = fs
+    .readdirSync(releaseDir)
+    .filter(name => /\.(msi|exe)$/i.test(name))
+    .map(name => path.join(releaseDir, name));
+  const versioned = candidates.filter(file => path.basename(file).includes(packageVersion));
+  if (versioned.length === 1) return versioned[0];
+  if (candidates.length === 1) return candidates[0];
+  return null;
+}
+
+const installer = process.argv[3] ?? discoverInstaller();
 const problems = [];
+const signatureInventory = [];
+if (!installer) {
+  problems.push(
+    `no unique MSI/NSIS installer found in ${releaseDir}; pass its path explicitly or rebuild the package.`,
+  );
+}
 
 /**
  * Budgets.
@@ -118,6 +138,7 @@ for (const p of pes) {
   const rel = path.relative(unpacked, p);
   if (FOREIGN_NATIVE.test(path.basename(p))) {
     foreign += 1;
+    signatureInventory.push({ path: rel, status: 'ForeignPlatform' });
     problems.push(
       `foreign-platform native binary shipped in a win32-x64 package: ${rel} ` +
         '(unreachable at runtime, and unsigned by definition)',
@@ -131,6 +152,7 @@ for (const p of pes) {
     problems.push(`cannot read the signature of ${rel}: ${String(error).slice(0, 160)}`);
     continue;
   }
+  signatureInventory.push({ path: rel, status: sig.status, subject: sig.subject });
   if (sig.status === 'Valid') {
     verified += 1;
   } else {
@@ -178,6 +200,12 @@ if (installer) {
       problems.push(`installer is ${installerMB.toFixed(1)} MB, budget ${MAX_INSTALLER_MB} MB`);
     }
     const sig = signatureOf(installer);
+    signatureInventory.push({
+      path: path.relative(root, installer),
+      status: sig.status,
+      subject: sig.subject,
+      bytes: fs.statSync(installer).size,
+    });
     if (sig.status !== 'Valid') {
       problems.push(
         `installer is "${sig.status}", not "Valid" — Microsoft does not re-sign a ` +
@@ -188,9 +216,7 @@ if (installer) {
       console.log(`  installer signer: ${sig.subject}`);
     }
     const names = path.basename(installer).match(/(\d+\.\d+\.\d+)/);
-    const pkgVersion = JSON.parse(
-      fs.readFileSync(path.join(root, 'package.json'), 'utf8'),
-    ).version;
+    const pkgVersion = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
     if (names && names[1] !== pkgVersion) {
       problems.push(
         `installer is named ${names[1]} but package.json says ${pkgVersion} — a ` +
@@ -217,6 +243,26 @@ if (problems.length > 0) {
       '  controlled by the `files` ignore list in the same file.\n',
   );
   process.exit(1);
+}
+
+const reportPath = process.env.PM_DESKTOP_SIGNATURE_RESULTS;
+if (reportPath) {
+  fs.mkdirSync(path.dirname(path.resolve(reportPath)), { recursive: true });
+  fs.writeFileSync(
+    reportPath,
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        generatedAt: new Date().toISOString(),
+        installer: installer ? path.relative(root, installer) : null,
+        payloadMB: Number(payloadMB.toFixed(3)),
+        asarMB: fs.existsSync(asar) ? Number((fs.statSync(asar).size / 1048576).toFixed(3)) : 0,
+        signatures: signatureInventory,
+      },
+      null,
+      2,
+    ) + '\n',
+  );
 }
 
 console.log(

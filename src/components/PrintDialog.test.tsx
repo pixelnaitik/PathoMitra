@@ -41,16 +41,19 @@ const JOB: PrintJob = {
 };
 
 function stubBridge(jobResult: { ok: boolean; error?: string } = { ok: true }) {
-  const printJob = vi.fn().mockResolvedValue(jobResult);
+  const begin = vi.fn().mockResolvedValue({ ok: true, jobId: 'print-job-1' });
+  const page = vi.fn().mockResolvedValue({ ok: true, pageNumber: 1 });
+  const commit = vi.fn().mockResolvedValue(jobResult);
+  const cancel = vi.fn().mockResolvedValue({ ok: true });
   const printers = vi.fn().mockResolvedValue(PRINTERS);
   vi.stubGlobal('pathomitraDesktop', {
     kind: 'desktop',
     version: '44.7.0',
-    print: { printers, job: printJob },
+    print: { printers, begin, page, commit, cancel },
     files: { print: vi.fn().mockResolvedValue('printed') },
     shell: { show: vi.fn() },
   });
-  return { printJob, printers };
+  return { begin, page, commit, cancel, printers };
 }
 
 function stubDocument(pageCount = 4) {
@@ -104,7 +107,7 @@ describe('PrintDialog', () => {
   });
 
   it('prints exactly the selected pages to the chosen printer', async () => {
-    const { printJob } = await renderDialog();
+    const { begin, page, commit } = await renderDialog();
     fireEvent.click(screen.getByRole('button', { name: 'Custom' }));
     fireEvent.change(screen.getByRole('textbox', { name: 'Page numbers' }), {
       target: { value: '2-3' },
@@ -114,9 +117,11 @@ describe('PrintDialog', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'Print' }));
 
-    await waitFor(() => expect(printJob).toHaveBeenCalled());
-    const [request] = printJob.mock.calls[0];
-    expect(request.pages).toHaveLength(2);
+    await waitFor(() => expect(commit).toHaveBeenCalledWith('print-job-1'));
+    const [request] = begin.mock.calls[0];
+    expect(request).not.toHaveProperty('pages');
+    expect(page).toHaveBeenCalledTimes(2);
+    expect(page.mock.calls[0][0]).toBe('print-job-1');
     expect(request.options).toMatchObject({
       deviceName: 'HP LaserJet',
       copies: 2,
@@ -129,16 +134,16 @@ describe('PrintDialog', () => {
     expect(request.sheetHeightMm).toBeCloseTo(297);
     expect(request.imageWidthMm).toBeCloseTo(210);
     expect(request.imageHeightMm).toBeCloseTo(297);
-    expect(request.pages[0]).toContain('data:image/png;base64,');
+    expect(page.mock.calls[0][1]).toContain('data:image/png;base64,');
   });
 
   it('swaps the sheet and rotates the pages for landscape', async () => {
-    const { printJob } = await renderDialog();
+    const { begin } = await renderDialog();
     fireEvent.click(screen.getByRole('button', { name: 'Landscape' }));
     fireEvent.click(screen.getByRole('button', { name: 'Print' }));
 
-    await waitFor(() => expect(printJob).toHaveBeenCalled());
-    const [request] = printJob.mock.calls[0];
+    await waitFor(() => expect(begin).toHaveBeenCalled());
+    const [request] = begin.mock.calls[0];
     expect(request.sheetWidthMm).toBeCloseTo(297);
     expect(request.sheetHeightMm).toBeCloseTo(210);
     // The raster carries the rotation, so the print pipeline gets one source of
@@ -153,8 +158,18 @@ describe('PrintDialog', () => {
     const bridge = stubBridge({ ok: false, error: 'printer is offline' });
     await renderDialog(bridge);
     fireEvent.click(screen.getByRole('button', { name: 'Print' }));
-    await waitFor(() => expect(bridge.printJob).toHaveBeenCalled());
+    await waitFor(() => expect(bridge.commit).toHaveBeenCalled());
     expect(await screen.findByRole('alert')).toHaveTextContent('printer is offline');
+  });
+
+  it('cancels staged pages when a page cannot be transferred', async () => {
+    const bridge = stubBridge();
+    bridge.page.mockResolvedValueOnce({ ok: false, error: 'page budget exceeded' });
+    await renderDialog(bridge);
+    fireEvent.click(screen.getByRole('button', { name: 'Print' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('page budget exceeded');
+    expect(bridge.cancel).toHaveBeenCalledWith('print-job-1');
+    expect(bridge.commit).not.toHaveBeenCalled();
   });
 
   it('keeps the vector escape hatch wired to the shell-verb path', async () => {

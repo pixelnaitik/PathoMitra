@@ -21,15 +21,7 @@
  * `toInvoiceDoc` (lib/models.ts), so an alert title, a printed grand total, and a
  * day-book sum are three views of one arithmetic.
  */
-import {
-  collection,
-  db,
-  doc,
-  getDoc,
-  getDocs,
-  query,
-  where,
-} from '../data/fs';
+import { collection, db, doc, getDoc, getDocs, query, where } from '../data/fs';
 import {
   isInvoiceOutstanding,
   readInvoice,
@@ -73,12 +65,16 @@ function commissionOn(base: number, percent: number): number {
 }
 
 function assertBillingRole(role?: Role): void {
-  if (role && !can(role, 'manageBilling')) throw new Error('The signed-in operator role cannot manage billing.');
+  if (role && !can(role, 'manageBilling'))
+    throw new Error('The signed-in operator role cannot manage billing.');
 }
 
 /** What a bill is raised for: a patient's order, optionally a specific report. */
 export interface RaiseInvoiceInput {
-  patient: Pick<PatientRecord, 'id' | 'name' | 'doctorName' | 'doctorId' | 'createdAt' | 'testSelection'>;
+  patient: Pick<
+    PatientRecord,
+    'id' | 'name' | 'doctorName' | 'doctorId' | 'createdAt' | 'testSelection'
+  >;
   /** Lines come from here when given, else from the patient's own order. */
   testSelection?: readonly string[];
   /** Frozen requisition to bill; its items and tariff win over live patient data. */
@@ -133,11 +129,15 @@ export function buildInvoiceDraft(input: RaiseInvoiceInput): InvoiceDraft {
   const prefs = getBillingPrefs();
   const taxDetails = input.taxDetails ?? prefs.taxDetails;
   const list = input.priceList ?? getPriceList();
-  const names = input.testSelection ?? input.order?.items.map(item => item.name) ?? input.patient.testSelection ?? [];
+  const names =
+    input.testSelection ??
+    input.order?.items.map(item => item.name) ??
+    input.patient.testSelection ??
+    [];
   const lines = input.order
     ? input.order.items.map(item => ({
         name: item.name,
-        kind: item.isGroup ? 'panel' as const : 'test' as const,
+        kind: item.isGroup ? ('panel' as const) : ('test' as const),
         detail: item.specimen ?? '',
         qty: item.qty,
         unitPrice: item.priceApproved ? item.unitPrice : 0,
@@ -147,9 +147,7 @@ export function buildInvoiceDraft(input: RaiseInvoiceInput): InvoiceDraft {
         covers: item.isGroup ? expandTestSelection([item.name]) : [item.name],
       }))
     : billLinesFrom(names, list);
-  const items = taxDetails?.hsnSac
-    ? rawItemsForTax(lines, taxDetails.hsnSac)
-    : lines;
+  const items = taxDetails?.hsnSac ? rawItemsForTax(lines, taxDetails.hsnSac) : lines;
 
   const base = totalsOf(items, 0, input.taxPercent ?? prefs.taxPercent);
   // A percent discount *replaces* a rupee one rather than stacking on it — the
@@ -187,7 +185,7 @@ export function buildInvoiceDraft(input: RaiseInvoiceInput): InvoiceDraft {
 
 /** The single arithmetic used by preview, write, and reprint alike. */
 function rawItemsForTax(items: InvoiceItem[], hsnSac: string): InvoiceItem[] {
-  return items.map(item => item.hsnSac ? item : { ...item, hsnSac });
+  return items.map(item => (item.hsnSac ? item : { ...item, hsnSac }));
 }
 
 function totalsOf(items: readonly InvoiceItem[], discount: number, taxPercent: number) {
@@ -257,14 +255,17 @@ export async function raiseInvoice(input: RaiseInvoiceInput): Promise<InvoiceRec
     const paidAmount = Number(value.paidAmount) || 0;
 
     await tx.set('invoices', invoiceNo, value);
-    await tx.add('auditEvents', AuditEventSchema.parse({
-      action: 'invoice.raised',
-      entity: 'invoices',
-      entityId: invoiceNo,
-      actor: input.issuedBy,
-      at,
-      details: { orderId: input.order?.id ?? input.orderId, amount: draft.totals.amount },
-    }));
+    await tx.add(
+      'auditEvents',
+      AuditEventSchema.parse({
+        action: 'invoice.raised',
+        entity: 'invoices',
+        entityId: invoiceNo,
+        actor: input.issuedBy,
+        at,
+        details: { orderId: input.order?.id ?? input.orderId, amount: draft.totals.amount },
+      }),
+    );
     if (paidAmount > 0) {
       const paymentId = generateId();
       const payment = PaymentLedgerSchema.parse({
@@ -278,14 +279,17 @@ export async function raiseInvoice(input: RaiseInvoiceInput): Promise<InvoiceRec
         note: 'Collected while raising the invoice',
       });
       await tx.set('payments', paymentId, payment);
-      await tx.add('auditEvents', AuditEventSchema.parse({
-        action: 'payment.received',
-        entity: 'payments',
-        entityId: paymentId,
-        actor: input.issuedBy,
-        at,
-        details: { invoiceId: invoiceNo, amount: paidAmount, mode: payment.mode },
-      }));
+      await tx.add(
+        'auditEvents',
+        AuditEventSchema.parse({
+          action: 'payment.received',
+          entity: 'payments',
+          entityId: paymentId,
+          actor: input.issuedBy,
+          at,
+          details: { invoiceId: invoiceNo, amount: paidAmount, mode: payment.mode },
+        }),
+      );
     }
     created = readInvoice(invoiceNo, value);
   });
@@ -301,13 +305,16 @@ export async function raiseInvoice(input: RaiseInvoiceInput): Promise<InvoiceRec
  * afterwards must not silently change what a handed-over report was charged for.
  */
 export async function raiseInvoiceForReport(
-  report: Pick<ReportRecord, 'id' | 'patientId' | 'patientName' | 'testSelection' | 'createdAt' | 'orderId'>,
+  report: Pick<
+    ReportRecord,
+    'id' | 'patientId' | 'patientName' | 'testSelection' | 'createdAt' | 'orderId'
+  >,
   patient: PatientRecord | undefined,
   options: Omit<RaiseInvoiceInput, 'patient' | 'testSelection' | 'reportId'>,
 ): Promise<InvoiceRecord> {
   const orderDoc = report.orderId ? await getRepository().get('orders', report.orderId) : null;
   const order = orderDoc
-    ? { ...(OrderSchema.parse({ id: orderDoc.id, ...orderDoc.data() })), id: orderDoc.id }
+    ? { ...OrderSchema.parse({ id: orderDoc.id, ...orderDoc.data() }), id: orderDoc.id }
     : undefined;
   return raiseInvoice({
     ...options,
@@ -360,7 +367,16 @@ export async function getInvoice(id: string): Promise<InvoiceRecord | null> {
  */
 export async function recordPayment(
   invoiceId: string,
-  options: { amount: number; mode: PaymentMode; actor: string; actorRole?: Role; at?: string; note?: string },
+  options: {
+    amount: number;
+    mode: PaymentMode;
+    actor: string;
+    actorRole?: Role;
+    at?: string;
+    note?: string;
+    operationId?: string;
+    shiftId?: string;
+  },
 ): Promise<InvoiceRecord> {
   assertBillingRole(options.actorRole);
   if (!Number.isFinite(options.amount) || options.amount < 0) {
@@ -371,6 +387,17 @@ export async function recordPayment(
   let updated: InvoiceRecord | null = null;
 
   await repo.transaction(async tx => {
+    if (options.operationId) {
+      const prior = await tx.list('payments', {
+        where: [{ field: 'operationId', op: '==', value: options.operationId }],
+      });
+      if (prior.length > 0) {
+        const invoice = await tx.get('invoices', invoiceId);
+        if (!invoice) throw new Error('The idempotent payment references a missing invoice.');
+        updated = readInvoice(invoiceId, invoice.data());
+        return;
+      }
+    }
     const invoiceDoc = await tx.get('invoices', invoiceId);
     if (!invoiceDoc) throw new Error('That bill could not be found — no payment was recorded.');
     const existing = readInvoice(invoiceId, invoiceDoc.data());
@@ -382,7 +409,9 @@ export async function recordPayment(
 
     const requested = roundMoney(options.amount);
     if (requested > outstanding) {
-      throw new Error('Payment exceeds the outstanding balance. Record the exact amount or use an explicit adjustment.');
+      throw new Error(
+        'Payment exceeds the outstanding balance. Record the exact amount or use an explicit adjustment.',
+      );
     }
     // Zero on an outstanding bill is the explicit full-waiver action.
     const applied = requested === 0 ? outstanding : requested;
@@ -406,16 +435,21 @@ export async function recordPayment(
       actor: options.actor.trim(),
       at,
       note: requested === 0 ? 'Full waiver' : options.note?.trim(),
+      operationId: options.operationId,
+      shiftId: options.shiftId,
     });
     await tx.set('payments', paymentId, payment);
-    await tx.add('auditEvents', AuditEventSchema.parse({
-      action: 'payment.received',
-      entity: 'payments',
-      entityId: paymentId,
-      actor: options.actor.trim(),
-      at,
-      details: { invoiceId, amount: applied, mode: options.mode, waiver: requested === 0 },
-    }));
+    await tx.add(
+      'auditEvents',
+      AuditEventSchema.parse({
+        action: 'payment.received',
+        entity: 'payments',
+        entityId: paymentId,
+        actor: options.actor.trim(),
+        at,
+        details: { invoiceId, amount: applied, mode: options.mode, waiver: requested === 0 },
+      }),
+    );
     updated = readInvoice(invoiceId, { ...invoiceValue, ...patch });
   });
 
@@ -426,46 +460,78 @@ export async function recordPayment(
 /** Refund collected money without rewriting the original payment history. */
 export async function refundPayment(
   invoiceId: string,
-  options: { amount: number; mode: PaymentMode; actor: string; actorRole?: Role; reason: string; reference?: string; at?: string },
+  options: {
+    amount: number;
+    mode: PaymentMode;
+    actor: string;
+    actorRole?: Role;
+    reason: string;
+    reference?: string;
+    at?: string;
+    operationId?: string;
+    shiftId?: string;
+  },
 ): Promise<InvoiceRecord> {
   assertBillingRole(options.actorRole);
   const amount = roundMoney(options.amount);
-  if (!Number.isFinite(options.amount) || amount <= 0) throw new Error('Refund amount must be positive.');
+  if (!Number.isFinite(options.amount) || amount <= 0)
+    throw new Error('Refund amount must be positive.');
   if (!options.actor.trim()) throw new Error('A refund requires an operator identity.');
   if (!options.reason.trim()) throw new Error('A refund requires a reason.');
   const repo = getRepository();
   let updated: InvoiceRecord | null = null;
   await repo.transaction(async tx => {
+    if (options.operationId) {
+      const prior = await tx.list('payments', {
+        where: [{ field: 'operationId', op: '==', value: options.operationId }],
+      });
+      if (prior.length > 0) {
+        const invoice = await tx.get('invoices', invoiceId);
+        if (!invoice) throw new Error('The idempotent refund references a missing invoice.');
+        updated = readInvoice(invoiceId, invoice.data());
+        return;
+      }
+    }
     const invoiceDoc = await tx.get('invoices', invoiceId);
     if (!invoiceDoc) throw new Error('That bill could not be found — no refund was recorded.');
     const existing = readInvoice(invoiceId, invoiceDoc.data());
     if (existing.status === 'void') throw new Error('A voided bill cannot be refunded.');
-    if (amount > (existing.paidAmount ?? 0)) throw new Error('Refund exceeds the amount collected on this bill.');
+    if (amount > (existing.paidAmount ?? 0))
+      throw new Error('Refund exceeds the amount collected on this bill.');
     const at = options.at || new Date().toISOString();
     const paidAmount = roundMoney((existing.paidAmount ?? 0) - amount);
     const patch = toInvoicePaymentDoc(existing, paidAmount, at, options.mode);
     const { id: _id, ...invoiceValue } = existing;
     await tx.set('invoices', invoiceId, { ...invoiceValue, ...patch });
     const refundId = generateId();
-    await tx.set('payments', refundId, PaymentLedgerSchema.parse({
-      id: refundId,
-      invoiceId,
-      type: 'refund',
-      amount,
-      mode: options.mode,
-      actor: options.actor.trim(),
-      at,
-      reference: options.reference?.trim(),
-      note: options.reason.trim(),
-    }));
-    await tx.add('auditEvents', AuditEventSchema.parse({
-      action: 'payment.refunded',
-      entity: 'payments',
-      entityId: refundId,
-      actor: options.actor.trim(),
-      at,
-      details: { invoiceId, amount, mode: options.mode, reason: options.reason.trim() },
-    }));
+    await tx.set(
+      'payments',
+      refundId,
+      PaymentLedgerSchema.parse({
+        id: refundId,
+        invoiceId,
+        type: 'refund',
+        amount,
+        mode: options.mode,
+        actor: options.actor.trim(),
+        at,
+        reference: options.reference?.trim(),
+        note: options.reason.trim(),
+        operationId: options.operationId,
+        shiftId: options.shiftId,
+      }),
+    );
+    await tx.add(
+      'auditEvents',
+      AuditEventSchema.parse({
+        action: 'payment.refunded',
+        entity: 'payments',
+        entityId: refundId,
+        actor: options.actor.trim(),
+        at,
+        details: { invoiceId, amount, mode: options.mode, reason: options.reason.trim() },
+      }),
+    );
     updated = readInvoice(invoiceId, { ...invoiceValue, ...patch });
   });
   if (!updated) throw new Error('The refund could not be recorded.');
@@ -477,7 +543,9 @@ export async function reverseLedgerEntry(
   entryId: string,
   actor: string,
   reason: string,
+  options: { actorRole?: Role; operationId?: string } = {},
 ): Promise<InvoiceRecord> {
+  assertBillingRole(options.actorRole);
   if (!actor.trim()) throw new Error('A reversal requires an operator identity.');
   if (!reason.trim()) throw new Error('A reversal requires a reason.');
   const repo = getRepository();
@@ -497,32 +565,47 @@ export async function reverseLedgerEntry(
     if (existing.status === 'void') throw new Error('A voided bill cannot be adjusted.');
     const at = new Date().toISOString();
     const delta = entry.type === 'payment' ? -entry.amount : entry.amount;
-    const paidAmount = roundMoney(Math.max(0, Math.min(existing.amount, (existing.paidAmount ?? 0) + delta)));
+    const paidAmount = roundMoney(
+      Math.max(0, Math.min(existing.amount, (existing.paidAmount ?? 0) + delta)),
+    );
     const patch = toInvoicePaymentDoc(existing, paidAmount, at, entry.mode);
     const { id: _id, ...invoiceValue } = existing;
     await tx.set('invoices', entry.invoiceId, { ...invoiceValue, ...patch });
     const reversalId = generateId();
-    await tx.set('payments', reversalId, PaymentLedgerSchema.parse({
-      id: reversalId,
-      invoiceId: entry.invoiceId,
-      type: 'reversal',
-      amount: entry.amount,
-      mode: entry.mode,
-      actor: actor.trim(),
-      at,
-      reference: entryId,
-      reversesEntryId: entryId,
-      reversesType: entry.type,
-      note: reason.trim(),
-    }));
-    await tx.add('auditEvents', AuditEventSchema.parse({
-      action: 'payment.reversed',
-      entity: 'payments',
-      entityId: reversalId,
-      actor: actor.trim(),
-      at,
-      details: { invoiceId: entry.invoiceId, reversedEntryId: entryId, amount: entry.amount, reason: reason.trim() },
-    }));
+    await tx.set(
+      'payments',
+      reversalId,
+      PaymentLedgerSchema.parse({
+        id: reversalId,
+        invoiceId: entry.invoiceId,
+        type: 'reversal',
+        amount: entry.amount,
+        mode: entry.mode,
+        actor: actor.trim(),
+        at,
+        reference: entryId,
+        reversesEntryId: entryId,
+        reversesType: entry.type,
+        note: reason.trim(),
+        operationId: options.operationId,
+      }),
+    );
+    await tx.add(
+      'auditEvents',
+      AuditEventSchema.parse({
+        action: 'payment.reversed',
+        entity: 'payments',
+        entityId: reversalId,
+        actor: actor.trim(),
+        at,
+        details: {
+          invoiceId: entry.invoiceId,
+          reversedEntryId: entryId,
+          amount: entry.amount,
+          reason: reason.trim(),
+        },
+      }),
+    );
     updated = readInvoice(entry.invoiceId, { ...invoiceValue, ...patch });
   });
   if (!updated) throw new Error('The ledger entry could not be reversed.');
@@ -542,7 +625,9 @@ export async function reconcileInvoice(invoiceId: string): Promise<InvoiceReconc
   const invoice = await getInvoice(invoiceId);
   if (!invoice) throw new Error('That bill could not be found.');
   const repo = getRepository();
-  const docs = await repo.list('payments', { where: [{ field: 'invoiceId', op: '==', value: invoiceId }] });
+  const docs = await repo.list('payments', {
+    where: [{ field: 'invoiceId', op: '==', value: invoiceId }],
+  });
   let ledgerNet = 0;
   for (const doc of docs) {
     const entry = PaymentLedgerSchema.parse({ id: doc.id, ...doc.data() });
@@ -553,7 +638,13 @@ export async function reconcileInvoice(invoiceId: string): Promise<InvoiceReconc
   }
   ledgerNet = roundMoney(ledgerNet);
   const invoicePaid = roundMoney(invoice.paidAmount ?? 0);
-  return { invoiceId, invoicePaid, ledgerNet, difference: roundMoney(invoicePaid - ledgerNet), entries: docs.length };
+  return {
+    invoiceId,
+    invoicePaid,
+    ledgerNet,
+    difference: roundMoney(invoicePaid - ledgerNet),
+    entries: docs.length,
+  };
 }
 
 /**
@@ -582,18 +673,28 @@ export async function voidInvoice(
     if (!invoiceDoc) throw new Error('That bill could not be found — nothing was voided.');
     const before = readInvoice(invoiceId, invoiceDoc.data());
     if (before.status === 'void') throw new Error('That bill is already void.');
-    if ((before.paidAmount ?? 0) > 0) throw new Error('Refund all collected money before voiding this bill.');
+    if ((before.paidAmount ?? 0) > 0)
+      throw new Error('Refund all collected money before voiding this bill.');
     const at = new Date().toISOString();
-    const value = { ...invoiceDoc.data(), status: 'void', voidReason: trimmed.slice(0, 500), updatedBy: actor.trim(), updatedAt: at };
+    const value = {
+      ...invoiceDoc.data(),
+      status: 'void',
+      voidReason: trimmed.slice(0, 500),
+      updatedBy: actor.trim(),
+      updatedAt: at,
+    };
     await tx.set('invoices', invoiceId, value);
-    await tx.add('auditEvents', AuditEventSchema.parse({
-      action: 'invoice.voided',
-      entity: 'invoices',
-      entityId: invoiceId,
-      actor: actor.trim(),
-      at,
-      details: { reason: trimmed },
-    }));
+    await tx.add(
+      'auditEvents',
+      AuditEventSchema.parse({
+        action: 'invoice.voided',
+        entity: 'invoices',
+        entityId: invoiceId,
+        actor: actor.trim(),
+        at,
+        details: { reason: trimmed },
+      }),
+    );
     updated = readInvoice(invoiceId, value);
   });
   if (!updated) throw new Error('The bill could not be voided.');
@@ -601,7 +702,11 @@ export async function voidInvoice(
 }
 
 /** Remove only a never-paid pending bill with no ledger history. */
-export async function deleteInvoice(invoiceId: string, actor: string, actorRole?: Role): Promise<void> {
+export async function deleteInvoice(
+  invoiceId: string,
+  actor: string,
+  actorRole?: Role,
+): Promise<void> {
   assertBillingRole(actorRole);
   if (!actor.trim()) throw new Error('Deleting a bill requires an operator identity.');
   const repo = getRepository();
@@ -609,19 +714,26 @@ export async function deleteInvoice(invoiceId: string, actor: string, actorRole?
     const invoiceDoc = await tx.get('invoices', invoiceId);
     if (!invoiceDoc) throw new Error('That bill could not be found.');
     const invoice = readInvoice(invoiceId, invoiceDoc.data());
-    const ledger = await tx.list('payments', { where: [{ field: 'invoiceId', op: '==', value: invoiceId }] });
+    const ledger = await tx.list('payments', {
+      where: [{ field: 'invoiceId', op: '==', value: invoiceId }],
+    });
     if (invoice.status !== 'pending' || (invoice.paidAmount ?? 0) > 0 || ledger.length > 0) {
-      throw new Error('Only a never-paid pending bill with no ledger history can be deleted. Void it instead.');
+      throw new Error(
+        'Only a never-paid pending bill with no ledger history can be deleted. Void it instead.',
+      );
     }
     await tx.delete('invoices', invoiceId);
-    await tx.add('auditEvents', AuditEventSchema.parse({
-      action: 'invoice.deleted',
-      entity: 'invoices',
-      entityId: invoiceId,
-      actor: actor.trim(),
-      at: new Date().toISOString(),
-      details: { invoiceNo: invoice.invoiceNo },
-    }));
+    await tx.add(
+      'auditEvents',
+      AuditEventSchema.parse({
+        action: 'invoice.deleted',
+        entity: 'invoices',
+        entityId: invoiceId,
+        actor: actor.trim(),
+        at: new Date().toISOString(),
+        details: { invoiceNo: invoice.invoiceNo },
+      }),
+    );
   });
 }
 

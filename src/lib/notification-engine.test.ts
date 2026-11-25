@@ -13,7 +13,13 @@ import {
   type NotificationItem,
   type NotificationSource,
 } from './notification-engine';
-import type { InvoiceRecord, OrderRecord, PatientRecord, ReportRecord, SampleRecord } from './models';
+import type {
+  InvoiceRecord,
+  OrderRecord,
+  PatientRecord,
+  ReportRecord,
+  SampleRecord,
+} from './models';
 
 /** Fixed clock so every threshold test is deterministic. */
 const NOW = new Date('2026-03-15T12:00:00.000Z');
@@ -242,14 +248,28 @@ describe('buildNotifications — awaiting reports', () => {
   it('never uses registration age when the order has no collection milestone', () => {
     const registered = patient({ createdAt: ago(30) });
     const order = { ...orderFor(registered), createdAt: ago(2), updatedAt: ago(2) };
-    const items = buildNotificationsRaw({ patients: [registered], orders: [order], samples: [], reports: [], invoices: [], now: NOW });
+    const items = buildNotificationsRaw({
+      patients: [registered],
+      orders: [order],
+      samples: [],
+      reports: [],
+      invoices: [],
+      now: NOW,
+    });
     expect(items).toHaveLength(0);
   });
 
   it('uses the specimen collection timestamp for turnaround age', () => {
     const registered = patient({ createdAt: ago(2) });
     const order = { ...orderFor(registered), createdAt: ago(2), updatedAt: ago(2) };
-    const items = buildNotificationsRaw({ patients: [registered], orders: [order], samples: [sampleFor(order, ago(30))], reports: [], invoices: [], now: NOW });
+    const items = buildNotificationsRaw({
+      patients: [registered],
+      orders: [order],
+      samples: [sampleFor(order, ago(30))],
+      reports: [],
+      invoices: [],
+      now: NOW,
+    });
     expect(items[0]?.ageHours).toBe(30);
     expect(items[0]?.body).toMatch(/collected 1d 6h ago/);
   });
@@ -641,7 +661,13 @@ describe('safeBannerFor — a banner on a surface with no lock-screen control', 
   const everyCategory = buildNotifications({
     patients: [patient()],
     reports: [
-      report({ id: 'r1', patientId: 'p2', patientName: PATIENT, status: 'draft', updatedAt: ago(50) }),
+      report({
+        id: 'r1',
+        patientId: 'p2',
+        patientName: PATIENT,
+        status: 'draft',
+        updatedAt: ago(50),
+      }),
       report({ id: 'r2', patientId: 'p3', patientName: PATIENT, version: 2, updatedAt: ago(1) }),
     ],
     invoices: [invoice()],
@@ -699,6 +725,8 @@ describe('safeBannerFor — a banner on a surface with no lock-screen control', 
     expect(hook).toMatch(/pickBackend\(\) === 'native'/);
     // …and the generic pair is what reaches showBanner, not the identifier one.
     expect(hook).toMatch(/showBanner\(\{\s*key:\s*item\.id,\s*\.\.\.banner\s*\}\)/);
+    expect(hook).toContain('ACTIONABLE_WINDOW');
+    expect((hook.match(/limitDocs\(/g) ?? []).length).toBeGreaterThanOrEqual(7);
   });
 });
 

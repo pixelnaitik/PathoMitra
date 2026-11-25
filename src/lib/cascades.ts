@@ -17,14 +17,18 @@ import { deleteInChunks } from './firestore-batch';
 export async function deleteReportCascade(reportId: string): Promise<void> {
   const report = await getDoc(doc(db, 'reports', reportId));
   if (report.exists() && report.data().status === 'final') {
-    throw new Error('Issued reports cannot be deleted. Amend or void the report so its clinical history is retained.');
+    throw new Error(
+      'Issued reports cannot be deleted. Amend or void the report so its clinical history is retained.',
+    );
   }
   const [invoices, versions] = await Promise.all([
     getDocs(query(collection(db, 'invoices'), where('reportId', '==', reportId))),
     getDocs(query(collection(db, 'reportVersions'), where('reportId', '==', reportId))),
   ]);
   if (invoices.size > 0) {
-    throw new Error('A report linked to an invoice cannot be deleted. Void the bill and amend the report instead.');
+    throw new Error(
+      'A report linked to an invoice cannot be deleted. Void the bill and amend the report instead.',
+    );
   }
 
   await deleteInChunks([
@@ -63,9 +67,11 @@ export async function deletePatientCascade(patientId: string): Promise<void> {
     getDocs(query(collection(db, 'reportVersions'), where('patientId', '==', patientId))),
   ]);
   if (invoices.size > 0 || reports.docs.some(report => report.data().status === 'final')) {
-    throw new Error('This patient has issued reports or invoices and cannot be hard-deleted. Anonymize the patient while retaining clinical and financial history.');
+    throw new Error(
+      'This patient has issued reports or invoices and cannot be hard-deleted. Anonymize the patient while retaining clinical and financial history.',
+    );
   }
-  
+
   await deleteInChunks([
     doc(db, 'patients', patientId),
     ...reports.docs.map(reportDoc => reportDoc.ref),

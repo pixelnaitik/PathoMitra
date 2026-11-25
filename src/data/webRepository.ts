@@ -14,7 +14,10 @@ type Store = Record<string, Record<string, unknown>>;
 
 export class WebRepository implements DataRepository {
   private memory = new Map<EntityName, Store>();
-  private listeners = new Map<EntityName, Set<(docs: LocalDoc[]) => void>>();
+  private listeners = new Map<
+    EntityName,
+    Map<(docs: LocalDoc[]) => void, ListOptions | undefined>
+  >();
   private failures = new Map<EntityName, Set<(error: unknown) => void>>();
   private ready: Promise<void> | null = null;
   private lockDepth = 0;
@@ -49,10 +52,13 @@ export class WebRepository implements DataRepository {
     if (!raw) return {};
     try {
       const parsed = JSON.parse(raw) as unknown;
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+        throw new Error('not an object');
       return parsed as Store;
     } catch (error) {
-      throw new Error(`Stored ${entity} data is unreadable. It was not overwritten.`, { cause: error });
+      throw new Error(`Stored ${entity} data is unreadable. It was not overwritten.`, {
+        cause: error,
+      });
     }
   }
 
@@ -71,7 +77,8 @@ export class WebRepository implements DataRepository {
   }
 
   private assertPersistence(): void {
-    if (!this.allowPersistence) throw new Error('Production web is demo-only and cannot persist clinical records.');
+    if (!this.allowPersistence)
+      throw new Error('Production web is demo-only and cannot persist clinical records.');
   }
 
   private writeStore(entity: EntityName, store: Store): void {
@@ -82,7 +89,10 @@ export class WebRepository implements DataRepository {
     try {
       storage.setItem(PREFIX + entity, serialized);
     } catch (error) {
-      throw new Error('Browser storage rejected the change (quota or private mode). Nothing was saved.', { cause: error });
+      throw new Error(
+        'Browser storage rejected the change (quota or private mode). Nothing was saved.',
+        { cause: error },
+      );
     }
     this.memory.set(entity, store);
   }
@@ -121,7 +131,9 @@ export class WebRepository implements DataRepository {
   }
 
   async set(entity: EntityName, id: string, value: Record<string, unknown>): Promise<void> {
-    await this.mutate(entity, store => { store[id] = value; });
+    await this.mutate(entity, store => {
+      store[id] = value;
+    });
   }
 
   async add(entity: EntityName, value: Record<string, unknown>): Promise<string> {
@@ -138,24 +150,41 @@ export class WebRepository implements DataRepository {
   }
 
   async delete(entity: EntityName, id: string): Promise<void> {
-    await this.mutate(entity, store => { delete store[id]; });
+    await this.mutate(entity, store => {
+      delete store[id];
+    });
   }
 
   async count(entity: EntityName, where?: WhereFilter[]): Promise<number> {
     return applyQuery(this.toDocs(entity), { where }).length;
   }
 
-  subscribe(entity: EntityName, cb: (docs: LocalDoc[]) => void, onError?: (error: unknown) => void): () => void {
+  subscribe(
+    entity: EntityName,
+    cb: (docs: LocalDoc[]) => void,
+    onError?: (error: unknown) => void,
+    options?: ListOptions,
+  ): () => void {
     let set = this.listeners.get(entity);
-    if (!set) { set = new Set(); this.listeners.set(entity, set); }
-    set.add(cb);
+    if (!set) {
+      set = new Map();
+      this.listeners.set(entity, set);
+    }
+    set.set(cb, options);
     if (onError) {
       let failed = this.failures.get(entity);
-      if (!failed) { failed = new Set(); this.failures.set(entity, failed); }
+      if (!failed) {
+        failed = new Set();
+        this.failures.set(entity, failed);
+      }
       failed.add(onError);
     }
-    try { cb(this.toDocs(entity)); }
-    catch (error) { onError?.(error); cb([]); }
+    try {
+      cb(applyQuery(this.toDocs(entity), options));
+    } catch (error) {
+      onError?.(error);
+      cb([]);
+    }
     return () => {
       set?.delete(cb);
       if (onError) this.failures.get(entity)?.delete(onError);
@@ -185,8 +214,24 @@ export class WebRepository implements DataRepository {
   private async emit(entity: EntityName): Promise<void> {
     const set = this.listeners.get(entity);
     if (!set || set.size === 0) return;
-    try { const docs = this.toDocs(entity); set.forEach(cb => cb(docs)); }
-    catch (error) { this.failures.get(entity)?.forEach(cb => cb(error)); }
+    const groups = new Map<
+      string,
+      { options?: ListOptions; callbacks: Array<(docs: LocalDoc[]) => void> }
+    >();
+    for (const [callback, options] of set) {
+      const key = JSON.stringify(options ?? {});
+      const group = groups.get(key) ?? { options, callbacks: [] };
+      group.callbacks.push(callback);
+      groups.set(key, group);
+    }
+    try {
+      for (const group of groups.values()) {
+        const docs = applyQuery(this.toDocs(entity), group.options);
+        group.callbacks.forEach(callback => callback(docs));
+      }
+    } catch (error) {
+      this.failures.get(entity)?.forEach(cb => cb(error));
+    }
   }
 
   async transaction(fn: (tx: DataRepository) => Promise<void>): Promise<void> {

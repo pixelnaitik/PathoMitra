@@ -21,7 +21,14 @@ import { captureError } from './telemetry';
 /** ISO-8601 written by the client today; see also `serverTimestamp` migration. */
 const timestampString = z.string().max(64);
 
-export const RoleSchema = z.enum(['guest', 'staff', 'technologist', 'pathologist', 'cashier', 'admin']);
+export const RoleSchema = z.enum([
+  'guest',
+  'staff',
+  'technologist',
+  'pathologist',
+  'cashier',
+  'admin',
+]);
 export type Role = z.infer<typeof RoleSchema>;
 
 export const GenderSchema = z.enum(['male', 'female', 'other']);
@@ -83,11 +90,25 @@ export type UserProfile = z.infer<typeof UserSchema> & { id: string };
  * `age` stays a union: historical documents store it as a string while newer
  * writes store a number. Use {@link ageAsNumber} instead of branching inline.
  */
+const calendarDateString = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .refine(value => {
+    const parsed = new Date(`${value}T00:00:00.000Z`);
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+  }, 'Enter a valid calendar date.');
+
 export const PatientSchema = z.looseObject({
   name: z.string().max(100).default(''),
   age: z.union([z.number().int().min(0).max(150), z.string().max(4)]).default('0'),
   gender: z.string().max(10).default('other'),
+  /** Optional precise birth date for paediatric and identity workflows. */
+  dateOfBirth: calendarDateString.optional(),
   phone: z.string().max(20).optional(),
+  guardianName: z.string().max(100).optional(),
+  guardianPhone: z.string().max(20).optional(),
+  externalIdType: z.enum(['national-id', 'birth-certificate', 'other']).optional(),
+  externalId: z.string().max(128).optional(),
   doctorName: z.string().max(100).optional(),
   doctorId: z.string().max(128).optional(),
   address: z.string().max(500).optional(),
@@ -124,14 +145,24 @@ export function dueOf(
   patient: Pick<PatientRecord, 'dueAmount' | 'dueAdjustment'>,
   invoiceOutstanding = 0,
 ): number {
-  const base = patient.dueAdjustment !== undefined
-    ? invoiceOutstanding + Number(patient.dueAdjustment)
-    : Number(patient.dueAmount ?? 0);
+  const base =
+    patient.dueAdjustment !== undefined
+      ? invoiceOutstanding + Number(patient.dueAdjustment)
+      : Number(patient.dueAmount ?? 0);
   return roundMoney(Math.max(0, Number.isFinite(base) ? base : 0));
 }
 
-/** Numeric age, or `undefined` when the stored value is not a sane number. */
-export function ageAsNumber(patient: Pick<PatientRecord, 'age'>): number | undefined {
+/** Numeric age in years, or `undefined` when the stored value is not sane. */
+export function ageAsNumber(
+  patient: Pick<PatientRecord, 'age'> & Partial<Pick<PatientRecord, 'dateOfBirth'>>,
+  at: Date = new Date(),
+): number | undefined {
+  if (patient.dateOfBirth) {
+    const born = new Date(`${patient.dateOfBirth}T00:00:00.000Z`);
+    if (!Number.isNaN(born.getTime()) && born.getTime() <= at.getTime()) {
+      return Math.max(0, (at.getTime() - born.getTime()) / (365.2425 * 24 * 60 * 60 * 1000));
+    }
+  }
   const n = typeof patient.age === 'number' ? patient.age : parseInt(patient.age, 10);
   return Number.isFinite(n) && n >= 0 && n <= 150 ? n : undefined;
 }
@@ -169,6 +200,11 @@ export interface PatientDraftInput {
   age: string | number;
   gender: string;
   phone?: string;
+  dateOfBirth?: string;
+  guardianName?: string;
+  guardianPhone?: string;
+  externalIdType?: 'national-id' | 'birth-certificate' | 'other';
+  externalId?: string;
   doctorName?: string;
   doctorId?: string;
   address?: string;
@@ -259,6 +295,18 @@ function patientDocFields(input: PatientDraftInput): Record<string, unknown> {
   };
   const phone = (input.phone ?? '').trim();
   if (phone) doc.phone = phone;
+  const dateOfBirth = (input.dateOfBirth ?? '').trim();
+  if (dateOfBirth) doc.dateOfBirth = dateOfBirth;
+  const guardianName = (input.guardianName ?? '').trim();
+  if (guardianName) doc.guardianName = guardianName;
+  const guardianPhone = (input.guardianPhone ?? '').trim();
+  if (guardianPhone) doc.guardianPhone = guardianPhone;
+  const externalIdType = input.externalIdType;
+  const externalId = (input.externalId ?? '').trim();
+  if (externalIdType && externalId) {
+    doc.externalIdType = externalIdType;
+    doc.externalId = externalId;
+  }
   const doctorName = (input.doctorName ?? '').trim();
   if (doctorName) doc.doctorName = doctorName;
   const doctorId = (input.doctorId ?? '').trim();
@@ -421,8 +469,14 @@ export const CustodyEventSchema = z.looseObject({
   ]),
   actor: z.string().min(1).max(128),
   at: timestampString,
-  previousHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-  eventHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  previousHash: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
+  eventHash: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
   from: z.string().max(128).optional(),
   to: z.string().max(128).optional(),
   location: z.string().max(120).optional(),
@@ -448,7 +502,16 @@ export const SampleSchema = z.looseObject({
   storageLocation: z.string().max(120).optional(),
   rejectionReason: z.string().max(500).optional(),
   recollectionOfSampleId: z.string().max(128).optional(),
-  aliquots: z.array(z.looseObject({ id: z.string().min(1), label: z.string().max(80), location: z.string().max(120).optional() })).max(50).default([]),
+  aliquots: z
+    .array(
+      z.looseObject({
+        id: z.string().min(1),
+        label: z.string().max(80),
+        location: z.string().max(120).optional(),
+      }),
+    )
+    .max(50)
+    .default([]),
   custody: z.array(CustodyEventSchema).max(500).default([]),
   createdAt: timestampString,
   updatedAt: timestampString,
@@ -461,6 +524,8 @@ export const PaymentLedgerSchema = z.looseObject({
   amount: z.number().positive().max(10_000_000),
   mode: PaymentModeSchema,
   reference: z.string().max(128).optional(),
+  operationId: z.string().max(128).optional(),
+  shiftId: z.string().max(128).optional(),
   reversesEntryId: z.string().max(128).optional(),
   reversesType: z.enum(['payment', 'refund']).optional(),
   actor: z.string().min(1).max(128),
@@ -493,39 +558,48 @@ export const ReportIssuanceSnapshotSchema = z.looseObject({
     age: z.union([z.number().int().min(0).max(150), z.string().max(4)]),
     gender: z.string().max(10),
     phone: z.string().max(20).optional(),
+    dateOfBirth: calendarDateString.optional(),
+    guardianName: z.string().max(100).optional(),
+    guardianPhone: z.string().max(20).optional(),
+    externalIdType: z.enum(['national-id', 'birth-certificate', 'other']).optional(),
+    externalId: z.string().max(128).optional(),
     address: z.string().max(500).optional(),
     doctorName: z.string().max(100).optional(),
     createdAt: timestampString,
   }),
   settings: z.record(z.string(), z.unknown()),
-  tests: z.array(
-    z.looseObject({
-      name: z.string().max(128),
-      unit: z.string().max(80).optional(),
-      method: z.string().max(120).optional(),
-      specimen: z.string().max(80).optional(),
-      category: z.string().max(80).optional(),
-      kind: z.enum(['numeric', 'categorical', 'titer', 'text']).optional(),
-      isGroup: z.boolean().optional(),
-      isHeader: z.boolean().optional(),
-      testId: z.string().max(128).optional(),
-      version: z.number().int().min(1).optional(),
-      effectiveFrom: z.string().max(64).optional(),
-      reviewedBy: z.string().max(128).optional(),
-      range: z.looseObject({
-        label: z.string().max(500),
-        values: z.looseObject({ min: z.number().optional(), max: z.number().optional() }).nullable(),
-        unverifiedForPatient: z.boolean(),
-        reason: z.string().max(300).optional(),
-        source: z.string().max(300).optional(),
-        verification: z.enum(['approved', 'requires-lab-verification']).optional(),
-        lastReviewed: z.string().max(64).optional(),
-        reviewedBy: z.string().max(128).optional(),
-        effectiveFrom: z.string().max(64).optional(),
+  tests: z
+    .array(
+      z.looseObject({
+        name: z.string().max(128),
+        unit: z.string().max(80).optional(),
+        method: z.string().max(120).optional(),
+        specimen: z.string().max(80).optional(),
+        category: z.string().max(80).optional(),
+        kind: z.enum(['numeric', 'categorical', 'titer', 'text']).optional(),
+        isGroup: z.boolean().optional(),
+        isHeader: z.boolean().optional(),
+        testId: z.string().max(128).optional(),
         version: z.number().int().min(1).optional(),
+        effectiveFrom: z.string().max(64).optional(),
+        reviewedBy: z.string().max(128).optional(),
+        range: z.looseObject({
+          label: z.string().max(500),
+          values: z
+            .looseObject({ min: z.number().optional(), max: z.number().optional() })
+            .nullable(),
+          unverifiedForPatient: z.boolean(),
+          reason: z.string().max(300).optional(),
+          source: z.string().max(300).optional(),
+          verification: z.enum(['approved', 'requires-lab-verification']).optional(),
+          lastReviewed: z.string().max(64).optional(),
+          reviewedBy: z.string().max(128).optional(),
+          effectiveFrom: z.string().max(64).optional(),
+          version: z.number().int().min(1).optional(),
+        }),
       }),
-    }),
-  ).max(500),
+    )
+    .max(500),
 });
 
 export const ReportIssuanceSignatureSchema = z.object({
@@ -533,11 +607,14 @@ export const ReportIssuanceSignatureSchema = z.object({
   publicKey: z.custom<JsonWebKey>(value => typeof value === 'object' && value !== null),
   signature: z.string().min(1).max(2048),
   manifestHash: z.string().regex(/^[a-f0-9]{64}$/),
+  keyId: z.string().min(1).max(256).optional(),
   signedAt: timestampString,
+  clockSource: z.literal('device').optional(),
 });
 
 export const ReportVerificationSchema = z.object({
   reviewedBy: z.string().min(1).max(128),
+  reviewerUid: z.string().min(1).max(128).optional(),
   role: z.literal('pathologist'),
   reviewedAt: timestampString,
   note: z.string().max(500).optional(),
@@ -548,6 +625,14 @@ export const CriticalReviewSchema = z.object({
   reviewedBy: z.string().min(1).max(128),
   reviewedAt: timestampString,
   tests: z.array(z.string().max(128)).max(200),
+});
+
+export const DeltaReviewSchema = z.object({
+  reason: z.string().min(1).max(500),
+  reviewedBy: z.string().min(1).max(128),
+  reviewedAt: timestampString,
+  tests: z.array(z.string().max(128)).max(200),
+  previousReportId: z.string().max(128).optional(),
 });
 
 export const ReportSchema = z.looseObject({
@@ -574,12 +659,16 @@ export const ReportSchema = z.looseObject({
   amendReason: z.string().max(500).optional(),
   /** Immutable clinical context captured when the report is issued. */
   issuanceSnapshot: ReportIssuanceSnapshotSchema.optional(),
+  /** Authenticated operator uid that issued this version. */
+  issuerUid: z.string().min(1).max(128).optional(),
   /** Device signature over the canonical issuance manifest. */
   issuanceSignature: ReportIssuanceSignatureSchema.optional(),
   /** Independent pathologist verification retained with the issued version. */
   verification: ReportVerificationSchema.optional(),
   /** Attributed acknowledgement for a critical screening result. */
   criticalReview: CriticalReviewSchema.optional(),
+  /** Attributed review of a material change from the previous issued report. */
+  deltaReview: DeltaReviewSchema.optional(),
 
   /**
    * True when the stored status was missing or unrecognised, so the record was
@@ -628,9 +717,11 @@ export interface ReportDraftInput {
   updatedAt?: string;
   amendReason?: string;
   issuanceSnapshot?: z.infer<typeof ReportIssuanceSnapshotSchema>;
+  issuerUid?: string;
   issuanceSignature?: z.infer<typeof ReportIssuanceSignatureSchema>;
   verification?: z.infer<typeof ReportVerificationSchema>;
   criticalReview?: z.infer<typeof CriticalReviewSchema>;
+  deltaReview?: z.infer<typeof DeltaReviewSchema>;
 }
 
 /** Build the exact document stored in `reports/{id}`. */
@@ -653,9 +744,11 @@ export function toReportDoc(input: ReportDraftInput): Record<string, unknown> {
   if (input.updatedAt) doc.updatedAt = input.updatedAt;
   if (input.amendReason) doc.amendReason = input.amendReason;
   if (input.issuanceSnapshot) doc.issuanceSnapshot = input.issuanceSnapshot;
+  if (input.issuerUid) doc.issuerUid = input.issuerUid;
   if (input.issuanceSignature) doc.issuanceSignature = input.issuanceSignature;
   if (input.verification) doc.verification = input.verification;
   if (input.criticalReview) doc.criticalReview = input.criticalReview;
+  if (input.deltaReview) doc.deltaReview = input.deltaReview;
   return doc;
 }
 
@@ -923,7 +1016,10 @@ export function toInvoiceDoc(input: InvoiceDraftInput): Record<string, unknown> 
           taxDetails: {
             ...input.taxDetails,
             cgst: input.taxDetails.mode === 'inter' ? 0 : roundMoney(totals.tax / 2),
-            sgst: input.taxDetails.mode === 'inter' ? 0 : roundMoney(totals.tax - roundMoney(totals.tax / 2)),
+            sgst:
+              input.taxDetails.mode === 'inter'
+                ? 0
+                : roundMoney(totals.tax - roundMoney(totals.tax / 2)),
             igst: input.taxDetails.mode === 'inter' ? totals.tax : 0,
           },
         }
@@ -1048,7 +1144,9 @@ export function readOrder(id: string, data: unknown): OrderRecord {
     status: 'ordered',
     preparationAcknowledged: false,
     revision: 1,
-    items: [{ id: `${id}-unknown`, name: 'Unknown test', qty: 1, unitPrice: 0, priceApproved: false }],
+    items: [
+      { id: `${id}-unknown`, name: 'Unknown test', qty: 1, unitPrice: 0, priceApproved: false },
+    ],
     createdBy: 'unknown',
     createdAt: '',
     updatedAt: '',

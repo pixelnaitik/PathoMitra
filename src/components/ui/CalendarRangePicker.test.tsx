@@ -33,8 +33,7 @@ function renderPicker(props: { fromDate?: string; toDate?: string } = {}) {
     onChange,
     trigger,
     open: () => fireEvent.click(trigger),
-    clickDay: (index: number) =>
-      fireEvent.click(document.querySelectorAll('[data-day]')[index]),
+    clickDay: (index: number) => fireEvent.click(document.querySelectorAll('[data-day]')[index]),
   };
 }
 
@@ -56,6 +55,28 @@ describe('CalendarRangePicker', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
     open();
     expect(screen.getByRole('dialog', { name: 'Choose date range' })).toBeInTheDocument();
+  });
+
+  it('exposes the clear action as a separate native button', () => {
+    const { trigger, onChange } = renderPicker({ fromDate: iso(3), toDate: iso(9) });
+    const clear = screen.getByRole('button', { name: 'Clear date range' });
+    expect(clear.tagName).toBe('BUTTON');
+    expect(trigger).not.toContainElement(clear);
+
+    fireEvent.click(clear);
+    expect(onChange).toHaveBeenLastCalledWith({ fromDate: '', toDate: '' });
+    expect(screen.queryByRole('button', { name: 'Clear date range' })).toBeNull();
+  });
+
+  it('moves calendar focus with arrow keys without tabbing through every day', () => {
+    const { open } = renderPicker();
+    open();
+    const days = document.querySelectorAll<HTMLButtonElement>('[data-day]');
+    days[4].focus();
+    fireEvent.keyDown(days[4], { key: 'ArrowRight' });
+    expect(days[5]).toHaveFocus();
+    fireEvent.keyDown(days[5], { key: 'ArrowDown' });
+    expect(days[12]).toHaveFocus();
   });
 
   it('starts a range on the first pick and closes it on the second', () => {

@@ -255,7 +255,7 @@ export default function Hero() {
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
-          className="inline-flex items-center gap-2 rounded-full bg-accent/12 px-3.5 py-1.5 text-[11px] font-bold tracking-wider uppercase text-accent"
+          className="inline-flex items-center gap-2 rounded-full bg-accent/12 px-3.5 py-1.5 text-[11px] font-bold tracking-wider uppercase text-primary"
         >
           <span
             className="animate-soft-pulse h-1.5 w-1.5 rounded-full bg-accent"
@@ -283,8 +283,8 @@ export default function Hero() {
           transition={{ duration: 0.6, delay: 0.15 }}
           className="mx-auto mt-6 max-w-2xl text-lg leading-relaxed text-on-surface-variant"
         >
-          PathoMitra runs the whole bench-to-report workflow — intake, results, digital sign-off and
-          sealed PDF delivery — in one fast, offline-ready console built for clinical teams.
+          PathoMitra runs the whole bench-to-report workflow — intake, results, review and printable
+          reports — in one fast, offline-ready console built for clinical teams.
         </motion.p>
 
         <motion.div

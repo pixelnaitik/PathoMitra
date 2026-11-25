@@ -17,6 +17,7 @@
  * loads any of them and its behaviour is unchanged.
  */
 import type { jsPDF } from 'jspdf';
+import { captureError } from './telemetry';
 import { desktopBridge, type DesktopPrintChoice } from './desktop-bridge';
 import { recordOutputAudit, type OutputAudit } from './output-audit';
 import {
@@ -33,16 +34,20 @@ import {
  *
  * `noopener` is deliberately *not* in the feature string: per spec the call then
  * returns `null` even when the tab did open, so every successful preview was
- * being reported as a blocked pop-up. The document behind the URL is a blob this
- * page created — same-origin and fully ours — so there is nothing to harden by
- * detaching the opener, and doing it would cost us the only honest signal the
- * return value gives.
+ * being reported as a blocked pop-up. The returned handle is retained long enough
+ * to name the tab and clear `opener`, so the PDF viewer cannot navigate the lab
+ * workspace that created it.
  *
  * @returns false only when the browser actually refused the tab.
  */
 function openInTab(blobUrl: URL | string, title: string): boolean {
   const tab = window.open(blobUrl, '_blank');
   if (!tab) return false;
+  try {
+    tab.opener = null;
+  } catch {
+    /* a cross-origin viewer may already have replaced the handle */
+  }
   try {
     // Name the tab so the viewer / print dialog offers a sane filename.
     tab.document.title = title;
@@ -97,13 +102,26 @@ export async function printSavedFile(file: SavedFile): Promise<DesktopPrintChoic
  * @param doc   A fully-rendered jsPDF document (nothing output yet).
  * @param filename Job name shown in the print dialog / used for "Save as PDF".
  */
-export async function printPdf(doc: jsPDF, filename: string, audit?: Omit<OutputAudit, 'format' | 'content' | 'action'>): Promise<PrintOutcome> {
+export async function printPdf(
+  doc: jsPDF,
+  filename: string,
+  audit?: Omit<OutputAudit, 'format' | 'content' | 'action'>,
+): Promise<PrintOutcome> {
   if (!hasShellOutput()) {
     doc.autoPrint();
     // A refused tab is not a dead end here: saving the file still lands it in
     // the browser, where its own print sheet is one keystroke away.
-    if (!openInTab(doc.output('bloburl'), filename)) doc.save(filename);
-    if (audit) await recordOutputAudit({ ...audit, action: 'print', format: 'pdf', content: pdfToBase64(doc), destination: 'printer' });
+    const opened = openInTab(doc.output('bloburl'), filename);
+    if (!opened) doc.save(filename);
+    if (audit)
+      await recordOutputAudit({
+        ...audit,
+        action: 'print',
+        format: 'pdf',
+        content: pdfToBase64(doc),
+        destination: opened ? 'printer' : 'browser-download',
+        destinationDetail: opened ? 'browser print tab' : filename,
+      });
     return null;
   }
 
@@ -116,7 +134,16 @@ export async function printPdf(doc: jsPDF, filename: string, audit?: Omit<Output
     // lab opted into public Documents).
     const saved = await saveBinaryDocument(filename, pdfToBase64(doc));
     const outcome = await bridge.files.print({ filePath: saved.path });
-    if (audit) await recordOutputAudit({ ...audit, action: 'print', format: 'pdf', content: pdfToBase64(doc), destination: 'printer', outcome: outcome === 'printed' ? 'completed' : outcome === 'cancelled' ? 'cancelled' : 'completed' });
+    if (audit)
+      await recordOutputAudit({
+        ...audit,
+        action: 'print',
+        format: 'pdf',
+        content: pdfToBase64(doc),
+        destination: outcome === 'opened' ? 'viewer' : 'printer',
+        destinationDetail: outcome === 'opened' ? saved.path : 'Windows print prompt',
+        outcome: outcome === 'cancelled' ? 'cancelled' : 'completed',
+      });
     return outcome;
   }
 
@@ -126,7 +153,15 @@ export async function printPdf(doc: jsPDF, filename: string, audit?: Omit<Output
     mimeType: 'application/pdf',
     name: filename,
   });
-  if (audit) await recordOutputAudit({ ...audit, action: 'print', format: 'pdf', content: pdfToBase64(doc), destination: 'printer' });
+  if (audit)
+    await recordOutputAudit({
+      ...audit,
+      action: 'print',
+      format: 'pdf',
+      content: pdfToBase64(doc),
+      destination: 'printer',
+      destinationDetail: 'Android system print sheet',
+    });
   return null;
 }
 
@@ -144,10 +179,22 @@ export async function printPdf(doc: jsPDF, filename: string, audit?: Omit<Output
  *
  * @returns A message when the preview could not open in a tab, else null.
  */
-export async function previewPdf(doc: jsPDF, filename: string, audit?: Omit<OutputAudit, 'format' | 'content' | 'action'>): Promise<string | null> {
+export async function previewPdf(
+  doc: jsPDF,
+  filename: string,
+  audit?: Omit<OutputAudit, 'format' | 'content' | 'action'>,
+): Promise<string | null> {
   if (!hasShellOutput()) {
     if (openInTab(doc.output('bloburl'), filename)) {
-      if (audit) await recordOutputAudit({ ...audit, action: 'preview', format: 'pdf', content: pdfToBase64(doc), destination: 'viewer' });
+      if (audit)
+        await recordOutputAudit({
+          ...audit,
+          action: 'preview',
+          format: 'pdf',
+          content: pdfToBase64(doc),
+          destination: 'viewer',
+          destinationDetail: 'browser PDF tab',
+        });
       return null;
     }
     doc.save(filename);
@@ -159,12 +206,20 @@ export async function previewPdf(doc: jsPDF, filename: string, audit?: Omit<Outp
   const saved = await saveBinaryDocument(filename, pdfToBase64(doc));
   try {
     await openSavedFileInViewer(saved, 'application/pdf');
-    if (audit) await recordOutputAudit({ ...audit, action: 'preview', format: 'pdf', content: pdfToBase64(doc), destination: 'viewer' });
+    if (audit)
+      await recordOutputAudit({
+        ...audit,
+        action: 'preview',
+        format: 'pdf',
+        content: pdfToBase64(doc),
+        destination: 'viewer',
+        destinationDetail: saved.path,
+      });
     return null;
   } catch (err) {
     // Rare but real: a device with no PDF-capable app. The print sheet renders
     // every page and offers "Save as PDF", so it stays the last-resort viewer.
-    console.warn('PathoMitra: no PDF viewer app on the device, using the print sheet', err);
+    captureError(err, { scope: 'native-print:no-viewer', operation: 'preview' });
     await printPdf(doc, filename);
     return 'No PDF viewer app is installed, so the report opened in the print sheet instead.';
   }
@@ -180,14 +235,34 @@ export async function previewPdf(doc: jsPDF, filename: string, audit?: Omit<Outp
  * @returns A message naming the saved location (native), or null when the
  *   browser handled the download itself.
  */
-export async function savePdf(doc: jsPDF, filename: string, audit?: Omit<OutputAudit, 'format' | 'content' | 'action'>): Promise<string | null> {
+export async function savePdf(
+  doc: jsPDF,
+  filename: string,
+  audit?: Omit<OutputAudit, 'format' | 'content' | 'action'>,
+): Promise<string | null> {
   if (!hasShellOutput()) {
     doc.save(filename);
-    if (audit) await recordOutputAudit({ ...audit, action: 'download', format: 'pdf', content: pdfToBase64(doc), destination: 'browser-download' });
+    if (audit)
+      await recordOutputAudit({
+        ...audit,
+        action: 'download',
+        format: 'pdf',
+        content: pdfToBase64(doc),
+        destination: 'browser-download',
+        destinationDetail: filename,
+      });
     return null;
   }
   const saved = await saveBinaryDocument(filename, pdfToBase64(doc));
-  if (audit) await recordOutputAudit({ ...audit, action: 'download', format: 'pdf', content: pdfToBase64(doc), destination: saved.private ? 'private' : 'public' });
+  if (audit)
+    await recordOutputAudit({
+      ...audit,
+      action: 'download',
+      format: 'pdf',
+      content: pdfToBase64(doc),
+      destination: saved.private ? 'private' : 'public',
+      destinationDetail: saved.path,
+    });
   return `Saved as ${describeSavedLocation(saved)}`;
 }
 
@@ -214,25 +289,68 @@ export async function sharePdf(
     const file = new File([blob], filename, { type: 'application/pdf' });
     if (navigator.canShare?.({ files: [file] })) {
       await navigator.share({ files: [file], title: subject, text: body });
-      if (audit) await recordOutputAudit({ ...audit, action: 'share', format: 'pdf', content: pdfToBase64(doc), destination: 'share-sheet' });
+      if (audit)
+        await recordOutputAudit({
+          ...audit,
+          action: 'share',
+          format: 'pdf',
+          content: pdfToBase64(doc),
+          destination: 'share-sheet',
+          destinationDetail: 'system share sheet',
+        });
       return null;
     }
     // No Web Share on this browser — download it, which the browser can do.
     doc.save(filename);
-    if (audit) await recordOutputAudit({ ...audit, action: 'share', format: 'pdf', content: pdfToBase64(doc), destination: 'browser-download' });
+    if (audit)
+      await recordOutputAudit({
+        ...audit,
+        action: 'share',
+        format: 'pdf',
+        content: pdfToBase64(doc),
+        destination: 'browser-download',
+        destinationDetail: filename,
+      });
     return 'This browser cannot share files directly, so the PDF was downloaded instead.';
   }
 
   const saved = await saveBinaryDocument(filename, pdfToBase64(doc));
   try {
     await shareSavedFile(saved, subject, body);
-    if (audit) await recordOutputAudit({ ...audit, action: 'share', format: 'pdf', content: pdfToBase64(doc), destination: 'share-sheet' });
+    if (audit)
+      await recordOutputAudit({
+        ...audit,
+        action: 'share',
+        format: 'pdf',
+        content: pdfToBase64(doc),
+        destination: 'share-sheet',
+        destinationDetail: saved.path,
+      });
   } catch (err) {
     // Pulling back out of the sheet is a normal outcome, not a failure.
     if (isUserCancellation(err)) {
-      if (audit) await recordOutputAudit({ ...audit, action: 'share', format: 'pdf', content: pdfToBase64(doc), destination: 'share-sheet', outcome: 'cancelled' });
+      if (audit)
+        await recordOutputAudit({
+          ...audit,
+          action: 'share',
+          format: 'pdf',
+          content: pdfToBase64(doc),
+          destination: 'share-sheet',
+          destinationDetail: saved.path,
+          outcome: 'cancelled',
+        });
       return null;
     }
+    if (audit)
+      await recordOutputAudit({
+        ...audit,
+        action: 'share',
+        format: 'pdf',
+        content: pdfToBase64(doc),
+        destination: 'share-sheet',
+        destinationDetail: saved.path,
+        outcome: 'failed',
+      });
     // The file exists whether or not a share target accepted it, so say where it
     // is rather than reporting a bare error.
     return `Saved as ${describeSavedLocation(saved)}, but it could not be handed to another app.`;

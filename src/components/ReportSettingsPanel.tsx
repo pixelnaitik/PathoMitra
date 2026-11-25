@@ -134,6 +134,7 @@ function MarginField({
   error?: string;
   onValue: (v: number) => void;
 }) {
+  const errorId = useId();
   return (
     <label className="block space-y-1">
       <span className="flex items-baseline justify-between text-xs font-semibold text-on-surface-variant">
@@ -147,6 +148,8 @@ function MarginField({
         max={spec.max}
         step={spec.step}
         value={value}
+        aria-invalid={!!error}
+        aria-describedby={error ? errorId : undefined}
         onChange={e =>
           onValue(
             sanitizeFieldValue(
@@ -157,7 +160,11 @@ function MarginField({
         }
         className="w-full rounded-xl border border-outline-variant/30 bg-surface-container-low px-3 py-2 text-sm font-semibold tabular-nums text-on-surface focus:border-accent focus:outline-none"
       />
-      {error && <span className="block text-[11px] font-medium text-error">{error}</span>}
+      {error && (
+        <span id={errorId} role="alert" className="block text-[11px] font-medium text-error">
+          {error}
+        </span>
+      )}
     </label>
   );
 }

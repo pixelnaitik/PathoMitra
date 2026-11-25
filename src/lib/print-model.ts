@@ -62,7 +62,7 @@ export const MAX_PRINT_PIXELS = 120_000_000;
 export const MM_TO_PX = 96 / 25.4;
 
 export const COPIES_MIN = 1;
-export const COPIES_MAX = 99;
+export const COPIES_MAX = 20;
 
 /**
  * Pages one job may carry.

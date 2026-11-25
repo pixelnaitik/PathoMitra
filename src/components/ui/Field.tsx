@@ -46,20 +46,20 @@ export function Field({
   const errorId = `${inputId}-error`;
   const shaking = useShakeOnNewError(error);
   const childProps = isValidElement(children) ? (children.props as Record<string, unknown>) : {};
-  const describedBy = [childProps['aria-describedby'], error ? errorId : hint ? hintId : undefined]
-    .filter(Boolean)
-    .join(' ') || undefined;
+  const describedBy =
+    [childProps['aria-describedby'], error ? errorId : hint ? hintId : undefined]
+      .filter(Boolean)
+      .join(' ') || undefined;
 
   // Attach the generated id and feedback semantics to the wrapped control.
-  const control =
-    isValidElement(children)
-      ? cloneElement(children as ReactElement<Record<string, unknown>>, {
-          id: childProps.id ?? inputId,
-          'aria-describedby': describedBy,
-          'aria-invalid': error ? true : childProps['aria-invalid'],
-          required: required ? true : childProps.required,
-        })
-      : children;
+  const control = isValidElement(children)
+    ? cloneElement(children as ReactElement<Record<string, unknown>>, {
+        id: childProps.id ?? inputId,
+        'aria-describedby': describedBy,
+        'aria-invalid': error ? true : childProps['aria-invalid'],
+        required: required ? true : childProps.required,
+      })
+    : children;
 
   return (
     <div className={cn('group space-y-1.5', className)}>
@@ -71,7 +71,9 @@ export function Field({
           {label}
           {required && (
             <>
-              <span className="ml-0.5 text-error" aria-hidden="true">*</span>
+              <span className="ml-0.5 text-error" aria-hidden="true">
+                *
+              </span>
               <span className="sr-only"> required</span>
             </>
           )}
@@ -83,7 +85,9 @@ export function Field({
           {error}
         </p>
       ) : hint ? (
-        <p id={hintId} className="text-xs text-on-surface-variant">{hint}</p>
+        <p id={hintId} className="text-xs text-on-surface-variant">
+          {hint}
+        </p>
       ) : null}
     </div>
   );

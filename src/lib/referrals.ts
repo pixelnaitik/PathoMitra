@@ -172,8 +172,10 @@ export interface DoctorStatement {
   doctorId: string;
   phone?: string;
   clinic?: string;
-  /** Rate applied to the lines. When doctors disagree, it is the stored snapshot. */
+  /** Legacy scalar retained for callers that need a single-rate fallback. */
   percent: number;
+  /** Truthful headline for screen and print, including mixed historical rates. */
+  rateLabel: string;
   lines: StatementLine[];
   totals: {
     bills: number;
@@ -288,6 +290,7 @@ export function buildDoctorStatements(
         ...(doctor?.phone ? { phone: doctor.phone } : {}),
         ...(doctor?.clinic ? { clinic: doctor.clinic } : {}),
         percent,
+        rateLabel: `${percent}%`,
         lines: [],
         totals: {
           bills: 0,
@@ -339,9 +342,16 @@ export function buildDoctorStatements(
   for (const statement of statements.values()) {
     statement.lines.sort((a, b) => a.billedAt.localeCompare(b.billedAt));
     statement.totals.patients = new Set(statement.lines.map(line => line.patientId)).size;
-    // The headline rate is only meaningful when every line shared it.
-    const rates = new Set(statement.lines.map(line => line.percent));
-    statement.percent = rates.size === 1 ? [...rates][0] : statement.percent;
+    // Historical bills keep the rate that was stamped on them. A statement that
+    // spans a rate change must say so rather than presenting the current rate as
+    // if it applied to every line.
+    const rates = [...new Set(statement.lines.map(line => line.percent))].sort((a, b) => a - b);
+    if (rates.length === 1) {
+      statement.percent = rates[0];
+      statement.rateLabel = `${rates[0]}%`;
+    } else if (rates.length > 1) {
+      statement.rateLabel = `Mixed (${rates[0]}–${rates[rates.length - 1]}%)`;
+    }
   }
 
   return [...statements.values()].sort(

@@ -71,7 +71,15 @@ export async function downloadCsv(
   const text = `\uFEFF${csv}`;
   if (hasShellOutput()) {
     const saved = await saveTextDocument(filename, text);
-    if (audit) await recordOutputAudit({ ...audit, action: 'export', format: 'csv', content: text, destination: saved.private ? 'private' : 'public' });
+    if (audit)
+      await recordOutputAudit({
+        ...audit,
+        action: 'export',
+        format: 'csv',
+        content: text,
+        destination: saved.private ? 'private' : 'public',
+        destinationDetail: saved.path,
+      });
     return `Saved as ${describeSavedLocation(saved)}`;
   }
 
@@ -84,6 +92,14 @@ export async function downloadCsv(
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
-  if (audit) await recordOutputAudit({ ...audit, action: 'export', format: 'csv', content: text, destination: 'browser-download' });
+  if (audit)
+    await recordOutputAudit({
+      ...audit,
+      action: 'export',
+      format: 'csv',
+      content: text,
+      destination: 'browser-download',
+      destinationDetail: filename,
+    });
   return null;
 }

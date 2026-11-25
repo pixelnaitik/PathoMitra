@@ -55,7 +55,13 @@ const overdueFor = (
     status: 'ordered',
     preparationAcknowledged: false,
     revision: 1,
-    items: (patient.testSelection ?? []).map((name, index) => ({ id: `${patient.id}-${index}`, name, qty: 1, unitPrice: 0, priceApproved: false })),
+    items: (patient.testSelection ?? []).map((name, index) => ({
+      id: `${patient.id}-${index}`,
+      name,
+      qty: 1,
+      unitPrice: 0,
+      priceApproved: false,
+    })),
     createdBy: 'test',
     createdAt: patient.createdAt,
     updatedAt: patient.createdAt,
@@ -77,9 +83,15 @@ const overdueFor = (
     createdAt: order.createdAt,
     updatedAt: order.createdAt,
   }));
-  return buildNotifications({ patients, orders, samples, reports, invoices: [], now: NOW, expandNames }).filter(
-    item => item.category === 'overdue',
-  );
+  return buildNotifications({
+    patients,
+    orders,
+    samples,
+    reports,
+    invoices: [],
+    now: NOW,
+    expandNames,
+  }).filter(item => item.category === 'overdue');
 };
 
 describe('overdue alerts are per ordered panel', () => {

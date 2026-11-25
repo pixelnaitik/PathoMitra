@@ -4,10 +4,9 @@
  * Model: a generic *document store*. Each collection is one table with an
  * `id` primary key and a `data` column holding the JSON document. That keeps
  * the SQL trivial and lets the existing Zod readers in `lib/models.ts` parse
- * rows exactly as they parsed Firestore snapshots. Filtering/sorting/paging
- * happen in JS (`data/query.ts`) — fine for a single-device lab store, and it
- * means the SQLite and web adapters share one query implementation. Counts go
- * to SQL, because a count is the one thing that must not materialise the table.
+ * rows exactly as they parsed Firestore snapshots. Common filters, ordering and
+ * paging are translated to indexed SQL; unsupported expressions retain the
+ * shared in-memory fallback. Counts never materialise the table.
  *
  * Encryption: the database is opened with `encrypted = true, mode = "secret"`,
  * which makes SQLCipher use the passphrase held in the plugin's secure store.
@@ -27,28 +26,66 @@
  */
 import { CapacitorSQLite, SQLiteConnection } from '@capacitor-community/sqlite';
 import type { SQLiteDBConnection } from '@capacitor-community/sqlite';
-import type { DataRepository, EntityName, ListOptions, LocalDoc, WhereFilter } from './types';
+import type {
+  DataRepository,
+  EntityName,
+  ListOptions,
+  LocalDoc,
+  RepositoryPrincipal,
+  WhereFilter,
+} from './types';
 import { applyQuery, generateId, generateSecret, makeDoc } from './query';
+import { buildSqlQuery, buildWhereSql } from './sql-query';
 import { ENTITY_NAMES } from './entities';
+import { nativeReportSigning } from '../lib/report-signing-native';
+import { canonicalReportManifest } from '../lib/report-manifest';
+import { captureError } from '../lib/telemetry';
+import type { ReportRecord } from '../lib/models';
 
 const DB_NAME = 'pathlab';
-const DB_VERSION = 3;
+const DB_VERSION = 5;
+const MAX_LIST_LIMIT = 10_000;
 
 /** Fixed union of table names — safe to interpolate into DDL. */
 const ENTITIES: readonly EntityName[] = ENTITY_NAMES;
 
 export const SQLITE_UPGRADES = [
-  { fromVersion: 2, toVersion: 3, statements: [
-    "CREATE INDEX IF NOT EXISTS idx_patients_createdAt ON patients(json_extract(data, '$.createdAt'));",
-    "CREATE INDEX IF NOT EXISTS idx_reports_patientId ON reports(json_extract(data, '$.patientId'));",
-    "CREATE INDEX IF NOT EXISTS idx_orders_patientId ON orders(json_extract(data, '$.patientId'));",
-    "CREATE INDEX IF NOT EXISTS idx_samples_orderId ON samples(json_extract(data, '$.orderId'));",
-    "CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(json_extract(data, '$.status'));",
-  ] },
+  {
+    fromVersion: 3,
+    toVersion: 4,
+    statements: [
+      'DROP TRIGGER IF EXISTS reports_final_insert_guard;',
+      'DROP TRIGGER IF EXISTS reports_final_update_guard;',
+      'DROP TRIGGER IF EXISTS reports_final_delete_guard;',
+      'DROP TRIGGER IF EXISTS report_versions_delete_guard;',
+      'DROP TRIGGER IF EXISTS payments_delete_guard;',
+      'DROP TRIGGER IF EXISTS referral_payouts_delete_guard;',
+      'DROP TRIGGER IF EXISTS invoices_delete_guard;',
+      'DROP TRIGGER IF EXISTS audit_events_delete_guard;',
+      'DROP TRIGGER IF EXISTS report_versions_update_guard;',
+      'DROP TRIGGER IF EXISTS payments_update_guard;',
+      'DROP TRIGGER IF EXISTS referral_payouts_update_guard;',
+      'DROP TRIGGER IF EXISTS samples_delete_guard;',
+    ],
+  },
+  {
+    fromVersion: 2,
+    toVersion: 3,
+    statements: [
+      "CREATE INDEX IF NOT EXISTS idx_patients_createdAt ON patients(json_extract(data, '$.createdAt'));",
+      "CREATE INDEX IF NOT EXISTS idx_reports_patientId ON reports(json_extract(data, '$.patientId'));",
+      "CREATE INDEX IF NOT EXISTS idx_orders_patientId ON orders(json_extract(data, '$.patientId'));",
+      "CREATE INDEX IF NOT EXISTS idx_samples_orderId ON samples(json_extract(data, '$.orderId'));",
+      "CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(json_extract(data, '$.status'));",
+    ],
+  },
 ];
 
 export const SQLITE_SCHEMA = [
-  ...ENTITIES.map(table => `CREATE TABLE IF NOT EXISTS ${table} (id TEXT PRIMARY KEY, data TEXT NOT NULL);`),
+  ...ENTITIES.map(
+    table => `CREATE TABLE IF NOT EXISTS ${table} (id TEXT PRIMARY KEY, data TEXT NOT NULL);`,
+  ),
+  `CREATE TABLE IF NOT EXISTS principal_context (id INTEGER PRIMARY KEY CHECK (id = 1), uid TEXT NOT NULL, role TEXT NOT NULL, updatedAt TEXT NOT NULL);`,
   `CREATE TRIGGER IF NOT EXISTS reports_final_insert_guard
    BEFORE INSERT ON reports
    WHEN json_extract(NEW.data, '$.status') = 'final'
@@ -57,19 +94,29 @@ export const SQLITE_SCHEMA = [
        COALESCE(json_extract(NEW.data, '$.patientId'), '') = '' OR
        lower(trim(COALESCE(json_extract(NEW.data, '$.patientName'), ''))) IN ('', 'unknown') OR
        json_array_length(COALESCE(json_extract(NEW.data, '$.testSelection'), '[]')) = 0 OR
-       json_extract(NEW.data, '$.issuanceSnapshot') IS NULL
-     THEN RAISE(ABORT, 'invalid final report: patient, tests, and issuance snapshot are required') END;
+       json_extract(NEW.data, '$.issuanceSnapshot') IS NULL OR
+       COALESCE(json_extract(NEW.data, '$.issuanceSignature.signature'), '') = '' OR
+       COALESCE(json_extract(NEW.data, '$.issuerUid'), '') = '' OR
+       COALESCE(json_extract(NEW.data, '$.verification.reviewerUid'), '') = '' OR
+       json_extract(NEW.data, '$.verification.reviewerUid') = json_extract(NEW.data, '$.issuerUid') OR
+       (SELECT role FROM principal_context WHERE id = 1) NOT IN ('pathologist', 'admin') OR
+       (SELECT uid FROM principal_context WHERE id = 1) != json_extract(NEW.data, '$.issuerUid')
+     THEN RAISE(ABORT, 'invalid final report: authenticated issuance and independent verification are required') END;
    END;`,
   `CREATE TRIGGER IF NOT EXISTS reports_final_update_guard
    BEFORE UPDATE ON reports
-   WHEN json_extract(NEW.data, '$.status') = 'final'
+   WHEN json_extract(OLD.data, '$.status') = 'final' AND json_extract(NEW.data, '$.status') = 'final'
    BEGIN
      SELECT CASE WHEN
-       COALESCE(json_extract(NEW.data, '$.patientId'), '') = '' OR
-       lower(trim(COALESCE(json_extract(NEW.data, '$.patientName'), ''))) IN ('', 'unknown') OR
-       json_array_length(COALESCE(json_extract(NEW.data, '$.testSelection'), '[]')) = 0 OR
-       json_extract(NEW.data, '$.issuanceSnapshot') IS NULL
-     THEN RAISE(ABORT, 'invalid final report update') END;
+       COALESCE(json_extract(NEW.data, '$.amendReason'), '') = '' OR
+       json_extract(NEW.data, '$.version') <= json_extract(OLD.data, '$.version') OR
+       COALESCE(json_extract(NEW.data, '$.issuerUid'), '') = '' OR
+       COALESCE(json_extract(NEW.data, '$.verification.reviewerUid'), '') = '' OR
+       json_extract(NEW.data, '$.verification.reviewerUid') = json_extract(NEW.data, '$.issuerUid') OR
+       (SELECT role FROM principal_context WHERE id = 1) NOT IN ('pathologist', 'admin') OR
+       (SELECT uid FROM principal_context WHERE id = 1) != json_extract(NEW.data, '$.issuerUid') OR
+       NOT EXISTS (SELECT 1 FROM reportVersions WHERE id = NEW.id || '__v' || json_extract(OLD.data, '$.version'))
+     THEN RAISE(ABORT, 'issued reports require an authenticated amendment and retained prior version') END;
    END;`,
   `CREATE TRIGGER IF NOT EXISTS reports_no_regression_guard
    BEFORE UPDATE ON reports
@@ -110,6 +157,36 @@ export const SQLITE_SCHEMA = [
   `CREATE TRIGGER IF NOT EXISTS audit_events_update_guard
    BEFORE UPDATE ON auditEvents
    BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END;`,
+  `CREATE TRIGGER IF NOT EXISTS reports_final_delete_guard
+   BEFORE DELETE ON reports WHEN json_extract(OLD.data, '$.status') = 'final'
+   BEGIN SELECT RAISE(ABORT, 'issued reports cannot be deleted'); END;`,
+  `CREATE TRIGGER IF NOT EXISTS report_versions_delete_guard
+   BEFORE DELETE ON reportVersions
+   BEGIN SELECT RAISE(ABORT, 'report versions cannot be deleted'); END;`,
+  `CREATE TRIGGER IF NOT EXISTS payments_delete_guard
+   BEFORE DELETE ON payments
+   BEGIN SELECT RAISE(ABORT, 'payment ledger entries cannot be deleted'); END;`,
+  `CREATE TRIGGER IF NOT EXISTS referral_payouts_delete_guard
+   BEFORE DELETE ON referralPayouts
+   BEGIN SELECT RAISE(ABORT, 'referral payout entries cannot be deleted'); END;`,
+  `CREATE TRIGGER IF NOT EXISTS invoices_delete_guard
+   BEFORE DELETE ON invoices
+   BEGIN SELECT RAISE(ABORT, 'invoices cannot be deleted'); END;`,
+  `CREATE TRIGGER IF NOT EXISTS audit_events_delete_guard
+   BEFORE DELETE ON auditEvents
+   BEGIN SELECT RAISE(ABORT, 'audit events cannot be deleted'); END;`,
+  `CREATE TRIGGER IF NOT EXISTS report_versions_update_guard
+   BEFORE UPDATE ON reportVersions
+   BEGIN SELECT RAISE(ABORT, 'report versions are append-only'); END;`,
+  `CREATE TRIGGER IF NOT EXISTS payments_update_guard
+   BEFORE UPDATE ON payments
+   BEGIN SELECT RAISE(ABORT, 'payment ledger entries are append-only'); END;`,
+  `CREATE TRIGGER IF NOT EXISTS referral_payouts_update_guard
+   BEFORE UPDATE ON referralPayouts
+   BEGIN SELECT RAISE(ABORT, 'referral payout entries are append-only'); END;`,
+  `CREATE TRIGGER IF NOT EXISTS samples_delete_guard
+   BEFORE DELETE ON samples
+   BEGIN SELECT RAISE(ABORT, 'sample records and custody history cannot be deleted'); END;`,
 ].join('\n');
 
 type Row = { id: string; data: string };
@@ -119,107 +196,24 @@ function toDoc(row: Row): LocalDoc {
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(row.data) as Record<string, unknown>;
-  } catch {
-    parsed = {};
+  } catch (error) {
+    throw new Error(
+      `Corrupt stored record ${row.id}; restore from a verified backup before writing.`,
+      { cause: error },
+    );
   }
   return makeDoc(row.id, parsed);
-}
-
-/**
- * JSON path for a document field, or `null` when the name cannot be expressed.
- *
- * A name this layer cannot reproduce is refused rather than sanitised: stripping
- * the punctuation off `created-at` would quietly query `createdat`, and a clause
- * that matches no field answers **0 rows** — a wrong number that looks like an
- * empty lab, not like a query that failed. The caller falls back to the
- * in-memory path in that case, which is the one `applyQuery` uses everywhere.
- */
-function jsonPath(field: string): string | null {
-  if (!/^[A-Za-z0-9_]+$/.test(field)) return null;
-  return '$."' + field + '"';
-}
-
-/** Make a value literal for a `LIKE` comparison that declares `ESCAPE '\'`. */
-function escapeLike(value: string): string {
-  return value.replace(/[\\%_]/g, char => `\\${char}`);
-}
-
-function isScalar(value: unknown): value is string | number | boolean {
-  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
-}
-
-/**
- * SQL translation of the in-memory filter set, for `count()` only.
- *
- * Counting does not need the documents, and reading them to length an array
- * turned every Overview refresh into a full-table parse of a lab's whole
- * history. When a filter cannot be expressed here — a non-identifier field, an
- * unknown operator, a nested value — the caller falls back to the JS path, so
- * the answer is always the one `applyQuery` would have given.
- */
-function buildCountQuery(
-  entity: EntityName,
-  where?: WhereFilter[],
-): { sql: string; params: unknown[] } | null {
-  const clauses: string[] = [];
-  const params: unknown[] = [];
-
-  for (const filter of where ?? []) {
-    const path = jsonPath(filter.field);
-    if (!path) return null;
-    const extract = `json_extract(data, '${path}')`;
-
-    switch (filter.op) {
-      case '==':
-      case '!=':
-      case '<':
-      case '<=':
-      case '>':
-      case '>=': {
-        if (!isScalar(filter.value)) return null;
-        clauses.push(`${extract} ${filter.op} ?`);
-        params.push(filter.value);
-        break;
-      }
-      case 'contains': {
-        if (typeof filter.value !== 'string') return null;
-        // `applyQuery` compares with `String.includes`, so `%` and `_` are plain
-        // characters in a search term. Without ESCAPE, `50%` would match
-        // `50 mg/dL` here and miss it in the browser — one filter, two answers.
-        clauses.push(`LOWER(${extract}) LIKE '%' || LOWER(?) || '%' ESCAPE '\\'`);
-        params.push(escapeLike(filter.value));
-        break;
-      }
-      case 'in': {
-        if (!Array.isArray(filter.value) || filter.value.length === 0) return null;
-        if (!filter.value.every(isScalar)) return null;
-        clauses.push(`${extract} IN (${filter.value.map(() => '?').join(', ')})`);
-        params.push(...filter.value);
-        break;
-      }
-      case 'array-contains': {
-        if (!isScalar(filter.value)) return null;
-        clauses.push(`EXISTS (SELECT 1 FROM json_each(${extract}) WHERE value = ?)`);
-        params.push(filter.value);
-        break;
-      }
-      default:
-        return null;
-    }
-  }
-
-  const whereSql = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
-  return { sql: `SELECT COUNT(*) AS n FROM ${entity}${whereSql};`, params };
 }
 
 export class SqliteRepository implements DataRepository {
   private sqlite = new SQLiteConnection(CapacitorSQLite);
   private db: SQLiteDBConnection | null = null;
   private initPromise: Promise<void> | null = null;
-  private listeners = new Map<EntityName, Set<Subscriber>>();
+  private listeners = new Map<EntityName, Map<Subscriber, ListOptions | undefined>>();
   private failures = new Map<EntityName, Set<(error: unknown) => void>>();
   /** Tail of the mutation chain — see `enqueue`. */
   private chain: Promise<void> = Promise.resolve();
+  private transactionUnitActive = false;
   /** True while a transaction owns the chain and suppresses listener traffic. */
   private inTransaction = false;
   private touched = new Set<EntityName>();
@@ -227,6 +221,21 @@ export class SqliteRepository implements DataRepository {
   init(): Promise<void> {
     if (!this.initPromise) this.initPromise = this.bootstrap();
     return this.initPromise;
+  }
+
+  /** Trusted renderer principal used by SQL invariants for the current mutation. */
+  async setPrincipal(actor: RepositoryPrincipal | null): Promise<void> {
+    await this.init();
+    if (!actor) {
+      await this.conn().run('DELETE FROM principal_context WHERE id = 1;', [], false);
+      return;
+    }
+    await this.conn().run(
+      `INSERT INTO principal_context (id, uid, role, updatedAt) VALUES (1, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET uid = excluded.uid, role = excluded.role, updatedAt = excluded.updatedAt;`,
+      [actor.uid, actor.role, new Date().toISOString()],
+      false,
+    );
   }
 
   /**
@@ -267,6 +276,17 @@ export class SqliteRepository implements DataRepository {
       );
     }
     await this.db.execute(SQLITE_SCHEMA);
+    for (const entity of ENTITY_NAMES) {
+      for (const field of ['createdAt', 'updatedAt', 'patientId', 'status', 'orderId']) {
+        try {
+          await this.db.execute(
+            `CREATE INDEX IF NOT EXISTS idx_${entity}_${field} ON ${entity}(json_extract(data, '$.${field}'));`,
+          );
+        } catch {
+          // Older SQLite builds without JSON1 keep the correct in-memory fallback.
+        }
+      }
+    }
   }
 
   private conn(): SQLiteDBConnection {
@@ -304,6 +324,21 @@ export class SqliteRepository implements DataRepository {
 
   async list(entity: EntityName, options: ListOptions = {}): Promise<LocalDoc[]> {
     await this.init();
+    if (
+      options.limit !== undefined &&
+      (!Number.isInteger(options.limit) || options.limit < 0 || options.limit > MAX_LIST_LIMIT)
+    ) {
+      throw new Error(`List limit for ${entity} must be between 0 and ${MAX_LIST_LIMIT}.`);
+    }
+    const translated = buildSqlQuery(entity, options);
+    if (translated) {
+      try {
+        const result = await this.conn().query(translated.sql, translated.params);
+        return (result.values ?? []).map(row => toDoc(row as Row));
+      } catch (error) {
+        captureError(error, { scope: 'sqlite:query-fallback', operation: 'list', entity });
+      }
+    }
     const docs = (await this.rows(entity)).map(toDoc);
     return applyQuery(docs, options);
   }
@@ -325,6 +360,29 @@ export class SqliteRepository implements DataRepository {
     id: string,
     value: Record<string, unknown>,
   ): Promise<void> {
+    if (entity === 'reports' && value.status === 'final') {
+      const signature = value.issuanceSignature as
+        { signature?: string; keyId?: string; manifestHash?: string } | undefined;
+      const native = nativeReportSigning();
+      if (!native || !signature?.signature || !signature.keyId || !signature.manifestHash) {
+        throw new Error('A final report requires a device-backed issuance signature.');
+      }
+      const manifest = canonicalReportManifest({ id, ...value } as unknown as ReportRecord);
+      const digest = await globalThis.crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(manifest),
+      );
+      const hash = Array.from(new Uint8Array(digest), byte =>
+        byte.toString(16).padStart(2, '0'),
+      ).join('');
+      if (hash !== signature.manifestHash) throw new Error('Final report manifest hash mismatch.');
+      const verified = await native.verify({
+        manifest,
+        signature: signature.signature,
+        keyId: signature.keyId,
+      });
+      if (!verified.valid) throw new Error('Final report signature verification failed.');
+    }
     // `transaction = false`: the native plugin wraps a `run()` in its own
     // BEGIN/COMMIT whenever the third argument is left at its `true` default.
     // Inside `transaction()` the connection is already inside a BEGIN, so that
@@ -371,29 +429,37 @@ export class SqliteRepository implements DataRepository {
 
   async count(entity: EntityName, where?: WhereFilter[]): Promise<number> {
     await this.init();
-    const translated = buildCountQuery(entity, where);
+    const translated = buildWhereSql(where);
     if (translated) {
       try {
-        const res = await this.conn().query(translated.sql, translated.params);
+        const res = await this.conn().query(
+          `SELECT COUNT(*) AS n FROM ${entity}${translated.sql};`,
+          translated.params,
+        );
         const first = (res.values ?? [])[0] as { n?: number | string } | undefined;
         const value = Number(first?.n);
         if (Number.isFinite(value)) return value;
       } catch (error) {
         // Older SQLCipher builds can ship without the JSON functions. The answer
         // must not depend on that, so fall through to the in-memory path.
-        console.warn('PathoMitra: SQL count unavailable, counting in memory', error);
+        captureError(error, { scope: 'sqlite:count-fallback', operation: 'count' });
       }
     }
     return (await this.list(entity, { where })).length;
   }
 
-  subscribe(entity: EntityName, cb: Subscriber, onError?: (error: unknown) => void): () => void {
+  subscribe(
+    entity: EntityName,
+    cb: Subscriber,
+    onError?: (error: unknown) => void,
+    options?: ListOptions,
+  ): () => void {
     let set = this.listeners.get(entity);
     if (!set) {
-      set = new Set();
+      set = new Map();
       this.listeners.set(entity, set);
     }
-    set.add(cb);
+    set.set(cb, options);
     if (onError) {
       let failed = this.failures.get(entity);
       if (!failed) {
@@ -406,7 +472,7 @@ export class SqliteRepository implements DataRepository {
     // A failure is reported twice on purpose: once to `onError` (so the page can
     // say "these records could not be read") and once as an empty replay (so no
     // screen can hang in "loading" forever). Empty is never presented as truth.
-    void this.list(entity)
+    void this.list(entity, options)
       .then(cb)
       .catch(error => {
         if (onError) onError(error);
@@ -431,11 +497,20 @@ export class SqliteRepository implements DataRepository {
     }
     const set = this.listeners.get(entity);
     if (!set || set.size === 0) return;
-    try {
-      const docs = await this.list(entity);
-      set.forEach(cb => cb(docs));
-    } catch (error) {
-      this.reportFailure(entity, error);
+    const groups = new Map<string, { options?: ListOptions; callbacks: Subscriber[] }>();
+    for (const [callback, options] of set) {
+      const key = JSON.stringify(options ?? {});
+      const group = groups.get(key) ?? { options, callbacks: [] };
+      group.callbacks.push(callback);
+      groups.set(key, group);
+    }
+    for (const group of groups.values()) {
+      try {
+        const docs = await this.list(entity, group.options);
+        group.callbacks.forEach(callback => callback(docs));
+      } catch (error) {
+        this.reportFailure(entity, error);
+      }
     }
   }
 
@@ -461,7 +536,7 @@ export class SqliteRepository implements DataRepository {
         active = false;
       }
       if (!active) throw error;
-      console.warn('PathoMitra: discarding a transaction left open by an earlier run', error);
+      captureError(error, { scope: 'sqlite:stale-transaction', operation: 'rollback' });
       await conn.rollbackTransaction();
       await conn.beginTransaction();
     }
@@ -475,50 +550,50 @@ export class SqliteRepository implements DataRepository {
    * kill halfway through a cascade left the lab with a patient whose reports were
    * partly gone — and the copy on screen promised otherwise.
    *
-   * A call that arrives while a transaction is already open JOINS it instead of
-   * starting a second one: Android's `beginTransaction()` throws
-   * "Already in transaction" rather than nesting, and the failed call then ran
-   * its own rollback, which ended the *other* caller's transaction and threw away
-   * the writes that were in flight. Issuing a report twice in quick succession
-   * therefore issued nothing at all. Joining is the same rule the desktop
-   * adapter applies, and the outcome still belongs to whoever began the unit.
+   * A call that arrives while another transaction unit is pending or active is
+   * rejected. Android cannot nest transactions, and joining would make the second
+   * caller report success even when the first caller rolls the shared unit back.
    */
   async transaction(fn: (tx: DataRepository) => Promise<void>): Promise<void> {
-    await this.init();
-    if (this.inTransaction) {
-      await fn(this);
-      return;
+    if (this.transactionUnitActive || this.inTransaction) {
+      throw new Error('A database transaction is already active; retry after it completes.');
     }
-    await this.enqueue(async () => {
-      const conn = this.conn();
-      this.inTransaction = true;
-      this.touched = new Set();
-      let committed = false;
-      try {
-        await this.startNativeTransaction(conn);
-        await fn(this);
-        await conn.commitTransaction();
-        committed = true;
-      } catch (error) {
-        try {
-          if ((await conn.isTransactionActive()).result) await conn.rollbackTransaction();
-        } catch (rollbackError) {
-          console.error('PathoMitra: rollback failed', rollbackError);
-        }
-        throw error;
-      } finally {
-        const entities = [...this.touched];
-        this.inTransaction = false;
+    this.transactionUnitActive = true;
+    try {
+      await this.init();
+      await this.enqueue(async () => {
+        const conn = this.conn();
+        this.inTransaction = true;
         this.touched = new Set();
-        // Notify whatever the outcome — after a commit the rows are the new ones,
-        // after a rollback the listeners must drop the rows that were never
-        // written. Either way they re-read from the database.
-        for (const entity of entities) await this.emit(entity);
-        if (!committed) {
-          for (const entity of ENTITIES) await this.emit(entity);
+        let committed = false;
+        try {
+          await this.startNativeTransaction(conn);
+          await fn(this);
+          await conn.commitTransaction();
+          committed = true;
+        } catch (error) {
+          try {
+            if ((await conn.isTransactionActive()).result) await conn.rollbackTransaction();
+          } catch (rollbackError) {
+            captureError(rollbackError, { scope: 'sqlite:rollback', operation: 'rollback' });
+          }
+          throw error;
+        } finally {
+          const entities = [...this.touched];
+          this.inTransaction = false;
+          this.touched = new Set();
+          // Notify whatever the outcome — after a commit the rows are the new ones,
+          // after a rollback the listeners must drop the rows that were never
+          // written. Either way they re-read from the database.
+          for (const entity of entities) await this.emit(entity);
+          if (!committed) {
+            for (const entity of ENTITIES) await this.emit(entity);
+          }
         }
-      }
-    });
+      });
+    } finally {
+      this.transactionUnitActive = false;
+    }
   }
 
   async clearAll(): Promise<void> {

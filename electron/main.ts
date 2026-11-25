@@ -30,12 +30,12 @@ import {
   powerMonitor,
   protocol,
   session,
-  shell,
 } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { registerIpc } from './ipc';
+import { startBackupDestinationScheduler } from './backup-destination';
 
 /**
  * Serve the bundle over a privileged custom scheme — the same posture the APK
@@ -56,11 +56,10 @@ const SCHEME = 'pathomitra';
  * desktop renderer (which holds the SQLCipher key in memory and owns the whole
  * IPC bridge) would execute any injected markup with the full rights of the page.
  *
- * `'unsafe-inline'` for script/style is required, not lazy: index.html carries the
- * pre-paint theme bootstrap, the splash logo swap and the splash bar animation as
- * inline scripts. Everything else is locked down, and `frame-ancestors 'none'` is
- * what makes the IPC sender check in ipc.ts hard to defeat rather than merely
- * careful. `object-src 'none'` denies plugin content outright.
+ * The three bootstrap scripts are pinned by SHA-256 hash. Inline style attributes
+ * remain scoped to `style-src-attr` because React and the splash use them for
+ * layout transforms. `frame-ancestors 'none'` makes the IPC sender check hard to
+ * defeat rather than merely careful. `object-src 'none'` denies plugin content.
  *
  * `img-src`/`connect-src`/`worker-src` must keep `data:` and `blob:`: uploaded
  * brand logos are data: URLs (lib/brand-logo.ts), generated PDFs are blob: URLs
@@ -68,8 +67,9 @@ const SCHEME = 'pathomitra';
  */
 const CSP = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
-  "style-src 'self' 'unsafe-inline'",
+  "script-src 'self' 'sha256-JWr2BYiQ1CMBig6sXW4VjkJZYi+OQkIhFcu9uS50VKI=' 'sha256-AMWReOJdxU3plZP6FC7yv6h/jKP18fsKvABE2smKNd4=' 'sha256-iQwCSV9lPbz3+de/OT2rhp9buGTCWwWGUYBri7vdJg4='",
+  "style-src 'self'",
+  "style-src-attr 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self'",
   "connect-src 'self' data: blob:",
@@ -215,12 +215,12 @@ function createWindow(): BrowserWindow {
     win.webContents.on('context-menu', event => event.preventDefault());
   }
 
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    // No in-app popups; anything trying to open a window goes to the default
-    // browser, which for an offline lab app means nothing we ship.
-    if (/^https?:/i.test(url)) void shell.openExternal(url);
-    return { action: 'deny' };
-  });
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  const denyExternalNavigation = (event: Electron.Event, url: string) => {
+    if (!url.startsWith(`${SCHEME}://app/`)) event.preventDefault();
+  };
+  win.webContents.on('will-navigate', denyExternalNavigation);
+  win.webContents.on('will-redirect', denyExternalNavigation);
 
   return win;
 }
@@ -271,6 +271,7 @@ app.whenReady().then(() => {
   });
 
   registerIpc();
+  startBackupDestinationScheduler();
 
   /* ----------------------------------------------------------------------- */
   /* The same policy, on every other response the session sees.               */

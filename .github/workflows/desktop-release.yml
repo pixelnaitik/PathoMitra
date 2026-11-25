@@ -1,0 +1,68 @@
+name: Desktop Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  signed-windows:
+    name: Build signed Windows MSI
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint:ci
+      - run: npm test
+      - name: Configure public release identity
+        shell: bash
+        env:
+          VITE_SUPPORT_EMAIL: ${{ vars.VITE_SUPPORT_EMAIL }}
+          VITE_PRIVACY_URL: ${{ vars.VITE_PRIVACY_URL }}
+        run: |
+          if [ -z "$VITE_SUPPORT_EMAIL" ] || [ -z "$VITE_PRIVACY_URL" ]; then
+            echo "::error::VITE_SUPPORT_EMAIL and VITE_PRIVACY_URL repository variables are required."
+            exit 1
+          fi
+          printf 'VITE_SUPPORT_EMAIL=%s\nVITE_PRIVACY_URL=%s\n' "$VITE_SUPPORT_EMAIL" "$VITE_PRIVACY_URL" > .env
+      - name: Require signing secrets
+        shell: bash
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          if [ -z "$WIN_CSC_LINK" ] || [ -z "$WIN_CSC_KEY_PASSWORD" ]; then
+            echo "::error::Windows Authenticode certificate and password are required."
+            exit 1
+          fi
+      - run: npm run desktop:msi
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          PM_DESKTOP_SIGNATURE_RESULTS: release-assets/desktop-signature.json
+      - name: Generate provenance manifest
+        shell: bash
+        env:
+          PM_REQUIRE_CLEAN_MANIFEST: '1'
+          PM_SIGNATURE_RESULTS: release-assets/desktop-signature.json
+        run: npm run release:manifest -- release-assets/PathoMitra-manifest.json release-desktop/*.msi release-assets/desktop-signature.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pathomitra-signed-windows
+          path: |
+            release-desktop/*.msi
+            release-assets/PathoMitra-manifest.json
+            release-assets/desktop-signature.json
+          if-no-files-found: error
+          retention-days: 30

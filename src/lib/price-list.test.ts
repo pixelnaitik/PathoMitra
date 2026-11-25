@@ -561,11 +561,23 @@ describe('saveBillingPrefs', () => {
   });
 
   it('round-trips jurisdictional invoice details', async () => {
-    await saveBillingPrefs({
-      ...DEFAULT_BILLING_PREFS,
-      taxDetails: { mode: 'inter', supplierGstin: 'SUPPLIER123', placeOfSupply: 'Delhi', hsnSac: '999999' },
-    }, 'Owner');
-    expect(getBillingPrefs().taxDetails).toMatchObject({ mode: 'inter', supplierGstin: 'SUPPLIER123', placeOfSupply: 'Delhi' });
+    await saveBillingPrefs(
+      {
+        ...DEFAULT_BILLING_PREFS,
+        taxDetails: {
+          mode: 'inter',
+          supplierGstin: 'SUPPLIER123',
+          placeOfSupply: 'Delhi',
+          hsnSac: '999999',
+        },
+      },
+      'Owner',
+    );
+    expect(getBillingPrefs().taxDetails).toMatchObject({
+      mode: 'inter',
+      supplierGstin: 'SUPPLIER123',
+      placeOfSupply: 'Delhi',
+    });
   });
 
   it('still clamps a hostile stored percent', () => {

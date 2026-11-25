@@ -18,7 +18,7 @@ const expandNames = (names: readonly string[]): string[] => {
   return out;
 };
 
-const reviewer = { name: 'Dr Reviewer', role: 'pathologist' as const };
+const reviewer = { uid: 'pathologist-1', name: 'Dr Reviewer', role: 'pathologist' as const };
 
 const base = {
   patientId: 'p1',
@@ -29,7 +29,13 @@ const base = {
   issuanceSnapshot: {
     version: 1 as const,
     createdAt: '2026-10-14T00:00:00.000Z',
-    patient: { id: 'p1', name: 'Asha Rao', age: 30, gender: 'female', createdAt: '2026-10-14T00:00:00.000Z' },
+    patient: {
+      id: 'p1',
+      name: 'Asha Rao',
+      age: 30,
+      gender: 'female',
+      createdAt: '2026-10-14T00:00:00.000Z',
+    },
     settings: {},
     tests: [],
   },
@@ -71,7 +77,8 @@ describe('planReportWrite — blank results never block a write (owner, 2026-10-
     const plan = planReportWrite({
       existing: stored({ status: 'draft', resultData: { Hb: '', WBC: '' } }),
       next: { ...content({ Hb: '', WBC: '' }, ['CBC']), status: 'final' },
-      operator: 'Dr Who', reviewer,
+      operator: 'Dr Who',
+      reviewer,
       now: '2026-10-14T10:00:00.000Z',
     });
     expect(plan.ok).toBe(true);
@@ -83,7 +90,8 @@ describe('planReportWrite — blank results never block a write (owner, 2026-10-
     const plan = planReportWrite({
       existing: stored({ status: 'draft', resultData: { Hb: '', WBC: '' } }),
       next: { ...content({ Hb: '', WBC: '' }, ['CBC']), status: 'draft' },
-      operator: 'Dr Who', reviewer,
+      operator: 'Dr Who',
+      reviewer,
       now: '2026-10-14T10:00:00.000Z',
     });
     expect(plan.ok).toBe(true);
@@ -94,7 +102,8 @@ describe('planReportWrite — blank results never block a write (owner, 2026-10-
     const plan = planReportWrite({
       existing: stored({ status: 'draft', resultData: { Hb: '12', WBC: '7' } }),
       next: { ...content({ Hb: '12', WBC: '7' }, ['CBC']), status: 'final' },
-      operator: 'Dr Who', reviewer,
+      operator: 'Dr Who',
+      reviewer,
       now: '2026-10-14T10:00:00.000Z',
     });
     expect(plan.ok).toBe(true);
@@ -108,7 +117,8 @@ describe('planReportWrite — immutable issued report (P0.4)', () => {
       existing: stored(),
       next: { ...content({ Hb: '11', WBC: '7' }, ['CBC']), status: 'final' },
       reason: '   ',
-      operator: 'Dr Who', reviewer,
+      operator: 'Dr Who',
+      reviewer,
       now: '2026-10-14T10:00:00.000Z',
     });
     expect(plan.ok).toBe(false);
@@ -120,7 +130,8 @@ describe('planReportWrite — immutable issued report (P0.4)', () => {
       existing: stored(),
       next: { ...content({ Hb: '11', WBC: '7' }, ['CBC']), status: 'final' },
       reason: 'Result transcription error',
-      operator: 'Dr Who', reviewer,
+      operator: 'Dr Who',
+      reviewer,
       now: '2026-10-14T10:00:00.000Z',
     });
     expect(plan.ok).toBe(true);
@@ -146,7 +157,8 @@ describe('planReportWrite — immutable issued report (P0.4)', () => {
       existing: stored(),
       next: { ...content({ Hb: '12', WBC: '7' }, ['CBC']), status: 'draft' },
       reason: 'undo it',
-      operator: 'Dr Who', reviewer,
+      operator: 'Dr Who',
+      reviewer,
       now: '2026-10-14T10:00:00.000Z',
     });
     expect(plan.ok).toBe(false);
@@ -158,7 +170,8 @@ describe('planReportWrite — immutable issued report (P0.4)', () => {
       existing: stored(),
       next: { ...content({ Hb: '12', WBC: '7' }, ['CBC']), status: 'final' },
       reason: '',
-      operator: 'Dr Who', reviewer,
+      operator: 'Dr Who',
+      reviewer,
       now: '2026-10-14T10:00:00.000Z',
     });
     expect(plan.ok).toBe(true);
@@ -173,7 +186,8 @@ describe('planReportWrite — independent verification', () => {
       existing: null,
       newId: 'r-new',
       next: { ...content({ Hb: '12' }, ['CBC']), status: 'final' },
-      reviewer: { name: 'Dr Who', role: 'pathologist' },
+      reviewer: { uid: 'issuer-1', name: 'Dr Who', role: 'pathologist' },
+      actor: { uid: 'issuer-1', role: 'pathologist' },
       operator: 'Dr Who',
       now: '2026-10-14T10:00:00.000Z',
     });
@@ -190,7 +204,11 @@ describe('planReportWrite — independent verification', () => {
       operator: 'Dr Who',
       now: '2026-10-14T10:00:00.000Z',
     });
-    expect(plan.verification).toMatchObject({ reviewedBy: 'Dr Reviewer', role: 'pathologist' });
+    expect(plan.verification).toMatchObject({
+      reviewedBy: 'Dr Reviewer',
+      reviewerUid: 'pathologist-1',
+      role: 'pathologist',
+    });
     expect(plan.ops[0].value.verification).toEqual(plan.verification);
   });
 });
@@ -201,19 +219,68 @@ describe('planReportWrite — clinical result preflight', () => {
       existing: null,
       newId: 'r-new',
       next: { ...content({ Sodium: 'high' }, ['Sodium']), status: 'final' },
-      operator: 'Dr Who', reviewer,
+      operator: 'Dr Who',
+      reviewer,
       now: '2026-10-14T10:00:00.000Z',
     });
     expect(plan.ok).toBe(false);
     expect(plan.error).toMatch(/Result validation failed/);
   });
 
+  it('requires an attributed reason for a material delta from the previous issued report', () => {
+    const next = { ...content({ Sodium: '150' }, ['Sodium']), status: 'final' as const };
+    const blocked = planReportWrite({
+      existing: null,
+      newId: 'r-new',
+      next,
+      previousResults: { Sodium: '100' },
+      previousReportId: 'r-old',
+      operator: 'Dr Who',
+      reviewer,
+      now: '2026-10-14T10:00:00.000Z',
+    });
+    expect(blocked.ok).toBe(false);
+    expect(blocked.error).toMatch(/delta review reason/);
+    const reviewed = planReportWrite({
+      existing: null,
+      newId: 'r-new',
+      next,
+      previousResults: { Sodium: '100' },
+      previousReportId: 'r-old',
+      deltaReviewReason: 'Expected rise after treatment',
+      operator: 'Dr Who',
+      reviewer,
+      now: '2026-10-14T10:00:00.000Z',
+    });
+    expect(reviewed.ok).toBe(true);
+    expect(reviewed.deltaReview).toMatchObject({
+      reason: 'Expected rise after treatment',
+      previousReportId: 'r-old',
+      tests: ['Sodium'],
+    });
+  });
+
   it('requires an explicit review reason for a critical screening excursion', () => {
     const next = { ...content({ Sodium: '180' }, ['Sodium']), status: 'final' as const };
-    const blocked = planReportWrite({ existing: null, newId: 'r-new', next, operator: 'Dr Who', reviewer, now: '2026-10-14T10:00:00.000Z' });
+    const blocked = planReportWrite({
+      existing: null,
+      newId: 'r-new',
+      next,
+      operator: 'Dr Who',
+      reviewer,
+      now: '2026-10-14T10:00:00.000Z',
+    });
     expect(blocked.ok).toBe(false);
     expect(blocked.error).toMatch(/critical screening/);
-    const reviewed = planReportWrite({ existing: null, newId: 'r-new', next, criticalOverrideReason: 'Reviewed against analyser trace', operator: 'Dr Who', reviewer, now: '2026-10-14T10:00:00.000Z' });
+    const reviewed = planReportWrite({
+      existing: null,
+      newId: 'r-new',
+      next,
+      criticalOverrideReason: 'Reviewed against analyser trace',
+      operator: 'Dr Who',
+      reviewer,
+      now: '2026-10-14T10:00:00.000Z',
+    });
     expect(reviewed.ok).toBe(true);
     expect(reviewed.criticalReview).toEqual({
       reason: 'Reviewed against analyser trace',
@@ -231,7 +298,8 @@ describe('planReportWrite — new reports', () => {
       existing: null,
       newId: 'r-new',
       next: { ...content({ Hb: '12', WBC: '7' }, ['CBC']), status: 'final' },
-      operator: 'Dr Who', reviewer,
+      operator: 'Dr Who',
+      reviewer,
       now: '2026-10-14T10:00:00.000Z',
     });
     expect(plan.ok).toBe(true);
@@ -243,7 +311,8 @@ describe('planReportWrite — new reports', () => {
       existing: null,
       newId: 'r-new',
       next: { ...content({ Hb: '' }, ['CBC']), status: 'final' },
-      operator: 'Dr Who', reviewer,
+      operator: 'Dr Who',
+      reviewer,
       now: '2026-10-14T10:00:00.000Z',
     });
     expect(plan.ok).toBe(true);
@@ -256,7 +325,8 @@ describe('planReportWrite — new reports', () => {
     const plan = planReportWrite({
       existing: null,
       next: { ...content({ Hb: '12', WBC: '7' }, ['CBC']), status: 'draft' },
-      operator: 'Dr Who', reviewer,
+      operator: 'Dr Who',
+      reviewer,
       now: '2026-10-14T10:00:00.000Z',
     });
     expect(plan.ok).toBe(false);

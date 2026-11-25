@@ -88,7 +88,8 @@ const BANNED_CLAIMS: ClaimRule[] = [
       'no fetch / XMLHttpRequest / sendBeacon / axios anywhere in src outside tests, and public/sw.js precaches static assets only — there is no queue and no ingest endpoint (telemetry.ts: "Offline build: there is no ingest endpoint"). The word itself is banned in visible copy because it implies a server; honest disclaimers say what happens instead ("uploaded", "written to local storage"). The lookbehind keeps a *denial* legal — "no server, no sync" is the truthful sentence and must not be failed by this rule',
   },
   {
-    pattern: /live demo|demo portal|report portal|data portal|patient portal|lab(?:oratory)? portal/i,
+    pattern:
+      /live demo|demo portal|report portal|data portal|patient portal|lab(?:oratory)? portal/i,
     evidence:
       'no seeded demo account exists — AuthPage onboarding makes the visitor create the local account — and index.html already replaced this word with "Console" because it implies a server to reach. public/manifest.json carried "Clinical Digital Pathology Laboratory Portal" as the product description while the splash and the policy both said "Console"; a portal is a thing you log into remotely, which this build has no permission to do',
   },
@@ -197,6 +198,11 @@ const BANNED_CLAIMS: ClaimRule[] = [
     pattern: /\bsafe and compliant\b|\bfully compliant\b|\bregulatory[- ]compliant\b/i,
     evidence:
       'privacy-policy.ts §5 disclaims every certification, and no accreditation belongs to the software — it belongs to the laboratory and is only printed when the lab enters it in Settings',
+  },
+  {
+    pattern: /digital sign-off|sealed PDF delivery|Web browser/i,
+    evidence:
+      'the build has local reviewer attribution and device signatures, not an accredited digital-sign-off or sealed-delivery service; production browser clinical persistence is blocked',
   },
 ];
 

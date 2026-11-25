@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { operatorStamp, toPatientDoc, toPatientUpdateDoc, readPatient } from './models';
+import {
+  ageAsNumber,
+  operatorStamp,
+  toPatientDoc,
+  toPatientUpdateDoc,
+  readPatient,
+} from './models';
 import {
   DEFAULT_SETTINGS,
   LETTERHEAD_MAX_CHARS,
@@ -59,6 +65,36 @@ describe('toPatientDoc', () => {
     expect(toPatientDoc({ ...form, createdAt: '2026-01-02T03:04:05.000Z' }).createdAt).toBe(
       '2026-01-02T03:04:05.000Z',
     );
+  });
+
+  it('keeps migration-compatible paediatric and identity fields', () => {
+    const doc = toPatientDoc({
+      ...form,
+      dateOfBirth: '2024-01-31',
+      guardianName: 'Asha Guardian',
+      guardianPhone: '9876543210',
+      externalIdType: 'birth-certificate',
+      externalId: 'BC-123',
+    });
+    expect(doc).toMatchObject({
+      dateOfBirth: '2024-01-31',
+      guardianName: 'Asha Guardian',
+      externalIdType: 'birth-certificate',
+      externalId: 'BC-123',
+    });
+    expect(readPatient('p-child', doc)).toMatchObject({
+      dateOfBirth: '2024-01-31',
+      guardianName: 'Asha Guardian',
+    });
+  });
+
+  it('uses date of birth for precise age at the clinical decision time', () => {
+    expect(
+      ageAsNumber({ age: 2, dateOfBirth: '2024-01-31' }, new Date('2025-01-31T00:00:00.000Z')),
+    ).toBeCloseTo(1, 1);
+    expect(
+      ageAsNumber({ age: 2, dateOfBirth: '2024-01-31' }, new Date('2023-01-31T00:00:00.000Z')),
+    ).toBe(2);
   });
 
   it('produces a document the boundary reader accepts unchanged', () => {

@@ -135,6 +135,12 @@ class FakeConnection {
     this.boundParams.push(params);
     const table = /^SELECT id, data FROM (\w+)/.exec(sql)?.[1];
     if (!table) return Promise.resolve({ values: [] });
+    // The fake intentionally models row access, not SQLite's JSON expression
+    // engine. Reject translated list queries so the shared JS fallback remains
+    // exercised; pure SQL generation is covered in sql-query.test.ts.
+    if (sql.includes('json_extract') || sql.includes('ORDER BY') || sql.includes('LIMIT')) {
+      return Promise.reject(new Error('fake does not evaluate JSON SQL'));
+    }
     const rows = this.active ? this.writeTarget(table) : (this.committed.get(table) ?? new Map());
     const all = [...rows.entries()].map(([id, data]) => ({ id, data }));
     const filtered = /WHERE id = \?/.test(sql) ? all.filter(r => r.id === String(params[0])) : all;
@@ -180,7 +186,7 @@ describe('SqliteRepository.transaction', () => {
   it('commits a batch as one unit and never leaves a transaction open', async () => {
     const { repo, conn } = await withRepo();
     await repo.transaction(async tx => {
-      await tx.set('reports', 'r1', { status: 'final' });
+      await tx.set('reports', 'r1', { status: 'draft' });
       await tx.set('reportVersions', 'r1:v1', { snapshot: 'old' });
     });
     expect(conn.calls.filter(c => c === 'begin')).toHaveLength(1);
@@ -189,34 +195,37 @@ describe('SqliteRepository.transaction', () => {
     expect((await conn.isTransactionActive()).result).toBe(false);
   });
 
-  it('a nested transaction joins the open one instead of issuing a second BEGIN', async () => {
+  it('rejects a nested transaction instead of sharing the outer rollback boundary', async () => {
     const { repo, conn } = await withRepo();
-    await repo.transaction(async tx => {
-      await tx.set('reports', 'r1', { status: 'final' });
-      await repo.transaction(async inner => {
-        await inner.set('patients', 'p1', { name: 'Asha' });
-      });
-    });
+    await expect(
+      repo.transaction(async tx => {
+        await tx.set('reports', 'r1', { status: 'draft' });
+        await repo.transaction(async inner => {
+          await inner.set('patients', 'p1', { name: 'Asha' });
+        });
+      }),
+    ).rejects.toThrow(/already active/);
     expect(conn.calls.filter(c => c === 'begin')).toHaveLength(1);
-    expect(conn.calls).not.toContain('rollback');
-    expect(await repo.get('patients', 'p1')).not.toBeNull();
-    expect(await repo.get('reports', 'r1')).not.toBeNull();
+    expect(await repo.get('patients', 'p1')).toBeNull();
+    expect(await repo.get('reports', 'r1')).toBeNull();
   });
 
-  it('two overlapping transactions both land — the second cannot undo the first', async () => {
+  it('rejects an overlapping transaction and allows an explicit retry', async () => {
     const { repo, conn } = await withRepo();
-    await Promise.all([
-      repo.transaction(async tx => {
-        await tx.set('reports', 'r1', { status: 'final' });
-      }),
-      repo.transaction(async tx => {
-        await tx.set('reports', 'r2', { status: 'draft' });
-      }),
-    ]);
-    // Whatever the interleaving, neither batch may end in "Already in
-    // transaction" and neither may roll the other's row away.
+    const first = repo.transaction(async tx => {
+      await tx.set('reports', 'r1', { status: 'draft' });
+    });
+    const second = repo.transaction(async tx => {
+      await tx.set('reports', 'r2', { status: 'draft' });
+    });
+    const results = await Promise.allSettled([first, second]);
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter(result => result.status === 'rejected')).toHaveLength(1);
     expect(conn.calls).not.toContain('rollback');
     expect(await repo.get('reports', 'r1')).not.toBeNull();
+    await repo.transaction(async tx => {
+      await tx.set('reports', 'r2', { status: 'draft' });
+    });
     expect(await repo.get('reports', 'r2')).not.toBeNull();
   });
 
@@ -224,7 +233,7 @@ describe('SqliteRepository.transaction', () => {
     const { repo, conn } = await withRepo();
     await expect(
       repo.transaction(async tx => {
-        await tx.set('reports', 'r1', { status: 'final' });
+        await tx.set('reports', 'r1', { status: 'draft' });
         throw new Error('domain rule');
       }),
     ).rejects.toThrow('domain rule');
@@ -238,7 +247,7 @@ describe('SqliteRepository.transaction', () => {
   it('does not open a nested transaction for the writes inside a batch', async () => {
     const { repo, conn } = await withRepo();
     await repo.transaction(async tx => {
-      await tx.set('reports', 'r1', { status: 'final' });
+      await tx.set('reports', 'r1', { status: 'draft' });
       await tx.set('reportVersions', 'r1__v1', { snapshot: 'old' });
       await tx.delete('reports', 'r1');
     });
@@ -253,9 +262,9 @@ describe('SqliteRepository.transaction', () => {
   it('heals a transaction left open by an earlier run instead of failing forever', async () => {
     const { repo, conn } = await withRepo();
     conn.abandonTransaction();
-    await repo.set('reports', 'seed', { status: 'final' });
+    await repo.set('reports', 'seed', { status: 'draft' });
     await repo.transaction(async tx => {
-      await tx.set('reports', 'r1', { status: 'final' });
+      await tx.set('reports', 'r1', { status: 'draft' });
     });
     expect(await repo.get('reports', 'r1')).not.toBeNull();
     expect((await conn.isTransactionActive()).result).toBe(false);
@@ -296,7 +305,7 @@ describe('SqliteRepository.count — the SQL path only answers what it can compu
 describe('SqliteRepository.clearAll', () => {
   it('erases every collection in one transaction and tells the listeners', async () => {
     const { repo, conn } = await withRepo();
-    await repo.set('reports', 'r1', { status: 'final' });
+    await repo.set('reports', 'r1', { status: 'draft' });
     await repo.set('patients', 'p1', { name: 'Asha' });
 
     const seen: number[] = [];

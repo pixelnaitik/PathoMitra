@@ -27,6 +27,7 @@ import {
 import { buildDoctorStatements, statementForDoctor } from '../lib/referrals';
 import { formatMoney } from '../lib/price-list';
 import { resolveValueStatus, collapseToProfiles } from '../lib/pathology-tests';
+import { resolveIssuanceValueStatus } from '../lib/report-snapshot';
 import { createdAtRangeFilters, localDayStartIso } from '../lib/date-range';
 import { cn } from '../lib/utils';
 import { PatientDetailSheet } from './PatientDetailSheet';
@@ -177,7 +178,11 @@ export function DoctorDetailSheet({
     const { since: pickerSince, until } = createdAtRangeFilters(fromDate, toDate);
     const trendSince = localDayStartIso(trendFloorDay);
     const since =
-      pickerSince && trendSince ? (pickerSince < trendSince ? pickerSince : trendSince) : pickerSince ?? trendSince;
+      pickerSince && trendSince
+        ? pickerSince < trendSince
+          ? pickerSince
+          : trendSince
+        : (pickerSince ?? trendSince);
     const constraints = [orderBy('createdAt', 'desc')];
     if (since) constraints.unshift(where('createdAt', '>=', since));
     if (until) constraints.unshift(where('createdAt', '<=', until));
@@ -222,10 +227,14 @@ export function DoctorDetailSheet({
       }
       tests += profiles.length;
       const patient = patientById.get(report.patientId);
-      const age = patient ? ageAsNumber(patient) : undefined;
       for (const [name, value] of Object.entries(report.resultData ?? {})) {
-        const { status } = resolveValueStatus(name, value, age, patient?.gender);
-        if (status === 'low' || status === 'high') abnormal += 1;
+        const resolved =
+          report.status === 'final'
+            ? resolveIssuanceValueStatus(report.issuanceSnapshot, name, value)
+            : patient
+              ? resolveValueStatus(name, value, ageAsNumber(patient), patient.gender)
+              : { status: null };
+        if (resolved.status === 'low' || resolved.status === 'high') abnormal += 1;
       }
     }
     const top = Array.from(tally.entries())
@@ -424,7 +433,9 @@ export function DoctorDetailSheet({
                 const isCurrentMonth = index === referralTrend.buckets.length - 1;
                 // A zero month still gets a stub so the axis reads as six months,
                 // not as a chart that stopped early.
-                const height = bucket.amount ? Math.max(16, Math.round((bucket.amount / maxTrend) * 100)) : 4;
+                const height = bucket.amount
+                  ? Math.max(16, Math.round((bucket.amount / maxTrend) * 100))
+                  : 4;
                 return (
                   <div
                     key={bucket.key}

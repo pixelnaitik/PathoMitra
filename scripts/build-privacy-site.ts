@@ -41,11 +41,7 @@ const {
   PRIVACY_SECTIONS,
   hasPlaceholderPrivacyContact,
 } = await import('../src/lib/privacy-policy.ts');
-const {
-  TERMS_LAST_UPDATED,
-  TERMS_SECTIONS,
-  TERMS_VERSION,
-} = await import('../src/lib/terms.ts');
+const { TERMS_LAST_UPDATED, TERMS_SECTIONS, TERMS_VERSION } = await import('../src/lib/terms.ts');
 
 // `PrivacySection` / `TermsSection` are type-only and erased, so they can stay
 // in the static position without affecting the load order above.

@@ -32,10 +32,55 @@ const WEB_ONLY_ASSETS = [
   'llms.txt',
   'sw.js',
   'manifest.json',
+  'pwa-version.json',
   'apple-touch-icon.png',
   '_headers',
   '_redirects',
 ];
+
+/** Fail the build when route or font chunks exceed the agreed startup budgets. */
+function performanceBudgets(): Plugin {
+  return {
+    name: 'pathomitra:performance-budgets',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      const chunks = Object.values(bundle).filter(
+        (entry): entry is import('rollup').OutputChunk => entry.type === 'chunk',
+      );
+      const measuredSize = (chunk: import('rollup').OutputChunk) => chunk.code.length;
+      const total = chunks.reduce((sum, chunk) => sum + measuredSize(chunk), 0);
+      if (total > 8 * 1024 * 1024)
+        throw new Error('Bundle budget exceeded: total JavaScript exceeds 8 MB.');
+      for (const chunk of chunks) {
+        const size = measuredSize(chunk);
+        if (chunk.name === 'pdf-fonts' && size > 8 * 1024 * 1024)
+          throw new Error('PDF font chunk exceeds the 8 MB budget.');
+        if (chunk.isEntry && size > 750 * 1024)
+          throw new Error(`Entry chunk ${chunk.fileName} exceeds the 750 KB startup budget.`);
+      }
+    },
+  };
+}
+
+/** Emit a per-build cache namespace for the public service worker. */
+function pwaBuildVersion(enabled: boolean): Plugin {
+  return {
+    name: 'pathomitra:pwa-build-version',
+    apply: 'build',
+    writeBundle() {
+      if (!enabled) return;
+      const pkg = JSON.parse(
+        fs.readFileSync(path.resolve(process.cwd(), 'package.json'), 'utf8'),
+      ) as { version?: string };
+      const version = String(pkg.version || 'unversioned');
+      const buildId = `${version}-${Date.now()}`;
+      fs.writeFileSync(
+        path.resolve(process.cwd(), 'dist', 'pwa-version.json'),
+        JSON.stringify({ version, buildId }),
+      );
+    },
+  };
+}
 
 /**
  * Drop the web-deploy-only assets from a native build.
@@ -80,12 +125,22 @@ export default defineConfig(() => {
   const stripWebAssets = isNativeTarget || isDesktopTarget;
 
   return {
-    plugins: [react(), tailwindcss(), omitWebOnlyAssets(stripWebAssets)],
+    plugins: [
+      react(),
+      tailwindcss(),
+      performanceBudgets(),
+      pwaBuildVersion(!stripWebAssets),
+      omitWebOnlyAssets(stripWebAssets),
+    ],
+    // Pre-bundle the PDF libraries at server start. The Noto files are imported
+    // as assets (not package entry points, which depend on Expo-only modules).
+    optimizeDeps: { include: ['jspdf', 'jspdf-autotable', 'pdfjs-dist'] },
     // Electron loads dist/index.html over file://, where absolute /assets URLs
     // resolve to the drive root and 404. Relative paths work under file://,
     // and https:// for the web build either way.
     base: isDesktopTarget ? './' : '/',
     build: {
+      chunkSizeWarningLimit: 1200,
       minify: 'terser',
       terserOptions: {
         compress: {
@@ -105,6 +160,8 @@ export default defineConfig(() => {
       rollupOptions: {
         output: {
           manualChunks(id) {
+            if (id.includes('src/lib/pdf-fonts.ts') || id.includes('src/assets/pdf-fonts/'))
+              return 'pdf-fonts';
             if (id.includes('node_modules/motion') || id.includes('node_modules/framer-motion')) {
               return 'motion-vendor';
             }

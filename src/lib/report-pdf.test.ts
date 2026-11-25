@@ -13,6 +13,7 @@ import { buildReportIssuanceSnapshot } from './report-snapshot';
 import { contrastAgainstWhite } from './print-contrast';
 import type { LabSettings } from './settings';
 import type { PatientRecord, ReportRecord } from './models';
+import { DEFAULT_PATHOLOGY_TESTS } from './pathology-tests';
 
 type DrawnText = { page: number; x: number; y: number; s: string };
 type DrawnRule = { page: number; y: number; x1: number; x2: number };
@@ -173,9 +174,10 @@ const report = (patch: Partial<ReportRecord> = {}): ReportRecord => {
     updatedAt: '2026-10-15T09:30:00.000Z',
     ...patch,
   };
-  const snapshot = 'issuanceSnapshot' in patch
-    ? patch.issuanceSnapshot
-    : buildReportIssuanceSnapshot(base, urinePatient, DEFAULT_SETTINGS, base.createdAt);
+  const snapshot =
+    'issuanceSnapshot' in patch
+      ? patch.issuanceSnapshot
+      : buildReportIssuanceSnapshot(base, urinePatient, DEFAULT_SETTINGS, base.createdAt);
   return { ...base, issuanceSnapshot: snapshot } as ReportRecord;
 };
 
@@ -355,7 +357,11 @@ describe('clinical content', () => {
     const child: PatientRecord = { ...urinePatient, age: 8, gender: 'male' };
     const childReport = report({
       issuanceSnapshot: buildReportIssuanceSnapshot(
-        { patientId: child.id, testSelection: ['CBC (COMPLETE BLOOD COUNT)', ...CBC_MEMBERS], resultData: cbcResults },
+        {
+          patientId: child.id,
+          testSelection: ['CBC (COMPLETE BLOOD COUNT)', ...CBC_MEMBERS],
+          resultData: cbcResults,
+        },
         child,
         DEFAULT_SETTINGS,
       ),
@@ -399,6 +405,43 @@ describe('clinical content', () => {
     expect(allText()).toContain('राहुल शर्मा');
     expect(allText()).toContain('₹500');
     expect(allText()).not.toContain('αñ');
+  });
+});
+
+describe('section-band pagination', () => {
+  it('keeps every category band with its first result on multi-page output', async () => {
+    resetDrawn();
+    const names = DEFAULT_PATHOLOGY_TESTS.filter(test => !test.isGroup && !test.isHeader)
+      .slice(0, 70)
+      .map(test => test.name);
+    const many = report({
+      testSelection: names,
+      resultData: Object.fromEntries(names.map((name, index) => [name, String(10 + (index % 9))])),
+    });
+    const built = await buildReportDocument({
+      report: many,
+      patient: urinePatient,
+      settings: DEFAULT_SETTINGS,
+      legal: legal(),
+    });
+    expect(built.pageCount).toBeGreaterThan(1);
+    const model = buildReportModel(many, urinePatient, resolveReportLayout(DEFAULT_SETTINGS));
+    for (const section of model.sections) {
+      const firstResult = section.rows.find(row => !row.isGroupRow)?.name ?? section.rows[0]?.name;
+      if (!firstResult) continue;
+      const bands = drawnSink.texts.filter(text => text.s === section.category);
+      expect(bands.length).toBeGreaterThan(0);
+      for (const band of bands) {
+        const next = drawnSink.texts
+          .filter(
+            text =>
+              text.s === firstResult &&
+              (text.page > band.page || (text.page === band.page && text.y > band.y)),
+          )
+          .sort((a, b) => a.page - b.page || a.y - b.y)[0];
+        expect(next?.page, `${section.category} band was orphaned`).toBe(band.page);
+      }
+    }
   });
 });
 
@@ -464,7 +507,7 @@ describe('layout model', () => {
       patient: urinePatient,
       settings: withSettings({
         labName: 'संजीवनी Diagnostics',
-        address: '₹1 crore building, Near √2 Park',
+        address: '₹1 crore building',
       }),
       legal: legal(),
     });
@@ -543,7 +586,9 @@ describe('legacy report reproducibility', () => {
       urinePatient,
       resolveReportLayout(DEFAULT_SETTINGS),
     );
-    const row = model.sections.flatMap(section => section.rows).find(item => item.name === 'HB (HAEMOGLOBIN)');
+    const row = model.sections
+      .flatMap(section => section.rows)
+      .find(item => item.name === 'HB (HAEMOGLOBIN)');
     expect(row?.refLabel).toContain('Not captured');
     expect(row?.flag).toBeNull();
   });
@@ -559,7 +604,9 @@ describe('numeric flag parsing', () => {
       urinePatient,
       resolveReportLayout(DEFAULT_SETTINGS),
     );
-    const row = model.sections.flatMap(section => section.rows).find(item => item.name === 'WHITE CELL COUNT(TC)');
+    const row = model.sections
+      .flatMap(section => section.rows)
+      .find(item => item.name === 'WHITE CELL COUNT(TC)');
     expect(row?.flag).toBe('up');
   });
 });

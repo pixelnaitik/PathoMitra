@@ -5,9 +5,7 @@ import {
   query,
   orderBy,
   onSnapshot,
-  addDoc,
   doc,
-  updateDoc,
   where,
   getDocs,
   getDoc,
@@ -15,6 +13,7 @@ import {
 } from '../../data/fs';
 import { archivePatient } from '../../lib/cascades';
 import { getRepository } from '../../data';
+import { createDoctor } from '../../lib/doctor-registry';
 import {
   registerPatient,
   findProbableDuplicates,
@@ -40,6 +39,7 @@ import {
 import { invoicesForPatient, outstandingForPatient, raiseInvoice } from '../../lib/invoices';
 import { downloadCsv, toCsv, type CsvColumn } from '../../lib/export-csv';
 import { handleFirestoreError, OperationType } from '../../lib/firestore-errors';
+import { captureError } from '../../lib/telemetry';
 import {
   Search,
   Wallet,
@@ -69,6 +69,7 @@ import { PrintDialog, type PrintJob } from '../../components/PrintDialog';
 import { cn } from '../../lib/utils';
 import { listStaggerProps } from '../../lib/motion';
 import { useAuth } from '../../contexts/AuthContext';
+import { can } from '../../lib/permissions';
 import {
   Button,
   Card,
@@ -155,6 +156,8 @@ export default function PatientsPage({
   const { role, user } = useAuth();
   const toast = useToast();
   const [doctors, setDoctors] = useState<any[]>([]);
+  const [doctorError, setDoctorError] = useState(false);
+  const [doctorReload, setDoctorReload] = useState(0);
   const [searchTerm, setSearchTerm] = useState('');
   /** "Only the ones who owe us" — the counter's view of the same list. */
   const [duesOnly, setDuesOnly] = useState(false);
@@ -180,7 +183,9 @@ export default function PatientsPage({
         clearPatientAction?.();
       })
       .catch(error => handleFirestoreError(error, OperationType.GET, 'patients'));
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, [initialPatientId, clearPatientAction]);
 
   const [testSearchQuery, setTestSearchQuery] = useState('');
@@ -260,7 +265,7 @@ export default function PatientsPage({
       else if (message) toast.info(message);
       else if (match) toast.info(`Reprinted the existing bill ${invoice.invoiceNo}.`);
     } catch (err) {
-      console.error('Bill failed:', err);
+      captureError(err, { scope: 'patients:bill', entity: 'invoices' });
       toast.error(err instanceof Error ? err.message : 'Could not raise the bill.');
     } finally {
       setBillingId(null);
@@ -272,6 +277,11 @@ export default function PatientsPage({
     age: '',
     gender: 'male',
     phone: '',
+    dateOfBirth: '',
+    guardianName: '',
+    guardianPhone: '',
+    externalIdType: undefined as 'national-id' | 'birth-certificate' | 'other' | undefined,
+    externalId: '',
     doctorName: '',
     doctorId: '',
     address: '',
@@ -359,7 +369,10 @@ export default function PatientsPage({
     const totals = new Map<string, number>();
     for (const invoice of invoicesList.allItems) {
       if (invoice.status === 'void') continue;
-      totals.set(invoice.patientId, (totals.get(invoice.patientId) ?? 0) + Math.max(0, invoice.amount - invoice.paidAmount));
+      totals.set(
+        invoice.patientId,
+        (totals.get(invoice.patientId) ?? 0) + Math.max(0, invoice.amount - invoice.paidAmount),
+      );
     }
     return totals;
   }, [invoicesList.allItems]);
@@ -376,8 +389,10 @@ export default function PatientsPage({
       qDocs,
       snapshot => {
         setDoctors(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+        setDoctorError(false);
       },
       error => {
+        setDoctorError(true);
         handleFirestoreError(error, OperationType.GET, 'doctors');
       },
     );
@@ -385,20 +400,24 @@ export default function PatientsPage({
     return () => {
       unsubDocs();
     };
-  }, []);
+  }, [doctorReload]);
 
   const addNewDoctor = async (name: string) => {
     if (!name.trim()) return;
+    if (!can(role, 'manageDoctors')) {
+      setFormError('Only an administrator can add a doctor.');
+      return;
+    }
     setIsAddingDoctor(true);
     try {
-      const ref = await addDoc(collection(db, 'doctors'), {
-        name: name.trim(),
-        createdAt: new Date().toISOString(),
-      });
-      setFormData(prev => ({ ...prev, doctorName: name.trim(), doctorId: ref.id }));
+      const doctor = await createDoctor(
+        { name: name.trim(), referralPercent: 0, active: true },
+        operatorStamp(user),
+      );
+      setFormData(prev => ({ ...prev, doctorName: doctor.name, doctorId: doctor.id }));
       setIsDoctorDropdownOpen(false);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'doctors');
+      setFormError(err instanceof Error ? err.message : 'The doctor could not be added.');
     } finally {
       setIsAddingDoctor(false);
     }
@@ -446,7 +465,7 @@ export default function PatientsPage({
     try {
       if (editingPatient) {
         await getRepository().transaction(async tx => {
-          await tx.set('patients', editingPatient.id, toPatientUpdateDoc(formData));
+          await tx.update('patients', editingPatient.id, toPatientUpdateDoc(formData));
 
           // Sync the ordered-panel list onto the patient's DRAFTS only.
           // Issued reports remain immutable without a deliberate amendment.
@@ -476,7 +495,7 @@ export default function PatientsPage({
         editingPatient ? `${formData.name}'s record updated.` : `${formData.name} registered.`,
       );
     } catch (err) {
-      setFormError('Failed to save patient.');
+      setFormError(err instanceof Error ? err.message : 'Failed to save patient.');
       try {
         handleFirestoreError(err, OperationType.WRITE, path);
       } catch (e) {
@@ -491,6 +510,11 @@ export default function PatientsPage({
       age: '',
       gender: 'male',
       phone: '',
+      dateOfBirth: '',
+      guardianName: '',
+      guardianPhone: '',
+      externalIdType: undefined,
+      externalId: '',
       doctorName: '',
       doctorId: '',
       address: '',
@@ -506,7 +530,10 @@ export default function PatientsPage({
   // Searching only the name is what made a staff member read a patient number out
   // to a colleague instead of looking it up.
   const deferredSearch = useDeferredValue(searchTerm.trim().toLowerCase());
-  const dueCount = useMemo(() => patients.filter(p => dueFor(p) > 0).length, [patients, balanceByPatient]);
+  const dueCount = useMemo(
+    () => patients.filter(p => dueFor(p) > 0).length,
+    [patients, balanceByPatient],
+  );
   const filteredPatients = useMemo(() => {
     // Dues first: the search then narrows whatever is left, so "sharma" inside
     // "with dues" finds the owing Sharmas rather than every Sharma.
@@ -557,7 +584,7 @@ export default function PatientsPage({
     try {
       const outstanding = outstandingForPatient(await invoicesForPatient(patient.id));
       const patch = toPatientDueDoc({ ...input, actor: operatorStamp(user), outstanding }, patient);
-      await updateDoc(doc(db, 'patients', patient.id), patch);
+      await getRepository().update('patients', patient.id, patch);
       const amount = Number(patch.dueAmount ?? 0);
       toast.success(
         amount > 0
@@ -576,6 +603,9 @@ export default function PatientsPage({
     { label: 'Age', value: p => p.age },
     { label: 'Gender', value: p => p.gender },
     { label: 'Phone', value: p => p.phone || '' },
+    { label: 'Date of birth', value: p => p.dateOfBirth || '' },
+    { label: 'Guardian', value: p => p.guardianName || '' },
+    { label: 'External ID', value: p => p.externalId || '' },
     { label: 'Doctor', value: p => p.doctorName || '' },
     { label: 'Registered', value: p => p.createdAt },
     { label: 'Due', value: p => (dueFor(p) > 0 ? dueFor(p) : '') },
@@ -583,11 +613,32 @@ export default function PatientsPage({
   ];
 
   const exportFilteredCsv = async () => {
+    if (!can(role, 'exportData')) {
+      toast.error('Only an administrator can export patient data.');
+      return;
+    }
+    if (duesOnly && invoicesList.error) {
+      toast.error('Billing balances are unavailable, so a dues-only export would be incomplete.');
+      return;
+    }
     const term = deferredSearch.split(/\s+/).filter(Boolean);
     const exportRows = patientsList.allItems.filter(patient => {
-      if (duesOnly && dueFor(patient) <= 0) return false;
+      if (duesOnly && !invoicesList.error && dueFor(patient) <= 0) return false;
       if (term.length === 0) return true;
-      const haystack = [patient.name, patient.id, patient.phone ?? '', normalisePhone(patient.phone), String(patient.age ?? ''), patient.doctorName ?? ''].filter(Boolean).join(' ').toLowerCase();
+      const haystack = [
+        patient.name,
+        patient.id,
+        patient.phone ?? '',
+        normalisePhone(patient.phone),
+        patient.dateOfBirth ?? '',
+        patient.guardianName ?? '',
+        patient.externalId ?? '',
+        String(patient.age ?? ''),
+        patient.doctorName ?? '',
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
       return term.every(word => haystack.includes(word));
     });
     if (exportRows.length === 0) {
@@ -598,11 +649,18 @@ export default function PatientsPage({
       const message = await downloadCsv(
         `pathomitra-patients-${toIsoDay(new Date())}.csv`,
         toCsv(CSV_COLUMNS, exportRows),
-        { actor: operatorStamp(user), rowCount: exportRows.length, filters: { duesOnly } },
+        {
+          actor: operatorStamp(user),
+          actorUid: user?.uid ?? '',
+          actorRole: role ?? 'guest',
+          entityType: 'exports' as const,
+          rowCount: exportRows.length,
+          filters: { duesOnly },
+        },
       );
       toast.success(message ?? `Exported ${exportRows.length} patients to CSV.`);
     } catch (err) {
-      console.error('Error writing the CSV export:', err);
+      captureError(err, { scope: 'patients:csv', operation: 'export', entity: 'patients' });
       toast.error('Could not write the CSV on this device.');
     }
   };
@@ -730,8 +788,16 @@ export default function PatientsPage({
       age: patient.age ? patient.age.toString() : '',
       gender: patient.gender || 'male',
       phone: patient.phone || '',
+      dateOfBirth: patient.dateOfBirth || '',
+      guardianName: patient.guardianName || '',
+      guardianPhone: patient.guardianPhone || '',
+      externalIdType: patient.externalIdType,
+      externalId: patient.externalId || '',
       doctorName: patient.doctorName || '',
-      doctorId: patient.doctorId ?? doctors.find(d => doctorNameKey(d.name) === doctorNameKey(patient.doctorName ?? ''))?.id ?? '',
+      doctorId:
+        patient.doctorId ??
+        doctors.find(d => doctorNameKey(d.name) === doctorNameKey(patient.doctorName ?? ''))?.id ??
+        '',
       address: patient.address || '',
       testSelection: patient.testSelection || [],
     });
@@ -801,8 +867,33 @@ export default function PatientsPage({
       )}
 
       {patientsList.error && (
-        <div role="alert" className="rounded-xl border border-error/30 bg-error-container px-4 py-3 text-sm text-on-error-container">
+        <div
+          role="alert"
+          className="rounded-xl border border-error/30 bg-error-container px-4 py-3 text-sm text-on-error-container"
+        >
           Patient records could not be loaded — {patientsList.error}. This is not an empty register.
+        </div>
+      )}
+
+      {invoicesList.error && (
+        <div
+          role="alert"
+          className="rounded-xl border border-error/30 bg-error-container px-4 py-3 text-sm text-on-error-container"
+        >
+          Billing balances could not be loaded — {invoicesList.error}. A missing due amount is not
+          proof that nothing is owed.
+        </div>
+      )}
+
+      {doctorError && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-error/30 bg-error-container px-4 py-3 text-sm text-on-error-container"
+        >
+          <span>The doctor register could not be loaded. Referral names may be incomplete.</span>
+          <Button size="sm" variant="outline" onClick={() => setDoctorReload(value => value + 1)}>
+            Retry doctors
+          </Button>
         </div>
       )}
 
@@ -816,7 +907,10 @@ export default function PatientsPage({
         </p>
       )}
 
-      {!patientsList.loading && !scanning && !patientsList.error && filteredPatients.length === 0 ? (
+      {!patientsList.loading &&
+      !scanning &&
+      !patientsList.error &&
+      filteredPatients.length === 0 ? (
         <Card pad="none">
           <EmptyState
             icon={<UserPlus className="h-7 w-7" />}
@@ -882,8 +976,14 @@ export default function PatientsPage({
                             {patient.name[0]}
                           </div>
                           <span className="font-semibold text-on-surface">{patient.name}</span>
-                          {dueFor(patient) > 0 && (
-                            <StatusPill tone="error">Due {formatMoney(dueFor(patient))}</StatusPill>
+                          {invoicesList.error ? (
+                            <StatusPill tone="warning">Due unavailable</StatusPill>
+                          ) : (
+                            dueFor(patient) > 0 && (
+                              <StatusPill tone="error">
+                                Due {formatMoney(dueFor(patient))}
+                              </StatusPill>
+                            )
                           )}
                         </div>
                       </td>
@@ -1159,6 +1259,57 @@ export default function PatientsPage({
               </Field>
             </div>
 
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Date of birth" hint="Optional; improves paediatric range selection.">
+                <TextInput
+                  type="date"
+                  value={formData.dateOfBirth}
+                  onChange={e => setFormData({ ...formData, dateOfBirth: e.target.value })}
+                />
+              </Field>
+              <Field label="External ID type" hint="Optional identity reference.">
+                <Select
+                  value={formData.externalIdType ?? ''}
+                  onChange={e =>
+                    setFormData({
+                      ...formData,
+                      externalIdType: (e.target.value ||
+                        undefined) as typeof formData.externalIdType,
+                    })
+                  }
+                >
+                  <option value="">None</option>
+                  <option value="national-id">National ID</option>
+                  <option value="birth-certificate">Birth certificate</option>
+                  <option value="other">Other</option>
+                </Select>
+              </Field>
+            </div>
+            <Field label="External identifier" hint="Stored only in the encrypted clinical record.">
+              <TextInput
+                value={formData.externalId}
+                onChange={e => setFormData({ ...formData, externalId: e.target.value })}
+                maxLength={128}
+              />
+            </Field>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Guardian name" hint="For a minor or dependent patient.">
+                <TextInput
+                  value={formData.guardianName}
+                  onChange={e => setFormData({ ...formData, guardianName: e.target.value })}
+                  maxLength={100}
+                />
+              </Field>
+              <Field label="Guardian phone" hint="Optional contact number.">
+                <TextInput
+                  type="tel"
+                  value={formData.guardianPhone}
+                  onChange={e => setFormData({ ...formData, guardianPhone: e.target.value })}
+                  maxLength={20}
+                />
+              </Field>
+            </div>
+
             <Field label="Referred By (Doctor Name)">
               <div className="relative">
                 <Search className="absolute left-3.5 top-1/2 z-10 h-4 w-4 -translate-y-1/2 text-on-surface-variant" />
@@ -1184,7 +1335,11 @@ export default function PatientsPage({
                             type="button"
                             onMouseDown={e => {
                               e.preventDefault();
-                              setFormData({ ...formData, doctorName: docItem.name, doctorId: docItem.id.startsWith('default_') ? '' : docItem.id });
+                              setFormData({
+                                ...formData,
+                                doctorName: docItem.name,
+                                doctorId: docItem.id.startsWith('default_') ? '' : docItem.id,
+                              });
                               setIsDoctorDropdownOpen(false);
                             }}
                             className="w-full text-left px-4 py-3 text-sm font-medium text-on-surface hover:bg-surface-container-low transition-colors border-b border-outline-variant/40 last:border-0"
@@ -1461,7 +1616,9 @@ export default function PatientsPage({
             await archivePatient(patientId, operatorStamp(user), 'Archived from patient register');
 
             setPatientToDelete(null);
-            toast.success(`${patientToDelete.name} archived. Clinical and financial history was retained.`);
+            toast.success(
+              `${patientToDelete.name} archived. Clinical and financial history was retained.`,
+            );
           } catch (err) {
             handleFirestoreError(err, OperationType.UPDATE, path);
             toast.error('Archive failed — nothing was changed.');

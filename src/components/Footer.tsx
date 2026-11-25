@@ -107,7 +107,7 @@ export default function Footer() {
         </div>
 
         <div className="border-t border-outline-variant/30 pt-8 flex flex-col md:flex-row justify-between items-center gap-4">
-          <span className="text-xs text-on-surface-variant opacity-70">
+          <span className="text-xs text-on-surface-variant">
             © 2026 Naitik Raj · PathoMitra is MIT-licensed open source.
           </span>
           <div className="flex items-center gap-4">

@@ -31,9 +31,9 @@ export default function CTA() {
             Run PathoMitra on Your Own Bench
           </h2>
           <p className="text-xl md:text-2xl opacity-80 mb-12 max-w-2xl mx-auto font-medium">
-            Built for small and mid-size labs: the same console the Android and Windows apps run,
-            on the machine you work at — no server to buy, no subscription to renew, and a network
-            cut never stops the bench.
+            Built for small and mid-size labs: the same console the Android and Windows apps run, on
+            the machine you work at — no server to buy, no subscription to renew, and a network cut
+            never stops the bench.
           </p>
           <div className="flex flex-wrap justify-center gap-4">
             <Link to="/download">

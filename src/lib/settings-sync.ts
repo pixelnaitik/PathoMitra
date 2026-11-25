@@ -18,7 +18,8 @@
  *
  * Conflict resolution is last-write-wins on `updatedAt`, which is an ISO string
  * and therefore sorts correctly. Writes are debounced so a slider drag does not
- * fire a document write per animation frame.
+ * fire a document write per animation frame. The pending journal is bounded and
+ * validated; corrupt entries are quarantined without copying their contents.
  */
 import { db, doc, onSnapshot, setDoc } from '../data/fs';
 import { z } from 'zod';
@@ -28,6 +29,7 @@ import {
   SETTINGS_UPDATED_EVENT,
   readCustomTests,
   readSettings,
+  reportSettingsPersistenceError,
   writeCustomTests,
   writeSettings,
   type LabSettings,
@@ -42,8 +44,10 @@ const PUSH_DELAY_MS = 900;
 
 /** Write-ahead journal closes the crash window while the encrypted mirror is debounced. */
 const PENDING_SETTINGS_KEY = 'pathlab_settings_pending_v1';
+const QUARANTINED_SETTINGS_KEY = 'pathlab_settings_pending_v1_quarantine';
+const MAX_JOURNAL_CHARS = 8 * 1024 * 1024;
 
-const CloudSettingsSchema = z.looseObject({
+const SettingsMirrorSchema = z.looseObject({
   settings: z.record(z.string(), z.unknown()).default({}),
   customTests: z.array(z.record(z.string(), z.unknown())).max(400).default([]),
   updatedAt: z.string().max(64).optional(),
@@ -54,6 +58,8 @@ let pushTimer = 0;
 /** True while a remote snapshot is being applied, to avoid echoing it back. */
 let applyingRemote = false;
 let persistingLocal = false;
+let latestSettings: LabSettings | null = null;
+let latestCustomTests: PathologyTest[] | null = null;
 
 function buildPayload(settings: LabSettings, customTests: PathologyTest[], uid?: string) {
   const payload: Record<string, unknown> = {
@@ -65,16 +71,83 @@ function buildPayload(settings: LabSettings, customTests: PathologyTest[], uid?:
   return payload;
 }
 
-function journalPending(payload: Record<string, unknown>): void {
-  try { window.localStorage.setItem(PENDING_SETTINGS_KEY, JSON.stringify(payload)); }
-  catch (error) { captureError(error, { scope: 'settings-sync/journal' }); }
+function journalPending(payload: Record<string, unknown>): boolean {
+  try {
+    const raw = JSON.stringify(payload);
+    if (raw.length > MAX_JOURNAL_CHARS) {
+      reportSettingsPersistenceError(
+        'journal',
+        'The pending settings journal is too large for this device. Save Settings again after freeing storage.',
+      );
+      return false;
+    }
+    window.localStorage.setItem(PENDING_SETTINGS_KEY, raw);
+    return true;
+  } catch {
+    reportSettingsPersistenceError(
+      'journal',
+      'The pending settings journal could not be written. Keep Settings open until the encrypted save completes.',
+    );
+    return false;
+  }
+}
+
+/** Validate and bound a journal entry before it can overwrite the encrypted mirror. */
+export function parsePendingSettings(raw: string): Record<string, unknown> {
+  if (raw.length > MAX_JOURNAL_CHARS)
+    throw new Error('Pending settings journal exceeds the size limit.');
+  const value = JSON.parse(raw) as unknown;
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    !('settings' in value) ||
+    !('customTests' in value)
+  ) {
+    throw new Error('Pending settings journal is malformed.');
+  }
+  const parsed = SettingsMirrorSchema.safeParse(value);
+  if (!parsed.success) throw new Error('Pending settings journal is malformed.');
+  return parsed.data as Record<string, unknown>;
+}
+
+function quarantinePendingSettings(): void {
+  try {
+    window.localStorage.removeItem(PENDING_SETTINGS_KEY);
+    window.localStorage.setItem(
+      QUARANTINED_SETTINGS_KEY,
+      JSON.stringify({ at: new Date().toISOString(), reason: 'malformed-or-oversized' }),
+    );
+  } catch {
+    /* a small marker is best-effort; the invalid entry is still refused */
+  }
+  reportSettingsPersistenceError(
+    'journal',
+    'A corrupt pending settings journal was quarantined. Review and save the current settings again.',
+  );
 }
 
 /** Flush a journaled edit before a backup or a clean shutdown can omit it. */
 export async function flushPendingSettings(): Promise<void> {
-  const raw = window.localStorage.getItem(PENDING_SETTINGS_KEY);
+  let raw: string | null;
+  try {
+    raw = window.localStorage.getItem(PENDING_SETTINGS_KEY);
+  } catch {
+    throw new Error('The pending settings journal could not be read.');
+  }
   if (!raw) return;
-  const payload = JSON.parse(raw) as Record<string, unknown>;
+  let payload: Record<string, unknown>;
+  try {
+    payload = parsePendingSettings(raw);
+  } catch {
+    quarantinePendingSettings();
+    captureError(new Error('Invalid pending settings journal quarantined'), {
+      scope: 'settings-sync/journal',
+    });
+    throw new Error(
+      'The corrupt pending settings journal was quarantined; save the current settings again.',
+    );
+  }
   await setDoc(doc(db, LAB_SETTINGS_DOC_PATH, LAB_SETTINGS_DOC_ID), payload);
   window.localStorage.removeItem(PENDING_SETTINGS_KEY);
 }
@@ -103,17 +176,21 @@ export async function persistSettingsNow(
 }
 
 /** Queue a debounced push of the current local state to the encrypted store. */
-function queuePush(uid?: string): void {
+function queuePush(uid?: string, settings?: LabSettings, customTests?: PathologyTest[]): void {
   if (applyingRemote || persistingLocal) return;
+  const nextSettings = settings ?? latestSettings ?? readSettings();
+  const nextTests = customTests ?? latestCustomTests ?? readCustomTests();
   window.clearTimeout(pushTimer);
-  journalPending(buildPayload(readSettings(), readCustomTests(), uid));
+  journalPending(buildPayload(nextSettings, nextTests, uid));
   pushTimer = window.setTimeout(async () => {
     try {
-      await persistSettingsNow(readSettings(), readCustomTests(), uid);
-    } catch (err) {
-      // A blocked write here means the local store rejected the document shape;
-      // the UI keeps working from localStorage, so this is a warning, not a fault.
-      console.warn('PathoMitra: settings could not be mirrored into the encrypted store.', err);
+      await persistSettingsNow(nextSettings, nextTests, uid);
+    } catch {
+      reportSettingsPersistenceError(
+        'journal',
+        'Settings could not be mirrored into encrypted storage. Keep this screen open and retry Save.',
+      );
+      captureError(new Error('Settings mirror write failed'), { scope: 'settings-sync/persist' });
     }
   }, PUSH_DELAY_MS);
 }
@@ -126,8 +203,16 @@ function queuePush(uid?: string): void {
  * sync via the usual `settings-updated` event.
  */
 export function startSettingsSync(uid?: string): () => void {
-  void flushPendingSettings().catch(error => captureError(error, { scope: 'settings-sync/recover-journal' }));
-  const pushLocal = () => queuePush(uid);
+  void flushPendingSettings().catch(error =>
+    captureError(error, { scope: 'settings-sync/recover-journal' }),
+  );
+  const pushLocal = (event: Event) => {
+    const detail = (event as CustomEvent<{ settings?: LabSettings; customTests?: PathologyTest[] }>)
+      .detail;
+    if (detail?.settings) latestSettings = detail.settings;
+    if (detail?.customTests) latestCustomTests = detail.customTests;
+    queuePush(uid, latestSettings ?? undefined, latestCustomTests ?? undefined);
+  };
   window.addEventListener(SETTINGS_UPDATED_EVENT, pushLocal);
   window.addEventListener(CUSTOM_TESTS_UPDATED_EVENT, pushLocal);
 
@@ -135,9 +220,15 @@ export function startSettingsSync(uid?: string): () => void {
     doc(db, LAB_SETTINGS_DOC_PATH, LAB_SETTINGS_DOC_ID),
     snapshot => {
       // Our own write landing optimistically — do not re-apply it.
-      if (!snapshot.exists() || snapshot.metadata.hasPendingWrites || applyingRemote || persistingLocal) return;
+      if (
+        !snapshot.exists() ||
+        snapshot.metadata.hasPendingWrites ||
+        applyingRemote ||
+        persistingLocal
+      )
+        return;
 
-      const parsed = CloudSettingsSchema.safeParse(snapshot.data());
+      const parsed = SettingsMirrorSchema.safeParse(snapshot.data());
       if (!parsed.success) {
         captureError(new Error('Malformed labSettings document'), {
           scope: 'settings-sync',
@@ -171,6 +262,8 @@ export function startSettingsSync(uid?: string): () => void {
         } as LabSettings);
 
         const remoteTests = remote.customTests as unknown as PathologyTest[];
+        latestSettings = readSettings();
+        latestCustomTests = remoteTests;
         if (remoteTests.length > 0 || readCustomTests().length === 0) {
           writeCustomTests(remoteTests);
         }
@@ -191,7 +284,9 @@ export function startSettingsSync(uid?: string): () => void {
   );
 
   return () => {
-    void flushPendingSettings().catch(error => captureError(error, { scope: 'settings-sync/flush' }));
+    void flushPendingSettings().catch(error =>
+      captureError(error, { scope: 'settings-sync/flush' }),
+    );
     window.clearTimeout(pushTimer);
     window.removeEventListener(SETTINGS_UPDATED_EVENT, pushLocal);
     window.removeEventListener(CUSTOM_TESTS_UPDATED_EVENT, pushLocal);

@@ -142,5 +142,11 @@ export async function renderPageToPng(
   context.fillStyle = '#ffffff';
   context.fillRect(0, 0, canvas.width, canvas.height);
   await page.render({ canvas, canvasContext: context, viewport }).promise;
-  return canvas.toDataURL('image/png');
+  const png = canvas.toDataURL('image/png');
+  // The data URL is handed to main one page at a time. Drop the decoded backing
+  // store immediately so a long report does not retain every raster in renderer
+  // memory while the next page is being prepared.
+  canvas.width = 0;
+  canvas.height = 0;
+  return png;
 }

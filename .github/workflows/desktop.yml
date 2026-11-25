@@ -23,8 +23,10 @@ jobs:
       - run: npx playwright install chromium
       - run: npm run test:e2e:desktop
       - run: npm run desktop:msi:test
+        env:
+          PM_ARTIFACT_SUFFIX: '-unsigned-test'
       - uses: actions/upload-artifact@v4
         with:
           name: unsigned-desktop-test
-          path: release-desktop/*.msi
+          path: release-desktop/*-unsigned-test.msi
           if-no-files-found: error

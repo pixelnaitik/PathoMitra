@@ -8,7 +8,15 @@ import { Eyebrow, PageTransition, Reveal } from '../components/ui/motion';
 import { mailto } from '../lib/contact';
 
 /** Bullet rail: each fact slides in on a small stagger when the card reveals. */
-function BulletList({ items, dotClass, textClass }: { items: string[]; dotClass: string; textClass: string }) {
+function BulletList({
+  items,
+  dotClass,
+  textClass,
+}: {
+  items: string[];
+  dotClass: string;
+  textClass: string;
+}) {
   return (
     <ul className="space-y-3 mb-8">
       {items.map((item, i) => (
@@ -111,8 +119,8 @@ export default function SolutionsPage() {
                     </h3>
                     <p className="text-on-primary/80 mb-6 leading-relaxed">
                       Hand over a report that reads as well as it prints. Every PDF carries the name
-                      of the operator who issued it and the time it was issued, and you decide how it
-                      reaches the patient.
+                      of the operator who issued it and the time it was issued, and you decide how
+                      it reaches the patient.
                     </p>
                     <BulletList
                       textClass="text-on-primary/90"
@@ -136,9 +144,10 @@ export default function SolutionsPage() {
                   Ready to explore PathoMitra?
                 </h2>
                 <p className="text-on-surface-variant mb-8 max-w-2xl mx-auto">
-                  Open the same patient, report and analytics console that runs on the bench — free to
-                  use, with no ads, no subscription and no per-report fees. The first account you create
-                  is the only one, everything is stored locally, and the app sends nothing to a server.
+                  Open the same patient, report and analytics console that runs on the bench — free
+                  to use, with no ads, no subscription and no per-report fees. The first account you
+                  create is the only one, everything is stored locally, and the app sends nothing to
+                  a server.
                 </p>
                 <div className="flex flex-wrap justify-center gap-4">
                   <Link to="/download">
@@ -147,11 +156,7 @@ export default function SolutionsPage() {
                     </Button>
                   </Link>
                   <a href={mailto('Request a PathoMitra walkthrough')}>
-                    <Button
-                      variant="outline"
-                      size="lg"
-                      className="px-8 py-6 text-lg"
-                    >
+                    <Button variant="outline" size="lg" className="px-8 py-6 text-lg">
                       Talk to us
                     </Button>
                   </a>

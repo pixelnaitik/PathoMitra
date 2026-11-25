@@ -26,6 +26,8 @@ import { applyBrandFavicon, readBrandLogo } from './lib/brand-logo';
 import { applyScreenshotProtection } from './lib/screenshot-protection';
 import { useToast } from './components/ui';
 import NProgress from 'nprogress';
+import { LegacyWebDataNotice } from './components/LegacyWebDataNotice';
+import { PwaUpdatePrompt } from './components/PwaUpdatePrompt';
 
 const LandingPage = lazy(() => import('./LandingPage'));
 const TechnologyPage = lazy(() => import('./pages/TechnologyPage'));
@@ -65,7 +67,12 @@ function LazyFallback({ fullScreen }: { fullScreen: boolean }) {
       className={`animate-fade-in ${fullScreen ? 'page-min-h' : 'min-h-[50vh]'} bg-background p-4 md:p-8`}
     >
       {/* Skeleton — mirrors the dashboard layout so the page feels instant */}
-      <div className="max-w-7xl mx-auto space-y-6" aria-busy="true" aria-label="Loading">
+      <div
+        className="max-w-7xl mx-auto space-y-6"
+        role="status"
+        aria-busy="true"
+        aria-label="Loading"
+      >
         <div className="grid grid-cols-2 md:grid-cols-2 gap-4 md:gap-6">
           <div className="h-24 md:h-28 skeleton-shimmer rounded-3xl" />
           <div className="h-24 md:h-28 skeleton-shimmer rounded-3xl" />
@@ -154,7 +161,16 @@ function DashboardShell() {
     if (openOrder) setOpenOrderId(openOrder);
     if (openSample) setOpenSampleId(openSample);
     if (section) setSettingsSection(section);
-    if (action || report || patient || openPatient || openDoctor || openOrder || openSample || section) {
+    if (
+      action ||
+      report ||
+      patient ||
+      openPatient ||
+      openDoctor ||
+      openOrder ||
+      openSample ||
+      section
+    ) {
       // Strip the consumed params — re-setting the same query would bump
       // location.key and re-trigger this effect, endlessly re-arming the action.
       const next = new URLSearchParams(location.search);
@@ -218,7 +234,10 @@ function DashboardShell() {
                 />
               )}
               {activeTab === 'doctors' && (
-                <DoctorsPage initialDoctorId={openDoctorId} clearAction={() => setOpenDoctorId(null)} />
+                <DoctorsPage
+                  initialDoctorId={openDoctorId}
+                  clearAction={() => setOpenDoctorId(null)}
+                />
               )}
               {activeTab === 'orders' && (
                 <WorkflowPage
@@ -410,6 +429,8 @@ export default function App({ onReady }: AppProps) {
             <BackButtonController />
             <ScreenshotProtectionController />
             <BrandFaviconController />
+            <LegacyWebDataNotice />
+            <PwaUpdatePrompt />
             {/* Accessibility: keyboard users can jump straight to the content */}
             <a
               href="#main-content"

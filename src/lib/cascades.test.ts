@@ -21,7 +21,8 @@ vi.mock('../data/fs', () => ({
   }),
   updateDoc: h.updated,
   getDocs: async (query: { path: string }) => {
-    const docs = query.path === 'reports' ? h.reports : query.path === 'invoices' ? h.invoices : h.versions;
+    const docs =
+      query.path === 'reports' ? h.reports : query.path === 'invoices' ? h.invoices : h.versions;
     return { docs, size: docs.length };
   },
 }));
@@ -43,11 +44,14 @@ describe('retention-safe cascades', () => {
   it('archives a patient while retaining related history', async () => {
     h.report = { name: 'Asha Rao' };
     await archivePatient('p1', 'Ashu', 'Duplicate registration');
-    expect(h.updated).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      archivedBy: 'Ashu',
-      archivedReason: 'Duplicate registration',
-      archivedAt: expect.any(String),
-    }));
+    expect(h.updated).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        archivedBy: 'Ashu',
+        archivedReason: 'Duplicate registration',
+        archivedAt: expect.any(String),
+      }),
+    );
     expect(h.deleted).not.toHaveBeenCalled();
   });
 

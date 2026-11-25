@@ -2,7 +2,10 @@ import type { SampleRecord } from './models';
 
 /** A compact, scanner-readable accession label using Code 128. */
 export async function buildSampleLabelPdf(
-  sample: Pick<SampleRecord, 'accessionNo' | 'barcode' | 'patientId' | 'specimen' | 'container' | 'orderId'>,
+  sample: Pick<
+    SampleRecord,
+    'accessionNo' | 'barcode' | 'patientId' | 'specimen' | 'container' | 'orderId'
+  >,
   patientName: string,
   orderNo?: string,
 ): Promise<import('jspdf').jsPDF> {

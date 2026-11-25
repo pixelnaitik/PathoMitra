@@ -24,6 +24,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import { format, resolveConfig } from 'prettier';
 
 import {
   PRIVACY_CONTACT_EMAIL,
@@ -50,9 +51,7 @@ const escapeHtml = (value: string): string =>
   value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 const sections = PRIVACY_SECTIONS.map(section => {
-  const body = section.body
-    .map(paragraph => `      <p>${escapeHtml(paragraph)}</p>`)
-    .join('\n');
+  const body = section.body.map(paragraph => `      <p>${escapeHtml(paragraph)}</p>`).join('\n');
   return `    <section>\n      <h2>${escapeHtml(section.heading)}</h2>\n${body}\n    </section>`;
 }).join('\n');
 
@@ -140,9 +139,14 @@ function assertReadable(html: string): void {
 }
 
 assertReadable(html);
+const formatted = await format(html, {
+  ...(await resolveConfig(OUT_FILE)),
+  parser: 'html',
+});
+assertReadable(formatted);
 fs.mkdirSync(path.dirname(OUT_FILE), { recursive: true });
-fs.writeFileSync(OUT_FILE, html, 'utf8');
+fs.writeFileSync(OUT_FILE, formatted, 'utf8');
 console.log(
   `✓ wrote ${path.relative(process.cwd(), OUT_FILE)} ` +
-    `(${(Buffer.byteLength(html) / 1024).toFixed(1)} KB, no JavaScript, contact ${PRIVACY_CONTACT_EMAIL})`,
+    `(${(Buffer.byteLength(formatted) / 1024).toFixed(1)} KB, no JavaScript, contact ${PRIVACY_CONTACT_EMAIL})`,
 );

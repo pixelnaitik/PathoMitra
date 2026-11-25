@@ -33,7 +33,7 @@
  * that has recorded things since, and an older or partial file cannot silently
  * destroy newer data.
  */
-import type { EntityName } from '../data/types';
+import type { DataRepository, EntityName } from '../data/types';
 import { ENTITY_NAMES } from '../data/entities';
 import {
   deleteAppFile,
@@ -44,6 +44,8 @@ import {
   writeAppTextFile,
 } from './native-files';
 import { initDataStore } from '../data';
+import { generateSecret } from '../data/query';
+import { secureGet, secureSet } from './secure-store';
 import { withRecoveryWrites } from '../data/write-guard';
 import { loadPriceList } from './price-list';
 import { captureError } from './telemetry';
@@ -142,7 +144,10 @@ const BackupFileSchema = z.object({
   createdAt: z.string().min(1),
   counts: z.record(z.string(), z.number().int().min(0)),
   data: z.record(z.string(), z.array(BackupDocumentSchema).max(MAX_DOCUMENTS_PER_COLLECTION)),
-  checksum: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  checksum: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
 });
 export type BackupFile = z.infer<typeof BackupFileSchema>;
 type BackupDocuments = { id: string } & Record<string, unknown>;
@@ -167,15 +172,18 @@ export function backupFileName(createdAt: Date = new Date()): string {
  * name is stepped forward instead (`…-1830-2.json`), so every tap of the button
  * leaves a file behind.
  */
+const reservedBackupNames = new Set<string>();
+let backupQueue: Promise<unknown> = Promise.resolve();
+
 async function uniqueBackupFileName(createdAt: Date): Promise<string> {
   const stem = backupFileName(createdAt).replace(/\.json$/, '');
   // `listAppFiles` answers `[]` for a folder that was never created, so the
   // very first backup on a fresh install takes this path without special casing.
   const taken = new Set(await listAppFiles(BACKUP_DIR, '.json'));
-  if (!taken.has(`${stem}.json`)) return `${stem}.json`;
+  if (!taken.has(`${stem}.json`) && !reservedBackupNames.has(`${stem}.json`)) return `${stem}.json`;
   for (let suffix = 2; suffix <= 99; suffix++) {
     const candidate = `${stem}-${suffix}.json`;
-    if (!taken.has(candidate)) return candidate;
+    if (!taken.has(candidate) && !reservedBackupNames.has(candidate)) return candidate;
   }
   throw new Error(
     'Ninety-nine snapshots already exist for that minute. Wait a moment and take the backup again.',
@@ -202,13 +210,15 @@ export async function buildBackup(): Promise<BackupFile> {
   const repo = await initDataStore();
   const data: Record<string, BackupDocuments[]> = {};
   const counts: BackupCounts = {};
-  await withRecoveryWrites(() => repo.transaction(async tx => {
-    for (const collection of BACKUP_COLLECTIONS) {
-      const docs = await tx.list(collection);
-      data[collection] = docs.map(doc => toBackupDoc(doc.id, doc.data()));
-      counts[collection] = docs.length;
-    }
-  }));
+  await withRecoveryWrites(() =>
+    repo.transaction(async tx => {
+      for (const collection of BACKUP_COLLECTIONS) {
+        const docs = await tx.list(collection);
+        data[collection] = docs.map(doc => toBackupDoc(doc.id, doc.data()));
+        counts[collection] = docs.length;
+      }
+    }),
+  );
   const backup = {
     app: 'PathoMitra' as const,
     kind: 'backup' as const,
@@ -228,13 +238,11 @@ export async function buildBackup(): Promise<BackupFile> {
  *   a lab that needs to open the file on another system without the app.
  * @returns where it went, plus the file name for {@link shareBackup}.
  */
-export async function createBackup(
-  options: { passphrase?: string } = {},
-): Promise<{ summary: BackupSummary; fileName: string }> {
-  await withRecoveryWrites(() => flushPendingSettings());
-  const backup = await buildBackup();
-  const fileName = await uniqueBackupFileName(new Date(backup.createdAt));
-  const passphrase = options.passphrase ?? '';
+async function writeBackupFile(
+  backup: BackupFile,
+  passphrase: string,
+  fileName: string,
+): Promise<void> {
   const payload = passphrase
     ? await sealPayload(JSON.stringify(backup), passphrase)
     : JSON.stringify(backup, null, 2);
@@ -242,18 +250,47 @@ export async function createBackup(
   const temporaryPath = `${BACKUP_DIR}/${fileName.replace(/\.json$/, '.tmp.json')}`;
   try {
     await writeAppTextFile(temporaryPath, payload);
-    if (await readAppTextFile(temporaryPath) !== payload) throw new Error('temporary file verification failed');
+    if ((await readAppTextFile(temporaryPath)) !== payload)
+      throw new Error('temporary file verification failed');
     await renameAppFile(temporaryPath, relativePath);
-    if (await readAppTextFile(relativePath) !== payload) throw new Error('final file verification failed');
+    if ((await readAppTextFile(relativePath)) !== payload)
+      throw new Error('final file verification failed');
   } catch (error) {
     await deleteAppFile(temporaryPath).catch(() => {});
     await deleteAppFile(relativePath).catch(() => {});
-    throw new Error('Backup verification failed: the saved file does not match the snapshot.', { cause: error });
+    throw new Error('Backup verification failed: the saved file does not match the snapshot.', {
+      cause: error,
+    });
   }
-  return {
-    summary: { ...summarise(backup, fileName), ...(passphrase ? { encrypted: true } : {}) },
-    fileName,
-  };
+}
+
+export async function createBackup(
+  options: { passphrase?: string } = {},
+): Promise<{ summary: BackupSummary; fileName: string }> {
+  const run = backupQueue.then(() => createBackupNow(options));
+  backupQueue = run.catch(() => undefined);
+  return run;
+}
+
+async function createBackupNow(
+  options: { passphrase?: string } = {},
+): Promise<{ summary: BackupSummary; fileName: string }> {
+  await withRecoveryWrites(() => flushPendingSettings());
+  const backup = await buildBackup();
+  const fileName = await uniqueBackupFileName(new Date(backup.createdAt));
+  reservedBackupNames.add(fileName);
+  try {
+    await writeBackupFile(backup, options.passphrase ?? '', fileName);
+    return {
+      summary: {
+        ...summarise(backup, fileName),
+        ...(options.passphrase ? { encrypted: true } : {}),
+      },
+      fileName,
+    };
+  } finally {
+    reservedBackupNames.delete(fileName);
+  }
 }
 
 /** Hand a stored snapshot to the system share sheet, so a copy can leave. */
@@ -294,6 +331,10 @@ export async function listBackups(): Promise<BackupSummary[]> {
   }));
 }
 
+export async function readBackupPayload(fileName: string): Promise<string> {
+  return readAppTextFile(await backupPathFor(fileName));
+}
+
 async function readBackup(fileName: string): Promise<BackupSummary> {
   const raw = await readAppTextFile(await backupPathFor(fileName));
   if (isSealedPayload(raw)) {
@@ -325,7 +366,8 @@ async function openBackup(raw: string, passphrase?: string): Promise<BackupFile>
 
 /** Validate a snapshot before a single row is written. */
 export async function parseBackup(raw: string): Promise<BackupFile> {
-  if (new TextEncoder().encode(raw).byteLength > MAX_BACKUP_BYTES) throw new Error('Backup file exceeds the 64 MB safety limit.');
+  if (new TextEncoder().encode(raw).byteLength > MAX_BACKUP_BYTES)
+    throw new Error('Backup file exceeds the 64 MB safety limit.');
   let json: unknown;
   try {
     json = JSON.parse(raw);
@@ -344,19 +386,22 @@ export async function parseBackup(raw: string): Promise<BackupFile> {
   }
   const backup = result.data;
   const total = Object.values(backup.data).reduce((sum, docs) => sum + docs.length, 0);
-  if (total > MAX_DOCUMENTS_PER_COLLECTION * BACKUP_COLLECTIONS.length) throw new Error('Backup contains too many documents.');
+  if (total > MAX_DOCUMENTS_PER_COLLECTION * BACKUP_COLLECTIONS.length)
+    throw new Error('Backup contains too many documents.');
   if (backup.checksum) {
     const { checksum, ...unsigned } = backup;
     const expected = await checksumOf(unsigned);
-    if (checksum !== expected) throw new Error('Backup checksum mismatch: the snapshot was modified or corrupted.');
+    if (checksum !== expected)
+      throw new Error('Backup checksum mismatch: the snapshot was modified or corrupted.');
   }
   return backup;
 }
 
-
 export interface RestoreResult extends BackupSummary {
   /** Collections in the file that this build does not recognise. */
   skipped: string[];
+  /** Durable encrypted snapshot written before the restore began. */
+  safetySnapshot?: string;
 }
 
 /**
@@ -387,32 +432,56 @@ function planRestore(backup: BackupFile): { steps: RestorePlanStep[]; skipped: s
   const skipped: string[] = [];
   const steps: RestorePlanStep[] = [];
   for (const [collection, docs] of Object.entries(backup.data)) {
-    if (!known.has(collection)) { skipped.push(collection); continue; }
+    if (!known.has(collection)) {
+      skipped.push(collection);
+      continue;
+    }
     if (backup.counts[collection] !== docs.length) {
-      throw new Error(`Restore aborted before any change: "${collection}" count does not match its documents.`);
+      throw new Error(
+        `Restore aborted before any change: "${collection}" count does not match its documents.`,
+      );
     }
     const ids = new Set<string>();
     for (const doc of docs) {
       if (typeof doc.id !== 'string' || doc.id.length === 0 || ids.has(doc.id)) {
-        throw new Error(`Restore aborted before any change: "${collection}" has a missing or duplicate id.`);
+        throw new Error(
+          `Restore aborted before any change: "${collection}" has a missing or duplicate id.`,
+        );
       }
       ids.add(doc.id);
       const validator = validators[collection as EntityName];
       const parsed = validator?.safeParse(doc);
       if (parsed && !parsed.success) {
-        throw new Error(`Restore aborted before any change: invalid ${collection}/${doc.id}: ${parsed.error.issues[0]?.message ?? 'schema mismatch'}.`);
+        throw new Error(
+          `Restore aborted before any change: invalid ${collection}/${doc.id}: ${parsed.error.issues[0]?.message ?? 'schema mismatch'}.`,
+        );
       }
-      if (collection === 'patients' && !String(doc.name ?? '').trim()) throw new Error(`Restore aborted before any change: patient ${doc.id} has no name.`);
-      if (collection === 'reports' && (!['draft', 'final'].includes(String(doc.status)) || !String(doc.patientId ?? '').trim())) throw new Error(`Restore aborted before any change: report ${doc.id} has no valid patient or status.`);
+      if (collection === 'patients' && !String(doc.name ?? '').trim())
+        throw new Error(`Restore aborted before any change: patient ${doc.id} has no name.`);
+      if (
+        collection === 'reports' &&
+        (!['draft', 'final'].includes(String(doc.status)) || !String(doc.patientId ?? '').trim())
+      )
+        throw new Error(
+          `Restore aborted before any change: report ${doc.id} has no valid patient or status.`,
+        );
     }
     steps.push({ entity: collection as EntityName, docs });
   }
-  const idsByEntity = new Map(steps.map(step => [step.entity, new Set(step.docs.map(doc => doc.id))]));
+  const idsByEntity = new Map(
+    steps.map(step => [step.entity, new Set(step.docs.map(doc => doc.id))]),
+  );
   const references: Array<[EntityName, string, EntityName]> = [
-    ['reports', 'patientId', 'patients'], ['reports', 'orderId', 'orders'],
-    ['orders', 'patientId', 'patients'], ['samples', 'patientId', 'patients'], ['samples', 'orderId', 'orders'],
-    ['invoices', 'patientId', 'patients'], ['invoices', 'orderId', 'orders'], ['invoices', 'reportId', 'reports'],
-    ['payments', 'invoiceId', 'invoices'], ['referralPayouts', 'doctorId', 'doctors'],
+    ['reports', 'patientId', 'patients'],
+    ['reports', 'orderId', 'orders'],
+    ['orders', 'patientId', 'patients'],
+    ['samples', 'patientId', 'patients'],
+    ['samples', 'orderId', 'orders'],
+    ['invoices', 'patientId', 'patients'],
+    ['invoices', 'orderId', 'orders'],
+    ['invoices', 'reportId', 'reports'],
+    ['payments', 'invoiceId', 'invoices'],
+    ['referralPayouts', 'doctorId', 'doctors'],
   ];
   for (const step of steps) {
     for (const doc of step.docs) {
@@ -420,7 +489,10 @@ function planRestore(backup: BackupFile): { steps: RestorePlanStep[]; skipped: s
         if (from !== step.entity) continue;
         const target = String(doc[field] ?? '');
         const targets = idsByEntity.get(to);
-        if (target && targets && !targets.has(target)) throw new Error(`Restore aborted before any change: ${step.entity}/${doc.id} references missing ${to}/${target}.`);
+        if (target && (!targets || !targets.has(target)))
+          throw new Error(
+            `Restore aborted before any change: ${step.entity}/${doc.id} references missing ${to}/${target}${targets ? '' : ' collection'}.`,
+          );
       }
     }
   }
@@ -443,7 +515,9 @@ export interface RestoreInspection {
 
 export class RestoreConflictError extends Error {
   constructor(public readonly conflicts: RestoreConflict[]) {
-    super(`${conflicts.length} newer or undated record${conflicts.length === 1 ? '' : 's'} would be overwritten. Review the conflicts and retry with explicit overwrite approval.`);
+    super(
+      `${conflicts.length} newer or undated record${conflicts.length === 1 ? '' : 's'} would be overwritten. Review the conflicts and retry with explicit overwrite approval.`,
+    );
     this.name = 'RestoreConflictError';
   }
 }
@@ -462,11 +536,17 @@ export async function inspectBackup(backup: BackupFile): Promise<RestoreInspecti
     const current = new Map((await repo.list(step.entity)).map(doc => [doc.id, doc.data()]));
     for (const doc of step.docs) {
       const existing = current.get(doc.id);
-      if (!existing || JSON.stringify({ id: doc.id, ...existing }) === JSON.stringify(doc)) continue;
+      if (!existing || JSON.stringify({ id: doc.id, ...existing }) === JSON.stringify(doc))
+        continue;
       const currentTime = recordTime(existing as BackupDocuments);
       const backupTime = recordTime(doc);
       if (currentTime > backupTime || currentTime === 0 || backupTime === 0) {
-        conflicts.push({ entity: step.entity, id: doc.id, currentUpdatedAt: String(existing.updatedAt ?? existing.createdAt ?? ''), backupUpdatedAt: String(doc.updatedAt ?? doc.createdAt ?? '') });
+        conflicts.push({
+          entity: step.entity,
+          id: doc.id,
+          currentUpdatedAt: String(existing.updatedAt ?? existing.createdAt ?? ''),
+          backupUpdatedAt: String(doc.updatedAt ?? doc.createdAt ?? ''),
+        });
       }
     }
   }
@@ -495,48 +575,83 @@ export async function inspectBackup(backup: BackupFile): Promise<RestoreInspecti
  * than duplicating. The success count is reported only for a completed
  * transaction; a mid-write failure throws instead of returning a partial count.
  */
+const SAFETY_KEY = 'restore-safety-key-v1';
+const SAFETY_FILE = 'restore-safety-file-v1';
+
+async function createRestoreSafetySnapshot(): Promise<string> {
+  const backup = await buildBackup();
+  const passphrase = generateSecret(32);
+  const fileName = await uniqueBackupFileName(new Date(backup.createdAt));
+  reservedBackupNames.add(fileName);
+  try {
+    await writeBackupFile(backup, passphrase, fileName);
+    await secureSet(SAFETY_KEY, passphrase);
+    await secureSet(SAFETY_FILE, fileName);
+    return fileName;
+  } finally {
+    reservedBackupNames.delete(fileName);
+  }
+}
+
+async function applyRestore(
+  repo: DataRepository,
+  backup: BackupFile,
+): Promise<{ counts: BackupCounts; restored: number }> {
+  const { steps } = planRestore(backup);
+  const counts: BackupCounts = {};
+  let restored = 0;
+  await withRecoveryWrites(() =>
+    repo.transaction(async tx => {
+      for (const { entity, docs } of steps) {
+        for (const doc of docs) {
+          const { id, ...value } = doc;
+          await tx.set(entity, id, value);
+          restored += 1;
+        }
+        counts[entity] = docs.length;
+      }
+    }),
+  );
+  return { counts, restored };
+}
+
 export async function restoreBackup(
   backup: BackupFile,
   options: { overwriteConflicts?: boolean } = {},
 ): Promise<RestoreResult> {
   const repo = await initDataStore();
   const inspection = await inspectBackup(backup);
-  if (inspection.conflicts.length && !options.overwriteConflicts) throw new RestoreConflictError(inspection.conflicts);
-  const { steps, skipped } = planRestore(backup);
-  const safetySnapshot = await buildBackup();
-
-  const counts: BackupCounts = {};
-  let restored = 0;
-
+  if (inspection.conflicts.length && !options.overwriteConflicts)
+    throw new RestoreConflictError(inspection.conflicts);
+  const { skipped } = planRestore(backup);
+  const safetySnapshot = await createRestoreSafetySnapshot();
   try {
-    await withRecoveryWrites(() => repo.transaction(async tx => {
-    for (const { entity, docs } of steps) {
-      for (const doc of docs) {
-        const { id, ...value } = doc;
-        await tx.set(entity, id, value);
-        restored += 1;
-      }
-      counts[entity] = docs.length;
-    }
-    }));
+    const { counts, restored } = await applyRestore(repo, backup);
+    await loadPriceList({ force: true });
+    return { createdAt: backup.createdAt, counts, totalRecords: restored, skipped, safetySnapshot };
   } catch (error) {
-    await withRecoveryWrites(() => repo.transaction(async tx => {
-      for (const step of planRestore(safetySnapshot).steps) {
-        for (const doc of step.docs) {
-          const { id, ...value } = doc;
-          await tx.set(step.entity, id, value);
-        }
+    try {
+      const fileName = await secureGet<string>(SAFETY_FILE);
+      const passphrase = await secureGet<string>(SAFETY_KEY);
+      if (!fileName || !passphrase) {
+        throw new Error(
+          `Restore failed and automatic rollback could not be verified because safety snapshot metadata is missing. Use the pre-restore snapshot ${safetySnapshot}.`,
+          { cause: error },
+        );
       }
-    })).catch(() => {});
-    throw error;
+      const raw = await readAppTextFile(await backupPathFor(fileName));
+      await applyRestore(repo, await openBackup(raw, passphrase));
+    } catch (rollbackError) {
+      throw new Error(
+        `Restore failed and automatic rollback could not be verified. Use the pre-restore snapshot ${safetySnapshot}.`,
+        { cause: rollbackError },
+      );
+    }
+    throw new Error(
+      `Restore failed and the pre-restore snapshot was reapplied: ${safetySnapshot}.`,
+      { cause: error },
+    );
   }
-
-  // Anything cached from the store has to be re-read: `meta/price-list` is in
-  // the snapshot, so a restored lab would otherwise keep billing from the prices
-  // it had before the restore — silently the wrong tariff, with no error.
-  await loadPriceList({ force: true });
-
-  return { createdAt: backup.createdAt, counts, totalRecords: restored, skipped };
 }
 
 /** Restore the named snapshot from the device's backup folder. */
@@ -549,8 +664,13 @@ export async function restoreBackupByName(
   return restoreBackup(await openBackup(raw, passphrase), options);
 }
 
-export async function inspectBackupByName(fileName: string, passphrase?: string): Promise<RestoreInspection> {
-  return inspectBackup(await openBackup(await readAppTextFile(await backupPathFor(fileName)), passphrase));
+export async function inspectBackupByName(
+  fileName: string,
+  passphrase?: string,
+): Promise<RestoreInspection> {
+  return inspectBackup(
+    await openBackup(await readAppTextFile(await backupPathFor(fileName)), passphrase),
+  );
 }
 
 /** Restore from text the user supplied through a browser file picker. */
@@ -562,7 +682,10 @@ export async function restoreBackupFromText(
   return restoreBackup(await openBackup(raw, passphrase), options);
 }
 
-export async function inspectBackupFromText(raw: string, passphrase?: string): Promise<RestoreInspection> {
+export async function inspectBackupFromText(
+  raw: string,
+  passphrase?: string,
+): Promise<RestoreInspection> {
   return inspectBackup(await openBackup(raw, passphrase));
 }
 

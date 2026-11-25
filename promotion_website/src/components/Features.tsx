@@ -35,7 +35,11 @@ function BarsMock({ bar, className }: { bar: string; className?: string }) {
       {bars.map((h, i) => (
         <motion.span
           key={i}
-          className={cn('flex-1 origin-bottom rounded-t-md', bar, i === 5 ? 'opacity-100' : 'opacity-50')}
+          className={cn(
+            'flex-1 origin-bottom rounded-t-md',
+            bar,
+            i === 5 ? 'opacity-100' : 'opacity-50',
+          )}
           style={{ height: `${h}%` }}
           initial={{ scaleY: 0 }}
           whileInView={{ scaleY: 1 }}
@@ -221,8 +225,8 @@ export default function Features() {
               </h3>
               <p className="mt-2 text-[15px] leading-relaxed text-on-surface-variant">
                 From test-wise charges to the final invoice — item bills per patient, package and
-                panel pricing, part-payments and dues tracked at the counter, and doctor-wise
-                totals for month-end. Lists export to CSV without leaving the device.
+                panel pricing, part-payments and dues tracked at the counter, and doctor-wise totals
+                for month-end. Lists export to CSV without leaving the device.
               </p>
             </Card>
           </Reveal>
@@ -235,8 +239,8 @@ export default function Features() {
                 Sealed backups
               </h3>
               <p className="mt-2 text-[15px] leading-relaxed text-on-surface-variant">
-                Database snapshots are sealed with a passphrase you choose (AES-256-GCM) before
-                they leave the device — and everything is erasable in one action.
+                Database snapshots are sealed with a passphrase you choose (AES-256-GCM) before they
+                leave the device — and everything is erasable in one action.
               </p>
             </Card>
           </Reveal>

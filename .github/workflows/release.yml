@@ -37,62 +37,66 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Configure public release identity
+        env:
+          VITE_SUPPORT_EMAIL: ${{ vars.VITE_SUPPORT_EMAIL }}
+          VITE_PRIVACY_URL: ${{ vars.VITE_PRIVACY_URL }}
+        run: |
+          if [ -z "$VITE_SUPPORT_EMAIL" ] || [ -z "$VITE_PRIVACY_URL" ]; then
+            echo '::error::VITE_SUPPORT_EMAIL and VITE_PRIVACY_URL repository variables are required.'
+            exit 1
+          fi
+          printf 'VITE_SUPPORT_EMAIL=%s\nVITE_PRIVACY_URL=%s\n' "$VITE_SUPPORT_EMAIL" "$VITE_PRIVACY_URL" > .env
+
       - name: Build native bundle and sync Android
         # Never package a web-target bundle into the clinical app.
         run: npm run sync:android
 
       - name: Decode release keystore
         # The keystore is stored base64-encoded in a secret so no binary or
-        # password is committed. Absent secrets => unsigned AAB (documented,
-        # still usable with Play App Signing which re-signs on upload).
+        # password is committed. Release builds fail closed when any signing
+        # input is absent; unsigned artifacts are test-only.
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_KEY_ALIAS: ${{ secrets.KEYSTORE_KEY_ALIAS }}
+          KEYSTORE_KEY_PASSWORD: ${{ secrets.KEYSTORE_KEY_PASSWORD }}
+          KEYSTORE_STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
         run: |
-          if [ -z "$KEYSTORE_BASE64" ]; then
-            echo "::error::KEYSTORE_BASE64 is required for a signed release."
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_KEY_ALIAS" ] || [ -z "$KEYSTORE_KEY_PASSWORD" ] || [ -z "$KEYSTORE_STORE_PASSWORD" ]; then
+            echo "::error::All KEYSTORE_* release signing secrets are required."
             exit 1
           fi
-          echo "$KEYSTORE_BASE64" | base64 --decode > "$GITHUB_WORKSPACE/upload-keystore.jks"
-          echo "KEYSTORE_FILE=$GITHUB_WORKSPACE/upload-keystore.jks" >> "$GITHUB_ENV"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release_keystore.jks"
+          echo "KEYSTORE_FILE=$RUNNER_TEMP/release_keystore.jks" >> "$GITHUB_ENV"
 
-      - name: Bundle release (AAB)
+      - name: Bundle signed release (AAB and APK)
         env:
           KEYSTORE_KEY_ALIAS: ${{ secrets.KEYSTORE_KEY_ALIAS }}
           KEYSTORE_KEY_PASSWORD: ${{ secrets.KEYSTORE_KEY_PASSWORD }}
           KEYSTORE_STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
         working-directory: android
-        run: ./gradlew bundleRelease --stacktrace && npm run check:android --prefix ..
+        run: ./gradlew bundleRelease assembleRelease --stacktrace && npm run check:android --prefix ..
 
-      - name: Verify 16 KB native page alignment
-        # Google Play rejects updates targeting API 35+ whose native libraries
-        # are not 16 KB page-aligned. AAB stores the .so compressed, so zip
-        # alignment is irrelevant — the check that matters is the ELF LOAD
-        # segment p_align >= 0x4000. Fail loudly if any arm64 lib is under-aligned.
+      - name: Verify Android signatures and 16 KiB alignment
+        env:
+          PM_ANDROID_SIGNATURE_RESULTS: release-assets/android-signature.json
+        run: npm run check:android:release
+
+      - name: Generate provenance manifest
+        env:
+          PM_REQUIRE_CLEAN_MANIFEST: '1'
+          PM_SIGNATURE_RESULTS: release-assets/android-signature.json
         run: |
-          set -euo pipefail
-          AAB="android/app/build/outputs/bundle/release/app-release.aab"
-          test -f "$AAB"
-          TMP="$(mktemp -d)"
-          unzip -o -q "$AAB" -d "$TMP" 'base/lib/arm64-v8a/*' || true
-          status=0
-          while IFS= read -r -d '' so; do
-            align=$(readelf -lW "$so" 2>/dev/null | awk '/LOAD/{print $NF; exit}')
-            echo "  $so -> LOAD align $align"
-            case "$align" in
-              0x4000|0x8000|0x10000|0x20000) : ;;  # >= 16 KB, ok
-              *) echo "::warning::${so} is not 16 KB aligned ($align)"; status=1 ;;
-            esac
-          done < <(find "$TMP" -name '*.so' -print0)
-          if [ "$status" -ne 0 ]; then
-            echo "::error::One or more native libraries are not 16 KB page-aligned. Upgrade the offending plugin (e.g. @capacitor-community/sqlite) to a 16 KB build before releasing."
-            exit "$status"
-          fi
+          mkdir -p release-assets
+          cp android/app/build/outputs/bundle/release/app-release.aab release-assets/app-release.aab
+          cp android/app/build/outputs/apk/release/app-release-*.apk release-assets/
+          npm run release:manifest -- release-assets/PathoMitra-android-manifest.json release-assets/app-release.aab release-assets/app-release-*.apk release-assets/android-signature.json
 
       - name: Upload AAB artifact
         uses: actions/upload-artifact@v4
         with:
           name: pathomitra-aab
-          path: android/app/build/outputs/bundle/release/app-release.aab
+          path: release-assets/*
           if-no-files-found: error
           retention-days: 30
 
@@ -120,4 +124,8 @@ jobs:
           # Body is auto-pulled from CHANGELOG.md (the section for this tag).
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
-          files: release-assets/app-release.aab
+          files: |
+            release-assets/app-release.aab
+            release-assets/app-release-*.apk
+            release-assets/PathoMitra-android-manifest.json
+            release-assets/android-signature.json

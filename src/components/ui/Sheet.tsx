@@ -11,14 +11,7 @@
  * Replaces the hand-rolled `fixed inset-0 flex items-end sm:items-center`
  * markup that every dashboard page used to duplicate.
  */
-import {
-  useCallback,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-  type ReactNode,
-} from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import { X } from 'lucide-react';

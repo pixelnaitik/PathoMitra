@@ -21,12 +21,17 @@ export interface RecordReferralPayoutInput {
   note?: string;
 }
 
-export async function recordReferralPayout(input: RecordReferralPayoutInput): Promise<ReferralPayoutRecord> {
+export async function recordReferralPayout(
+  input: RecordReferralPayoutInput,
+): Promise<ReferralPayoutRecord> {
   if (getBillingPrefs().referralCompliance?.mode !== 'payout-enabled') {
-    throw new Error('Referral payouts are disabled. Record the owner/legal compliance acknowledgement in Settings → Manage Tests first.');
+    throw new Error(
+      'Referral payouts are disabled. Record the owner/legal compliance acknowledgement in Settings → Manage Tests first.',
+    );
   }
   const amount = roundMoney(input.amount);
-  if (!Number.isFinite(input.amount) || amount <= 0) throw new Error('Payout amount must be positive.');
+  if (!Number.isFinite(input.amount) || amount <= 0)
+    throw new Error('Payout amount must be positive.');
   if (!input.actor.trim()) throw new Error('A payout requires an operator identity.');
   const repo = getRepository();
   const doctor = await repo.get('doctors', input.doctor.id);
@@ -46,14 +51,22 @@ export async function recordReferralPayout(input: RecordReferralPayoutInput): Pr
   });
   await repo.transaction(async tx => {
     await tx.set('referralPayouts', id, value);
-    await tx.add('auditEvents', AuditEventSchema.parse({
-      action: 'referral.payout_recorded',
-      entity: 'referralPayouts',
-      entityId: id,
-      actor: input.actor.trim(),
-      at: value.at,
-      details: { doctorId: value.doctorId, type: value.type, amount: value.amount, mode: value.mode },
-    }));
+    await tx.add(
+      'auditEvents',
+      AuditEventSchema.parse({
+        action: 'referral.payout_recorded',
+        entity: 'referralPayouts',
+        entityId: id,
+        actor: input.actor.trim(),
+        at: value.at,
+        details: {
+          doctorId: value.doctorId,
+          type: value.type,
+          amount: value.amount,
+          mode: value.mode,
+        },
+      }),
+    );
   });
   return { ...value, id };
 }
@@ -72,9 +85,11 @@ export function referralLedgerBalance(
   earned: number,
   entries: readonly Pick<ReferralPayoutRecord, 'type' | 'amount'>[],
 ): { paid: number; balance: number } {
-  const paid = roundMoney(entries.reduce((sum, entry) => {
-    if (entry.type === 'credit') return sum - entry.amount;
-    return sum + entry.amount;
-  }, 0));
+  const paid = roundMoney(
+    entries.reduce((sum, entry) => {
+      if (entry.type === 'credit') return sum - entry.amount;
+      return sum + entry.amount;
+    }, 0),
+  );
   return { paid, balance: roundMoney(earned - paid) };
 }

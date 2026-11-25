@@ -21,7 +21,12 @@ const PAYOUT_PREFS = {
   defaultReferralPercent: 5,
   currency: '₹',
   roundToRupee: true,
-  referralCompliance: { mode: 'payout-enabled' as const, acknowledgedBy: 'Owner', acknowledgedAt: '2026-11-24T00:00:00.000Z', policyVersion: 'test' },
+  referralCompliance: {
+    mode: 'payout-enabled' as const,
+    acknowledgedBy: 'Owner',
+    acknowledgedAt: '2026-11-24T00:00:00.000Z',
+    policyVersion: 'test',
+  },
 };
 
 const DOCTORS: DoctorRecord[] = [
@@ -131,7 +136,10 @@ describe('resolveReferral', () => {
       { ...DOCTORS[0], id: 'd1', referralPercent: 50 },
       { ...DOCTORS[0], id: 'd2', referralPercent: 20 },
     ];
-    expect(resolveReferral('DR N KUMAR', sameName, PAYOUT_PREFS, 'd2')).toMatchObject({ doctorId: 'd2', percent: 20 });
+    expect(resolveReferral('DR N KUMAR', sameName, PAYOUT_PREFS, 'd2')).toMatchObject({
+      doctorId: 'd2',
+      percent: 20,
+    });
   });
 
   it('returns nothing when no referrer was recorded', () => {
@@ -184,13 +192,27 @@ describe('buildDoctorStatements', () => {
     expect(statements[0].totals.commission).toBe(525); // 175 × 3
   });
 
+  it('labels mixed historical rates instead of presenting the current rate as universal', () => {
+    const invoices = [
+      withReferral(bill({ seq: '0001' }), 10),
+      withReferral(bill({ seq: '0002', patientId: 'p2' }), 20),
+    ];
+    const [statement] = buildDoctorStatements(invoices, [], { month: '2026-10', doctors: DOCTORS });
+    expect(statement.rateLabel).toBe('Mixed (10–20%)');
+    expect(statement.lines.map(line => line.percent)).toEqual([10, 20]);
+  });
+
   it('keeps same-name doctors separate when stable ids are present', () => {
     const first = withReferral(bill({ seq: '0001' }), 50);
     const second = withReferral(bill({ seq: '0002', patientId: 'p2' }), 20);
-    const statements = buildDoctorStatements([
-      { ...first, referral: { ...first.referral!, doctorId: 'd1' } },
-      { ...second, referral: { ...second.referral!, doctorId: 'd2' } },
-    ], [], { month: '2026-10', doctors: DOCTORS });
+    const statements = buildDoctorStatements(
+      [
+        { ...first, referral: { ...first.referral!, doctorId: 'd1' } },
+        { ...second, referral: { ...second.referral!, doctorId: 'd2' } },
+      ],
+      [],
+      { month: '2026-10', doctors: DOCTORS },
+    );
     expect(statements).toHaveLength(2);
     expect(statements.map(statement => statement.doctorId).sort()).toEqual(['d1', 'd2']);
   });

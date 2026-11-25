@@ -37,11 +37,9 @@ const EXPECTED_PACKAGE = 'com.pathomitra.app';
  * here with the plugin that pulls them in rather than left for a `cap sync` to
  * introduce silently.
  *
- * `RECEIVE_BOOT_COMPLETED` used to be on this list. It is not anymore: the app
- * never schedules a notification for a future moment (`schedule()` is called with
- * no `at`), so the plugin's restore receiver had nothing to re-arm, and a
- * boot-time receiver is precisely what Play's "undesirable startup" review looks
- * for. `AndroidManifest.xml` now removes both the permission and the receiver.
+ * `RECEIVE_BOOT_COMPLETED` is allowed for Capacitor's notification restore
+ * receiver. It restores already-scheduled inexact local reminders after reboot;
+ * it does not derive alerts, access the network, or start the clinical UI.
  */
 
 /**
@@ -64,6 +62,9 @@ const ALLOWED_PERMISSIONS = new Set([
   'android.permission.POST_NOTIFICATIONS',
   // Keeps a banner on time while the app is closed.
   'android.permission.WAKE_LOCK',
+  // Re-arms already-scheduled local reminders and the local backup worker after
+  // reboot. It does not start the clinical UI or access a network.
+  'android.permission.RECEIVE_BOOT_COMPLETED',
 ]);
 
 /** Permissions that would break the offline promise or trip Play's scans. */
@@ -95,11 +96,6 @@ const FORBIDDEN_PERMISSIONS = [
   // tools:node="remove", so a re-appearing one is a regression, not a maybe.
   'android.permission.SCHEDULE_EXACT_ALARM',
   'android.permission.USE_EXACT_ALARM',
-  // Stripped in AndroidManifest.xml, receiver component and permission both. A
-  // boot receiver that re-arms nothing is an "undesirable startup" flag, and this
-  // app derives its alerts from the records on every launch instead of from a
-  // queue that would need surviving a reboot.
-  'android.permission.RECEIVE_BOOT_COMPLETED',
   'android.permission.SYSTEM_ALERT_WINDOW',
   'android.permission.REQUEST_INSTALL_PACKAGES',
 ];
@@ -253,14 +249,23 @@ if (/<category\s+android:name="android\.intent\.category\.BROWSABLE"/.test(xml))
 }
 
 // ---- startup surface -------------------------------------------------------
-// A BOOT_COMPLETED filter is the classic "app starts by itself and won't stop"
-// complaint. The app's manifest removes the plugin's restore receiver; this
-// asserts it actually stayed removed after the merge.
-if (/android\.intent\.action\.(?:LOCKED_)?BOOT_COMPLETED|QUICKBOOT_POWERON/.test(xml)) {
-  problems.push(
-    'a boot-completed intent filter is back in the merged manifest — the app starts itself after a reboot. ' +
-      'AndroidManifest.xml removes LocalNotificationRestoreReceiver with tools:node="remove"; something re-added it.',
-  );
+// Capacitor's restore receiver is the only accepted boot component. It must be
+// non-exported and exist solely to re-arm notifications that were already scheduled.
+const restoreReceiver = xml.match(/<receiver[^>]*LocalNotificationRestoreReceiver[^>]*>/)?.[0];
+if (restoreReceiver && !/android:exported="false"/.test(restoreReceiver)) {
+  problems.push('LocalNotificationRestoreReceiver must be non-exported.');
+}
+const ALLOWED_BOOT_COMPONENTS = new Set([
+  'com.capacitorjs.plugins.localnotifications.LocalNotificationRestoreReceiver',
+  'androidx.work.impl.background.systemalarm.RescheduleReceiver',
+]);
+const bootComponents = [...xml.matchAll(/<(receiver|service)\b[\s\S]*?<\/\1>/g)].filter(match => {
+  if (!/android\.intent\.action\.(?:LOCKED_)?BOOT_COMPLETED|QUICKBOOT_POWERON/.test(match[0]))
+    return false;
+  return ![...ALLOWED_BOOT_COMPONENTS].some(name => match[0].includes(name));
+});
+if (bootComponents.length > 0) {
+  problems.push('an unexpected boot-completed component is present in the merged manifest.');
 }
 
 // ---- Cordova leftover -----------------------------------------------------

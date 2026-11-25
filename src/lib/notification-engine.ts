@@ -316,7 +316,12 @@ export function buildNotifications(source: NotificationSource): NotificationItem
       const outstanding = delivered ? ordered.filter(name => !delivered.has(name)) : ordered;
       if (outstanding.length === 0) continue;
       const collected = (source.samples ?? [])
-        .filter(sample => sample.orderId === order.id && sample.collectedAt && !['rejected', 'lost'].includes(sample.status))
+        .filter(
+          sample =>
+            sample.orderId === order.id &&
+            sample.collectedAt &&
+            !['rejected', 'lost'].includes(sample.status),
+        )
         .map(sample => sample.collectedAt!)
         .sort();
       const milestone = collected[0] ?? order.createdAt;

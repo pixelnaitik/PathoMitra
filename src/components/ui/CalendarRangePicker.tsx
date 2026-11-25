@@ -9,7 +9,13 @@
  * Values are `YYYY-MM-DD` strings — the same shape `createdAt` is stored in, so
  * a page can hand them straight to a Firestore range filter.
  */
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import { Calendar, ChevronLeft, ChevronRight, X } from 'lucide-react';
@@ -128,12 +134,14 @@ export function CalendarRangePicker({
       if (!rect) return;
       const phone = window.innerWidth < 640;
       const width = Math.min(phone ? rect.width : 320, window.innerWidth - 16);
-      const left = Math.max(8, Math.min(phone ? rect.left : rect.right - width, window.innerWidth - width - 8));
+      const left = Math.max(
+        8,
+        Math.min(phone ? rect.left : rect.right - width, window.innerWidth - width - 8),
+      );
       const maxHeight = Math.min(416, window.innerHeight * 0.7);
       const below = rect.bottom + 8;
-      const top = below + maxHeight <= window.innerHeight - 8
-        ? below
-        : Math.max(8, rect.top - maxHeight - 8);
+      const top =
+        below + maxHeight <= window.innerHeight - 8 ? below : Math.max(8, rect.top - maxHeight - 8);
       setPosition({ top, left, width, maxHeight });
     };
     updatePosition();
@@ -172,18 +180,7 @@ export function CalendarRangePicker({
           <Calendar className="h-5 w-5 shrink-0 text-primary" aria-hidden="true" />
           <span className="truncate text-sm font-bold text-on-surface-variant">{summary}</span>
         </span>
-        {fromDate || toDate ? (
-          <X
-            role="button"
-            tabIndex={-1}
-            aria-hidden="true"
-            onClick={event => {
-              event.stopPropagation();
-              onChange({ fromDate: '', toDate: '' });
-            }}
-            className="h-4 w-4 shrink-0 cursor-pointer text-on-surface-variant hover:text-error"
-          />
-        ) : (
+        {!(fromDate || toDate) && (
           <ChevronRight
             aria-hidden="true"
             className={cn(
@@ -193,161 +190,180 @@ export function CalendarRangePicker({
           />
         )}
       </button>
+      {(fromDate || toDate) && (
+        <button
+          type="button"
+          aria-label="Clear date range"
+          onClick={() => onChange({ fromDate: '', toDate: '' })}
+          className="absolute right-3 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full text-on-surface-variant transition hover:bg-error-container hover:text-error"
+        >
+          <X className="h-4 w-4" aria-hidden="true" />
+        </button>
+      )}
 
-      {typeof document !== 'undefined' && createPortal(
-      <AnimatePresence>
-        {open && (
-            <motion.div
-              ref={panelRef}
-              role="dialog"
-              aria-modal="true"
-              aria-label="Choose date range"
-              tabIndex={-1}
-              onKeyDown={onModalKeyDown}
-              style={{ position: 'fixed', top: position.top, left: position.left, width: position.width, maxHeight: position.maxHeight }}
-              initial={{ opacity: 0, scale: 0.95, y: -10 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: -10 }}
-              // The audit (UI-P1-02) flags the fixed `w-80` (320 px) panel
-              // anchored `right-0`: a 320 px viewport with page gutters
-              // cannot host a 320 px panel, so the day grid was clipped.
-              // On phones the panel now stretches the full width of the
-              // trigger (which every page already sizes to `w-full`),
-              // and at >= sm it reverts to the old right-anchored 20 rem
-              // popover. `max-w-[calc(100vw-1rem)]` clamps the wider
-              // case too, so a foldable / narrow-window desktop resize
-              // still fits.
-              className="left-0 right-0 z-50 max-h-[min(26rem,70vh)] origin-top-right overflow-y-auto overscroll-contain rounded-3xl border border-outline-variant/30 bg-surface-container-lowest p-4 shadow-float max-w-[calc(100vw-1rem)] sm:left-auto sm:w-80"
-            >
-              <div className="mb-3 flex items-center justify-between">
-                <button
-                  type="button"
-                  aria-label="Previous month"
-                  onClick={() => setViewDate(new Date(year, month - 1, 1))}
-                  className="rounded-full p-1.5 text-on-surface-variant transition-colors hover:bg-surface-container"
-                >
-                  <ChevronLeft className="h-4 w-4" />
-                </button>
-                <span className="text-sm font-bold text-primary">
-                  {viewDate.toLocaleString('default', { month: 'long', year: 'numeric' })}
-                </span>
-                <button
-                  type="button"
-                  aria-label="Next month"
-                  onClick={() => setViewDate(new Date(year, month + 1, 1))}
-                  className="rounded-full p-1.5 text-on-surface-variant transition-colors hover:bg-surface-container"
-                >
-                  <ChevronRight className="h-4 w-4" />
-                </button>
-              </div>
-
-              <div className="mb-3 grid grid-cols-4 gap-1">
-                {PRESETS.map(preset => (
+      {typeof document !== 'undefined' &&
+        createPortal(
+          <AnimatePresence>
+            {open && (
+              <motion.div
+                ref={panelRef}
+                role="dialog"
+                aria-modal="true"
+                aria-label="Choose date range"
+                tabIndex={-1}
+                onKeyDown={onModalKeyDown}
+                style={{
+                  position: 'fixed',
+                  top: position.top,
+                  left: position.left,
+                  width: position.width,
+                  maxHeight: position.maxHeight,
+                }}
+                initial={{ opacity: 0, scale: 0.95, y: -10 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: -10 }}
+                // The audit (UI-P1-02) flags the fixed `w-80` (320 px) panel
+                // anchored `right-0`: a 320 px viewport with page gutters
+                // cannot host a 320 px panel, so the day grid was clipped.
+                // On phones the panel now stretches the full width of the
+                // trigger (which every page already sizes to `w-full`),
+                // and at >= sm it reverts to the old right-anchored 20 rem
+                // popover. `max-w-[calc(100vw-1rem)]` clamps the wider
+                // case too, so a foldable / narrow-window desktop resize
+                // still fits.
+                className="left-0 right-0 z-50 max-h-[min(26rem,70vh)] origin-top-right overflow-y-auto overscroll-contain rounded-3xl border border-outline-variant/30 bg-surface-container-lowest p-4 shadow-float max-w-[calc(100vw-1rem)] sm:left-auto sm:w-80"
+              >
+                <div className="mb-3 flex items-center justify-between">
                   <button
-                    key={preset.kind}
+                    type="button"
+                    aria-label="Previous month"
+                    onClick={() => setViewDate(new Date(year, month - 1, 1))}
+                    className="rounded-full p-1.5 text-on-surface-variant transition-colors hover:bg-surface-container"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                  <span className="text-sm font-bold text-primary">
+                    {viewDate.toLocaleString('default', { month: 'long', year: 'numeric' })}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label="Next month"
+                    onClick={() => setViewDate(new Date(year, month + 1, 1))}
+                    className="rounded-full p-1.5 text-on-surface-variant transition-colors hover:bg-surface-container"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
+
+                <div className="mb-3 grid grid-cols-4 gap-1">
+                  {PRESETS.map(preset => (
+                    <button
+                      key={preset.kind}
+                      type="button"
+                      onClick={() => {
+                        onChange(presetRange(preset.kind));
+                        setOpen(false);
+                      }}
+                      className="rounded-md border border-outline-variant/20 bg-surface-container-low px-1 py-1 text-center text-xs font-bold text-primary transition hover:border-primary/30 hover:bg-primary/5"
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="mb-1 grid grid-cols-7 gap-1 text-center" aria-hidden="true">
+                  {WEEKDAYS.map(day => (
+                    <span
+                      key={day}
+                      className="flex h-8 w-8 select-none items-center justify-center text-xs font-bold uppercase text-on-surface-variant"
+                    >
+                      {day}
+                    </span>
+                  ))}
+                </div>
+
+                <div
+                  ref={gridRef}
+                  onKeyDown={onGridKeyDown}
+                  className="grid grid-cols-7 gap-1 text-center"
+                  role="group"
+                  aria-label="Days"
+                >
+                  {Array.from({ length: firstDayIndex }).map((_, idx) => (
+                    <span key={`pad-${idx}`} aria-hidden="true" className="h-8 w-8" />
+                  ))}
+                  {Array.from({ length: totalDays }).map((_, idx) => {
+                    const dayNumber = idx + 1;
+                    const dIso = `${year}-${String(month + 1).padStart(2, '0')}-${String(dayNumber).padStart(2, '0')}`;
+                    const isEdge = dIso === fromDate || dIso === toDate;
+                    const inRange = Boolean(
+                      fromDate && toDate && dIso >= fromDate && dIso <= toDate,
+                    );
+                    const hasData = activeDates?.has(dIso);
+
+                    return (
+                      <button
+                        key={dIso}
+                        data-day
+                        type="button"
+                        aria-label={new Date(year, month, dayNumber).toLocaleDateString('en-IN', {
+                          weekday: 'long',
+                          day: 'numeric',
+                          month: 'long',
+                          year: 'numeric',
+                        })}
+                        aria-pressed={isEdge}
+                        onClick={() => pick(dIso)}
+                        className={cn(
+                          'relative flex h-8 w-8 flex-col items-center justify-center rounded-full text-xs font-bold transition hover:bg-primary/20',
+                          isEdge &&
+                            'bg-primary text-on-primary hover:bg-primary hover:text-on-primary',
+                          !isEdge && inRange && 'bg-primary/10 text-primary hover:bg-primary/20',
+                          !isEdge && !inRange && 'text-on-surface',
+                        )}
+                      >
+                        <span>{dayNumber}</span>
+                        {hasData && (
+                          <span
+                            className={cn(
+                              'absolute bottom-1 h-1 w-1 rounded-full',
+                              isEdge ? 'bg-surface-container-lowest' : 'bg-primary',
+                            )}
+                          />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-4 flex items-center justify-between border-t border-outline-variant/10 pt-3 text-xs">
+                  <button
                     type="button"
                     onClick={() => {
-                      onChange(presetRange(preset.kind));
+                      onChange(presetRange('today'));
+                      setViewDate(new Date());
                       setOpen(false);
                     }}
-                    className="rounded-md border border-outline-variant/20 bg-surface-container-low px-1 py-1 text-center text-xs font-bold text-primary transition hover:border-primary/30 hover:bg-primary/5"
+                    className="font-bold text-primary hover:underline"
                   >
-                    {preset.label}
+                    Today
                   </button>
-                ))}
-              </div>
-
-              <div className="mb-1 grid grid-cols-7 gap-1 text-center" aria-hidden="true">
-                {WEEKDAYS.map(day => (
-                  <span
-                    key={day}
-                    className="flex h-8 w-8 select-none items-center justify-center text-xs font-bold uppercase text-on-surface-variant"
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onChange({ fromDate: '', toDate: '' });
+                      setOpen(false);
+                    }}
+                    className="font-bold text-on-surface-variant hover:underline"
                   >
-                    {day}
-                  </span>
-                ))}
-              </div>
-
-              <div
-                ref={gridRef}
-                onKeyDown={onGridKeyDown}
-                className="grid grid-cols-7 gap-1 text-center"
-                role="group"
-                aria-label="Days"
-              >
-                {Array.from({ length: firstDayIndex }).map((_, idx) => (
-                  <span key={`pad-${idx}`} aria-hidden="true" className="h-8 w-8" />
-                ))}
-                {Array.from({ length: totalDays }).map((_, idx) => {
-                  const dayNumber = idx + 1;
-                  const dIso = `${year}-${String(month + 1).padStart(2, '0')}-${String(dayNumber).padStart(2, '0')}`;
-                  const isEdge = dIso === fromDate || dIso === toDate;
-                  const inRange = Boolean(fromDate && toDate && dIso >= fromDate && dIso <= toDate);
-                  const hasData = activeDates?.has(dIso);
-
-                  return (
-                    <button
-                      key={dIso}
-                      data-day
-                      type="button"
-                      aria-label={new Date(year, month, dayNumber).toLocaleDateString('en-IN', {
-                        weekday: 'long',
-                        day: 'numeric',
-                        month: 'long',
-                        year: 'numeric',
-                      })}
-                      aria-pressed={isEdge}
-                      onClick={() => pick(dIso)}
-                      className={cn(
-                        'relative flex h-8 w-8 flex-col items-center justify-center rounded-full text-xs font-bold transition hover:bg-primary/20',
-                        isEdge &&
-                          'bg-primary text-on-primary hover:bg-primary hover:text-on-primary',
-                        !isEdge && inRange && 'bg-primary/10 text-primary hover:bg-primary/20',
-                        !isEdge && !inRange && 'text-on-surface',
-                      )}
-                    >
-                      <span>{dayNumber}</span>
-                      {hasData && (
-                        <span
-                          className={cn(
-                            'absolute bottom-1 h-1 w-1 rounded-full',
-                            isEdge ? 'bg-surface-container-lowest' : 'bg-primary',
-                          )}
-                        />
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="mt-4 flex items-center justify-between border-t border-outline-variant/10 pt-3 text-xs">
-                <button
-                  type="button"
-                  onClick={() => {
-                    onChange(presetRange('today'));
-                    setViewDate(new Date());
-                    setOpen(false);
-                  }}
-                  className="font-bold text-primary hover:underline"
-                >
-                  Today
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onChange({ fromDate: '', toDate: '' });
-                    setOpen(false);
-                  }}
-                  className="font-bold text-on-surface-variant hover:underline"
-                >
-                  Clear Filter
-                </button>
-              </div>
-            </motion.div>
+                    Clear Filter
+                  </button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>,
+          document.body,
         )}
-      </AnimatePresence>,
-      document.body,
-      )}
     </div>
   );
 }

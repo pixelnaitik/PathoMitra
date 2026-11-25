@@ -1,7 +1,13 @@
 import type { LabSettings } from './settings';
 import type { PatientRecord, ReportRecord } from './models';
 import { ageAsNumber } from './models';
-import { findTestInfo, resolveReferenceRange, type PathologyTest, type RangeVerification } from './pathology-tests';
+import {
+  expandTestSelection,
+  findTestInfo,
+  resolveReferenceRange,
+  type PathologyTest,
+  type RangeVerification,
+} from './pathology-tests';
 
 export interface SnapshotRange {
   [key: string]: unknown;
@@ -39,7 +45,22 @@ export interface ReportIssuanceSnapshot {
   version: 1;
   orderId?: string;
   createdAt: string;
-  patient: Pick<PatientRecord, 'id' | 'name' | 'age' | 'gender' | 'phone' | 'address' | 'doctorName' | 'createdAt'>;
+  patient: Pick<
+    PatientRecord,
+    | 'id'
+    | 'name'
+    | 'age'
+    | 'gender'
+    | 'phone'
+    | 'dateOfBirth'
+    | 'guardianName'
+    | 'guardianPhone'
+    | 'externalIdType'
+    | 'externalId'
+    | 'address'
+    | 'doctorName'
+    | 'createdAt'
+  >;
   settings: LabSettings & Record<string, unknown>;
   tests: SnapshotTest[];
 }
@@ -55,8 +76,11 @@ export function buildReportIssuanceSnapshot(
   settings: LabSettings,
   now = new Date().toISOString(),
 ): ReportIssuanceSnapshot {
-  const age = ageAsNumber(patient);
-  const tests = (report.testSelection ?? []).map(name => {
+  const age = ageAsNumber(patient, new Date(now));
+  const names = [
+    ...new Set([...(report.testSelection ?? []), ...expandTestSelection(report.testSelection)]),
+  ];
+  const tests = names.map(name => {
     const info = findTestInfo(name);
     const range = resolveReferenceRange(info?.ranges, age, patient.gender);
     return {
@@ -102,11 +126,49 @@ export function buildReportIssuanceSnapshot(
       age: patient.age,
       gender: patient.gender,
       ...(patient.phone ? { phone: patient.phone } : {}),
+      ...(patient.dateOfBirth ? { dateOfBirth: patient.dateOfBirth } : {}),
+      ...(patient.guardianName ? { guardianName: patient.guardianName } : {}),
+      ...(patient.guardianPhone ? { guardianPhone: patient.guardianPhone } : {}),
+      ...(patient.externalIdType ? { externalIdType: patient.externalIdType } : {}),
+      ...(patient.externalId ? { externalId: patient.externalId } : {}),
       ...(patient.address ? { address: patient.address } : {}),
       ...(patient.doctorName ? { doctorName: patient.doctorName } : {}),
       createdAt: patient.createdAt,
     },
     settings: snapshotSettings,
     tests,
+  };
+}
+
+/** Evaluate an issued value only against the range frozen at issuance. */
+export function resolveIssuanceValueStatus(
+  snapshot: ReportRecord['issuanceSnapshot'],
+  testName: string,
+  value: unknown,
+): {
+  status: 'normal' | 'low' | 'high' | null;
+  rangeLabel: string;
+  unit: string;
+  unverifiedForPatient: boolean;
+} {
+  const test = snapshot?.tests.find(item => item.name === testName);
+  if (!test) return { status: null, rangeLabel: '', unit: '', unverifiedForPatient: true };
+  const raw =
+    typeof value === 'number' ? String(value) : typeof value === 'string' ? value.trim() : '';
+  const numeric = Number(raw.replace(/^[<>≤≥]\s*/, ''));
+  const bounds = test.range.values;
+  const status =
+    !raw || !bounds || !Number.isFinite(numeric)
+      ? null
+      : bounds.min !== undefined && numeric < bounds.min
+        ? 'low'
+        : bounds.max !== undefined && numeric > bounds.max
+          ? 'high'
+          : 'normal';
+  return {
+    status,
+    rangeLabel: test.range.label,
+    unit: test.unit ?? '',
+    unverifiedForPatient: test.range.unverifiedForPatient,
   };
 }

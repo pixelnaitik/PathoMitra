@@ -77,8 +77,18 @@ export default function NotificationCenter({ onOpen, onOpenSettings }: Notificat
   const [filter, setFilter] = useState<Filter>('all');
   const { role } = useAuth();
   const notifications = useNotifications();
-  const { items, summary, prefs, loading, refreshing, error, lastCheckedAt, mutedCount, truncatedSources } =
-    notifications;
+  const {
+    items,
+    summary,
+    prefs,
+    loading,
+    refreshing,
+    error,
+    lastCheckedAt,
+    mutedCount,
+    truncatedSources,
+    delivery,
+  } = notifications;
 
   const visible = useMemo(
     () => (filter === 'unread' ? items.filter(item => !item.read) : items),
@@ -215,9 +225,38 @@ export default function NotificationCenter({ onOpen, onOpenSettings }: Notificat
           </div>
 
           {truncatedSources.length > 0 && (
-            <p role="status" className="rounded-xl border border-warning/40 bg-warning-container/40 p-3 text-xs text-on-surface">
-              Alert results are incomplete because these queries reached their limit: {truncatedSources.join(', ')}. Open the Orders and Samples worklists to review all records.
-            </p>
+            <div
+              role="status"
+              className="rounded-xl border border-warning/40 bg-warning-container/40 p-3 text-xs text-on-surface"
+            >
+              <p>
+                Alert results are incomplete because these queries reached their limit:{' '}
+                {truncatedSources.join(', ')}. Open the full worklists to review records beyond the
+                notification window.
+              </p>
+              <div className="mt-2 flex gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    onOpen({ tab: 'orders' });
+                    setOpen(false);
+                  }}
+                >
+                  Open orders worklist
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    onOpen({ tab: 'samples' });
+                    setOpen(false);
+                  }}
+                >
+                  Open samples worklist
+                </Button>
+              </div>
+            </div>
           )}
 
           {summary.total > 0 && (
@@ -239,6 +278,13 @@ export default function NotificationCenter({ onOpen, onOpenSettings }: Notificat
                 </StatusPill>
               )}
             </div>
+          )}
+
+          {(delivery.delivered > 0 || delivery.failed > 0 || delivery.acknowledged > 0) && (
+            <p role="status" className="text-xs text-on-surface-variant">
+              Local delivery audit: {delivery.delivered} delivered, {delivery.failed} failed,{' '}
+              {delivery.acknowledged} acknowledged. Only one-way alert digests are stored.
+            </p>
           )}
 
           {error && (

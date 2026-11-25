@@ -39,16 +39,26 @@ vi.mock('../data/fs', () => ({
 
 vi.mock('../data', () => ({
   getRepository: () => ({
-    list: async (entity: string, options?: { where?: Array<{ field: string; op: string; value: unknown }> }) =>
+    list: async (
+      entity: string,
+      options?: { where?: Array<{ field: string; op: string; value: unknown }> },
+    ) =>
       [...store.documents.entries()]
         .filter(([key]) => key.startsWith(`${entity}/`))
         .map(([key, value]) => ({ id: key.slice(entity.length + 1), data: () => value }))
-        .filter(doc => (options?.where ?? []).every(filter => doc.data()[filter.field] === filter.value)),
-    transaction: async (fn: (tx: {
-      get: (entity: string, id: string) => Promise<{ id: string; data: () => Record<string, unknown> } | null>;
-      set: (entity: string, id: string, value: Record<string, unknown>) => Promise<void>;
-      add: (entity: string, value: Record<string, unknown>) => Promise<string>;
-    }) => Promise<void>) => {
+        .filter(doc =>
+          (options?.where ?? []).every(filter => doc.data()[filter.field] === filter.value),
+        ),
+    transaction: async (
+      fn: (tx: {
+        get: (
+          entity: string,
+          id: string,
+        ) => Promise<{ id: string; data: () => Record<string, unknown> } | null>;
+        set: (entity: string, id: string, value: Record<string, unknown>) => Promise<void>;
+        add: (entity: string, value: Record<string, unknown>) => Promise<string>;
+      }) => Promise<void>,
+    ) => {
       store.transactions += 1;
       const snapshot = new Map(store.documents);
       const writeCount = store.writes.length;
@@ -58,7 +68,8 @@ vi.mock('../data', () => ({
           return value ? { id, data: () => value } : null;
         },
         set: async (entity: string, id: string, value: Record<string, unknown>) => {
-          if (entity === 'payments' && store.failPaymentWrite) throw new Error('ledger write failed');
+          if (entity === 'payments' && store.failPaymentWrite)
+            throw new Error('ledger write failed');
           store.documents.set(`${entity}/${id}`, value);
           store.writes.push({ path: entity, id, data: value });
         },
@@ -68,11 +79,16 @@ vi.mock('../data', () => ({
           store.writes.push({ path: entity, id, data: value });
           return id;
         },
-        list: async (entity: string, options?: { where?: Array<{ field: string; op: string; value: unknown }> }) =>
+        list: async (
+          entity: string,
+          options?: { where?: Array<{ field: string; op: string; value: unknown }> },
+        ) =>
           [...store.documents.entries()]
             .filter(([key]) => key.startsWith(`${entity}/`))
             .map(([key, value]) => ({ id: key.slice(entity.length + 1), data: () => value }))
-            .filter(doc => (options?.where ?? []).every(filter => doc.data()[filter.field] === filter.value)),
+            .filter(doc =>
+              (options?.where ?? []).every(filter => doc.data()[filter.field] === filter.value),
+            ),
         delete: async (entity: string, id: string) => {
           store.documents.delete(`${entity}/${id}`);
         },
@@ -123,14 +139,28 @@ import {
   type InvoiceItem,
 } from './models';
 import { allocateInvoiceNo, byBillNumber, invoiceSequenceOf } from './invoice-registry';
-import { DEFAULT_BILLING_PREFS, priceKey, resetPriceListCache, saveBillingPrefs, upsertPrice } from './price-list';
+import {
+  DEFAULT_BILLING_PREFS,
+  priceKey,
+  resetPriceListCache,
+  saveBillingPrefs,
+  upsertPrice,
+} from './price-list';
 
 const CBC = 'CBC (COMPLETE BLOOD COUNT)';
 async function enableReferralPayouts() {
-  await saveBillingPrefs({
-    ...DEFAULT_BILLING_PREFS,
-    referralCompliance: { mode: 'payout-enabled', acknowledgedBy: 'Owner', acknowledgedAt: '2026-11-24T00:00:00.000Z', policyVersion: 'test' },
-  }, 'Owner');
+  await saveBillingPrefs(
+    {
+      ...DEFAULT_BILLING_PREFS,
+      referralCompliance: {
+        mode: 'payout-enabled',
+        acknowledgedBy: 'Owner',
+        acknowledgedAt: '2026-11-24T00:00:00.000Z',
+        policyVersion: 'test',
+      },
+    },
+    'Owner',
+  );
 }
 
 const CBC_MEMBERS = ['HB (HAEMOGLOBIN)', 'WHITE CELL COUNT(TC)', 'PLATELET COUNT'];
@@ -258,10 +288,21 @@ describe('toInvoiceDoc', () => {
       patientName: 'Asha',
       items: [item('CRP', 500)],
       taxPercent: 18,
-      taxDetails: { mode: 'intra', supplierGstin: 'SUPPLIER123', placeOfSupply: 'Bihar', hsnSac: '999999' },
+      taxDetails: {
+        mode: 'intra',
+        supplierGstin: 'SUPPLIER123',
+        placeOfSupply: 'Bihar',
+        hsnSac: '999999',
+      },
     });
     expect(doc.tax).toBe(90);
-    expect(doc.taxDetails).toMatchObject({ cgst: 45, sgst: 45, igst: 0, supplierGstin: 'SUPPLIER123', hsnSac: '999999' });
+    expect(doc.taxDetails).toMatchObject({
+      cgst: 45,
+      sgst: 45,
+      igst: 0,
+      supplierGstin: 'SUPPLIER123',
+      hsnSac: '999999',
+    });
   });
 
   it('keeps a bill written before line items readable', () => {
@@ -430,7 +471,12 @@ describe('buildInvoiceDraft', () => {
   it('does not bill a suggested catalogue rate without lab approval', async () => {
     const draft = buildInvoiceDraft({ patient: PATIENT, issuedBy: 'a' });
     expect(draft.items).toHaveLength(1);
-    expect(draft.items[0]).toMatchObject({ name: CBC, kind: 'panel', unpriced: true, lineTotal: 0 });
+    expect(draft.items[0]).toMatchObject({
+      name: CBC,
+      kind: 'panel',
+      unpriced: true,
+      lineTotal: 0,
+    });
     expect(draft.totals.amount).toBe(0);
     expect(draft.unpriced).toEqual([CBC]);
   });
@@ -491,7 +537,12 @@ describe('raiseInvoice', () => {
 
   it('marks a partly-paid bill as partial', async () => {
     await upsertPrice({ name: CBC, price: 400, actor: 'a' });
-    const invoice = await raiseInvoice({ patient: PATIENT, issuedBy: 'a', paidAmount: 150, paymentMode: 'cash' });
+    const invoice = await raiseInvoice({
+      patient: PATIENT,
+      issuedBy: 'a',
+      paidAmount: 150,
+      paymentMode: 'cash',
+    });
     expect(invoice.status).toBe('partial');
     expect(balanceOf(invoice)).toBe(250);
   });
@@ -517,9 +568,17 @@ describe('recordPayment', () => {
 
   it('accumulates two part payments to settled', async () => {
     const invoice = await raised();
-    const first = await recordPayment(invoice.id, { amount: 200, mode: 'cash', actor: 'Cashier One' });
+    const first = await recordPayment(invoice.id, {
+      amount: 200,
+      mode: 'cash',
+      actor: 'Cashier One',
+    });
     expect(first.status).toBe('partial');
-    const second = await recordPayment(invoice.id, { amount: 300, mode: 'upi', actor: 'Cashier One' });
+    const second = await recordPayment(invoice.id, {
+      amount: 300,
+      mode: 'upi',
+      actor: 'Cashier One',
+    });
     expect(second).toMatchObject({ status: 'paid', paidAmount: 500, paymentMode: 'upi' });
     const ledger = [...store.documents.entries()]
       .filter(([key]) => key.startsWith('payments/'))
@@ -529,30 +588,48 @@ describe('recordPayment', () => {
     expect(ledger.every(payment => payment.actor === 'Cashier One')).toBe(true);
   });
 
+  it('returns the original result when the same payment operation is retried', async () => {
+    const invoice = await raised();
+    const options = {
+      amount: 200,
+      mode: 'cash' as const,
+      actor: 'Cashier One',
+      operationId: 'payment-op-1',
+    };
+    const first = await recordPayment(invoice.id, options);
+    const retry = await recordPayment(invoice.id, options);
+    expect(retry).toEqual(first);
+    expect([...store.documents.keys()].filter(key => key.startsWith('payments/'))).toHaveLength(1);
+  });
+
   it('refuses an overpayment instead of silently losing the excess', async () => {
     const invoice = await raised();
-    await expect(recordPayment(invoice.id, { amount: 5000, mode: 'cash', actor: 'Cashier One' })).rejects.toThrow(/exceeds the outstanding/);
+    await expect(
+      recordPayment(invoice.id, { amount: 5000, mode: 'cash', actor: 'Cashier One' }),
+    ).rejects.toThrow(/exceeds the outstanding/);
     expect(store.documents.get(`invoices/${invoice.id}`)?.paidAmount).toBe(0);
   });
 
   it('refuses a payment against a voided bill', async () => {
     const invoice = await raised();
     await voidInvoice(invoice.id, 'wrong patient', 'a');
-    await expect(recordPayment(invoice.id, { amount: 100, mode: 'cash', actor: 'Cashier One' })).rejects.toThrow(
-      /voided/,
-    );
+    await expect(
+      recordPayment(invoice.id, { amount: 100, mode: 'cash', actor: 'Cashier One' }),
+    ).rejects.toThrow(/voided/);
   });
 
   it('says so when the bill does not exist', async () => {
-    await expect(recordPayment('IN9999-0001', { amount: 10, mode: 'cash', actor: 'Cashier One' })).rejects.toThrow(
-      /found/,
-    );
+    await expect(
+      recordPayment('IN9999-0001', { amount: 10, mode: 'cash', actor: 'Cashier One' }),
+    ).rejects.toThrow(/found/);
   });
 
   it('rolls back the invoice update when the payment ledger cannot be written', async () => {
     const invoice = await raised();
     store.failPaymentWrite = true;
-    await expect(recordPayment(invoice.id, { amount: 100, mode: 'cash', actor: 'Cashier One' })).rejects.toThrow(/ledger write failed/);
+    await expect(
+      recordPayment(invoice.id, { amount: 100, mode: 'cash', actor: 'Cashier One' }),
+    ).rejects.toThrow(/ledger write failed/);
     expect(store.documents.get(`invoices/${invoice.id}`)?.paidAmount).toBe(0);
     expect([...store.documents.keys()].some(key => key.startsWith('payments/'))).toBe(false);
   });
@@ -560,25 +637,59 @@ describe('recordPayment', () => {
   it('refunds money with an attributed ledger entry and reconciles the invoice', async () => {
     const invoice = await raised();
     await recordPayment(invoice.id, { amount: 500, mode: 'cash', actor: 'Cashier One' });
-    const refunded = await refundPayment(invoice.id, { amount: 200, mode: 'cash', actor: 'Cashier One', reason: 'Duplicate collection' });
+    const refunded = await refundPayment(invoice.id, {
+      amount: 200,
+      mode: 'cash',
+      actor: 'Cashier One',
+      reason: 'Duplicate collection',
+    });
     expect(refunded).toMatchObject({ status: 'partial', paidAmount: 300 });
-    expect(await reconcileInvoice(invoice.id)).toMatchObject({ invoicePaid: 300, ledgerNet: 300, difference: 0, entries: 2 });
+    expect(await reconcileInvoice(invoice.id)).toMatchObject({
+      invoicePaid: 300,
+      ledgerNet: 300,
+      difference: 0,
+      entries: 2,
+    });
   });
 
   it('reverses a payment with a compensating ledger entry', async () => {
     const invoice = await raised();
     await recordPayment(invoice.id, { amount: 500, mode: 'upi', actor: 'Cashier One' });
-    const payment = [...store.documents.entries()].find(([key]) => key.startsWith('payments/'))?.[0].split('/')[1];
-    const reversed = await reverseLedgerEntry(payment!, 'Supervisor', 'Entered against the wrong bill');
+    const payment = [...store.documents.entries()]
+      .find(([key]) => key.startsWith('payments/'))?.[0]
+      .split('/')[1];
+    const reversed = await reverseLedgerEntry(
+      payment!,
+      'Supervisor',
+      'Entered against the wrong bill',
+    );
     expect(reversed).toMatchObject({ status: 'pending', paidAmount: 0 });
-    expect(await reconcileInvoice(invoice.id)).toMatchObject({ invoicePaid: 0, ledgerNet: 0, difference: 0, entries: 2 });
+    expect(await reconcileInvoice(invoice.id)).toMatchObject({
+      invoicePaid: 0,
+      ledgerNet: 0,
+      difference: 0,
+      entries: 2,
+    });
+  });
+
+  it('requires billing permission for a ledger reversal', async () => {
+    const invoice = await raised();
+    await recordPayment(invoice.id, { amount: 500, mode: 'cash', actor: 'Cashier One' });
+    const payment = [...store.documents.entries()]
+      .find(([key]) => key.startsWith('payments/'))?.[0]
+      .split('/')[1];
+    await expect(
+      reverseLedgerEntry(payment!, 'Guest', 'Wrong bill', { actorRole: 'guest' }),
+    ).rejects.toThrow(/cannot manage billing/);
   });
 
   it('records a zero-amount request as an explicit full waiver in the ledger', async () => {
     const invoice = await raised();
     const paid = await recordPayment(invoice.id, { amount: 0, mode: 'cash', actor: 'Cashier One' });
     expect(paid.status).toBe('paid');
-    const payment = [...store.documents.entries()].find(([key]) => key.startsWith('payments/'))?.[1];
+    const payment = [...store.documents.entries()].find(([key]) =>
+      key.startsWith('payments/'),
+    )?.[1];
     expect(payment).toMatchObject({ amount: 500, note: 'Full waiver', actor: 'Cashier One' });
   });
 });
@@ -592,8 +703,15 @@ describe('voidInvoice', () => {
 
   it('refuses to void a paid bill until the money is refunded', async () => {
     await upsertPrice({ name: CBC, price: 500, actor: 'a' });
-    const invoice = await raiseInvoice({ patient: PATIENT, issuedBy: 'a', paidAmount: 500, paymentMode: 'cash' });
-    await expect(voidInvoice(invoice.id, 'wrong patient', 'a')).rejects.toThrow(/Refund all collected money/);
+    const invoice = await raiseInvoice({
+      patient: PATIENT,
+      issuedBy: 'a',
+      paidAmount: 500,
+      paymentMode: 'cash',
+    });
+    await expect(voidInvoice(invoice.id, 'wrong patient', 'a')).rejects.toThrow(
+      /Refund all collected money/,
+    );
   });
 
   it('keeps the document and marks it void', async () => {
@@ -618,7 +736,12 @@ describe('voidInvoice', () => {
 describe('deleteInvoice', () => {
   it('refuses to delete a paid or ledger-backed bill', async () => {
     await upsertPrice({ name: CBC, price: 500, actor: 'a' });
-    const invoice = await raiseInvoice({ patient: PATIENT, issuedBy: 'a', paidAmount: 100, paymentMode: 'cash' });
+    const invoice = await raiseInvoice({
+      patient: PATIENT,
+      issuedBy: 'a',
+      paidAmount: 100,
+      paymentMode: 'cash',
+    });
     await expect(deleteInvoice(invoice.id, 'a')).rejects.toThrow(/never-paid pending/);
     expect(store.documents.has(`invoices/${invoice.id}`)).toBe(true);
   });
@@ -658,7 +781,12 @@ describe('invoiceForReport / invoicesForPatient', () => {
 describe('summarise', () => {
   it('splits billed, collected and outstanding and ignores voided bills', async () => {
     await upsertPrice({ name: CBC, price: 500, actor: 'a' });
-    const paid = await raiseInvoice({ patient: PATIENT, issuedBy: 'a', paidAmount: 500, paymentMode: 'cash' });
+    const paid = await raiseInvoice({
+      patient: PATIENT,
+      issuedBy: 'a',
+      paidAmount: 500,
+      paymentMode: 'cash',
+    });
     const part = await raiseInvoice({
       patient: { ...PATIENT, id: 'p2' },
       issuedBy: 'a',

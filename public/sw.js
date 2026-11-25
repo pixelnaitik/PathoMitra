@@ -1,17 +1,19 @@
-// PathoMitra — Service Worker (web build only; stripped from the APK)
-// Strategy:
-//   Static assets (.js, .css, fonts, images) → Cache-First (instant after first visit)
-//   HTML navigation → Network-First with Cache fallback
-//   Everything else → Network-First with cache fallback
-//
-// There are no external origins to special-case: the app is local-first and the
-// bundle makes no cross-origin requests, so anything cross-origin is left to the
-// browser and never cached here.
-
-const CACHE_NAME = 'pathomitra-cache-v3';
-
-const STATIC_EXTENSIONS = ['.js', '.css', '.woff', '.woff2', '.ttf', '.png', '.jpg', '.jpeg', '.svg', '.ico', '.webp'];
-
+// PathoMitra public web shell only. Clinical persistence is disabled in production
+// browsers; the service worker therefore caches only an explicit static allowlist.
+const STATIC_EXTENSIONS = [
+  '.js',
+  '.css',
+  '.woff',
+  '.woff2',
+  '.ttf',
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.svg',
+  '.ico',
+  '.webp',
+];
+const PUBLIC_HTML_ROUTES = new Set(['/', '/index.html', '/privacy', '/technology', '/solutions']);
 const PRECACHE_ASSETS = [
   '/',
   '/index.html',
@@ -24,101 +26,111 @@ const PRECACHE_ASSETS = [
   '/apple-touch-icon.png',
 ];
 
-// ─── Install ───────────────────────────────────────────────────────────────
-self.addEventListener('install', (event) => {
+let cacheName = 'pathomitra-cache-unversioned';
+let cacheNamePromise = fetch('/pwa-version.json', { cache: 'no-store' })
+  .then(response => (response.ok ? response.json() : null))
+  .then(
+    value =>
+      `pathomitra-cache-${String(value?.buildId || 'unversioned')
+        .replace(/[^a-zA-Z0-9_-]/g, '-')
+        .slice(0, 80)}`,
+  )
+  .catch(() => 'pathomitra-cache-unversioned');
+
+const currentCacheName = () => cacheNamePromise;
+
+function isAllowedStaticPath(pathname) {
+  if (
+    pathname === '/manifest.json' ||
+    pathname.startsWith('/favicon') ||
+    pathname.startsWith('/android-chrome-') ||
+    pathname === '/apple-touch-icon.png'
+  )
+    return true;
+  return pathname.startsWith('/assets/') && STATIC_EXTENSIONS.some(ext => pathname.endsWith(ext));
+}
+
+self.addEventListener('install', event => {
   event.waitUntil(
-    caches.open(CACHE_NAME)
-      .then((cache) => {
-        console.log('[SW] Pre-caching app shell');
-        return cache.addAll(PRECACHE_ASSETS);
-      })
-      .then(() => self.skipWaiting())
+    (async () => {
+      cacheName = await currentCacheName();
+      const cache = await caches.open(cacheName);
+      await cache.addAll(PRECACHE_ASSETS);
+      // Do not skipWaiting automatically. The page offers an accessible reload
+      // prompt, so dismissing it keeps the current working shell available.
+    })(),
   );
 });
 
-// ─── Activate ──────────────────────────────────────────────────────────────
-self.addEventListener('activate', (event) => {
+self.addEventListener('activate', event => {
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(
-        keys.map((key) => {
-          if (key !== CACHE_NAME) {
-            console.log('[SW] Deleting old cache:', key);
-            return caches.delete(key);
-          }
-        })
-      )
-    ).then(() => self.clients.claim())
+    (async () => {
+      cacheName = await currentCacheName();
+      const keys = await caches.keys();
+      await Promise.all(keys.filter(key => key !== cacheName).map(key => caches.delete(key)));
+      await self.clients.claim();
+    })(),
   );
 });
 
-// ─── Fetch ─────────────────────────────────────────────────────────────────
-self.addEventListener('fetch', (event) => {
+self.addEventListener('message', event => {
+  if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
+});
+
+self.addEventListener('fetch', event => {
   const { request } = event;
   const url = new URL(request.url);
+  if (request.method !== 'GET' || url.origin !== self.location.origin) return;
 
-  // Only handle GET requests
-  if (request.method !== 'GET') return;
-
-  // ① Cross-origin → leave to the browser (the app makes none in practice)
-  if (url.origin !== self.location.origin) return;
-
-  // ② Static assets (.js, .css, images, fonts) → Cache-First
-  const isStaticAsset = STATIC_EXTENSIONS.some((ext) => url.pathname.endsWith(ext)) ||
-    url.pathname.startsWith('/assets/');
-
-  if (isStaticAsset) {
+  if (isAllowedStaticPath(url.pathname)) {
     event.respondWith(
-      caches.match(request).then((cached) => {
+      (async () => {
+        const name = await currentCacheName();
+        const cache = await caches.open(name);
+        const cached = await cache.match(request);
         if (cached) {
-          // Serve from cache immediately, update cache in background
-          fetch(request).then((response) => {
-            if (response && response.status === 200) {
-              caches.open(CACHE_NAME).then((cache) => cache.put(request, response));
-            }
-          }).catch(() => {});
+          fetch(request)
+            .then(response => {
+              if (response.status === 200 && response.type === 'basic')
+                cache.put(request, response.clone());
+            })
+            .catch(() => {});
           return cached;
         }
-        // Not in cache yet — fetch and cache it
-        return fetch(request).then((response) => {
-          if (!response || response.status !== 200 || response.type === 'opaque') return response;
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
-          return response;
-        });
-      })
+        const response = await fetch(request);
+        if (response.status === 200 && response.type === 'basic')
+          cache.put(request, response.clone());
+        return response;
+      })(),
     );
     return;
   }
 
-  // ③ HTML page navigation → Network-First, fallback to cache then /index.html
   if (request.mode === 'navigate') {
     event.respondWith(
-      fetch(request)
-        .then((response) => {
-          if (response && response.status === 200) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+      (async () => {
+        const name = await currentCacheName();
+        const cache = await caches.open(name);
+        try {
+          const response = await fetch(request);
+          if (
+            response.status === 200 &&
+            response.type === 'basic' &&
+            PUBLIC_HTML_ROUTES.has(url.pathname)
+          ) {
+            cache.put(request, response.clone());
           }
           return response;
-        })
-        .catch(() =>
-          caches.match(request).then((cached) => cached || caches.match('/index.html'))
-        )
+        } catch {
+          return (
+            (await cache.match(request)) || (await cache.match('/index.html')) || Response.error()
+          );
+        }
+      })(),
     );
     return;
   }
 
-  // ④ Everything else → Network-First with cache fallback
-  event.respondWith(
-    fetch(request)
-      .then((response) => {
-        if (response && response.status === 200 && response.type === 'basic') {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
-        }
-        return response;
-      })
-      .catch(() => caches.match(request))
-  );
+  // API-like JSON, auth material, backups, patient data and every unrecognised
+  // same-origin GET are deliberately never cached.
 });

@@ -21,8 +21,15 @@ initErrorReporting();
 // pre-paint; this covers the JS-driven prefs the inline script cannot reach.
 applyAppearance(readSettings());
 
-// Configure NProgress — slim bar, no spinner (we have our own)
-NProgress.configure({ showSpinner: false, speed: 400, minimum: 0.1 });
+// Configure NProgress — slim visual bar, no spinner or invalid ARIA role.
+// The Suspense fallback already exposes the loading state with aria-busy.
+NProgress.configure({
+  showSpinner: false,
+  speed: 400,
+  minimum: 0.1,
+  barSelector: '.bar',
+  template: '<div class="bar" aria-hidden="true"><div class="peg"></div></div>',
+});
 
 // Expose NProgress globally so lazy-loaded Suspense wrappers can call it
 (window as any).__NProgress = NProgress;
@@ -49,13 +56,6 @@ if (Capacitor.isNativePlatform() || isDesktopShell()) {
       document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light',
     );
   }
-} else if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker
-      .register('/sw.js')
-      .then(reg => console.log('PathoMitra PWA: Service Worker registered scope:', reg.scope))
-      .catch(err => console.error('PathoMitra PWA: Service Worker registration failed:', err));
-  });
 }
 
 // Dismiss the HTML splash screen once React is ready to render

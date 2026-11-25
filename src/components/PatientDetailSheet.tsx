@@ -3,9 +3,9 @@
  *
  * Opens when a patient row is tapped. Groups every report issued for the
  * patient by calendar day; each day shows the referring doctor, the panels that
- * were run, and every result flagged normal / low / high against the patient's
- * age- and gender-adjusted reference range (same decision the signed report
- * makes — see `resolveValueStatus`).
+ * were run, and every issued result flagged against the reference range frozen
+ * on that report. Drafts use the current patient context; legacy issued reports
+ * without a snapshot are left unflagged rather than re-interpreted today.
  *
  * Reports are streamed with a targeted `where('patientId' == id)` subscription
  * that lives only while the sheet is open, so the parent list page never has to
@@ -27,6 +27,7 @@ import {
 import { invoicesForPatient, outstandingForPatient } from '../lib/invoices';
 import { formatMoney } from '../lib/price-list';
 import { resolveValueStatus, collapseToProfiles } from '../lib/pathology-tests';
+import { resolveIssuanceValueStatus } from '../lib/report-snapshot';
 import {
   CalendarClock,
   CheckCircle2,
@@ -52,6 +53,16 @@ const STATUS_ICON = {
   low: TrendingDown,
   high: TrendingUp,
 };
+
+const valueStatusFor = (
+  report: ReportRecord,
+  name: string,
+  value: unknown,
+  patient: PatientRecord,
+) =>
+  report.status === 'final'
+    ? resolveIssuanceValueStatus(report.issuanceSnapshot, name, value)
+    : resolveValueStatus(name, value, ageAsNumber(patient), patient.gender);
 
 /** `2 Oct 2026` — the compact day label used on every timeline node. */
 function formatDay(iso: string): string {
@@ -163,9 +174,6 @@ export function PatientDetailSheet({
     return Array.from(buckets.values());
   }, [reports]);
 
-  const age = patient ? ageAsNumber(patient) : undefined;
-  const gender = patient?.gender;
-
   /** What the bills say is still owed — the seed for the due, not its authority. */
   const unpaid = useMemo(() => outstandingForPatient(bills), [bills]);
   const due = dueOf(patient ?? { dueAmount: 0 }, unpaid);
@@ -201,12 +209,13 @@ export function PatientDetailSheet({
         (sum, r) =>
           sum +
           Object.entries(r.resultData ?? {}).filter(([name, value]) => {
-            const { status } = resolveValueStatus(name, value, age, gender);
+            if (!patient) return false;
+            const { status } = valueStatusFor(r, name, value, patient);
             return status === 'low' || status === 'high';
           }).length,
         0,
       ),
-    [reports, age, gender],
+    [reports, patient],
   );
 
   return (
@@ -329,8 +338,9 @@ export function PatientDetailSheet({
                 }}
               >
                 <p className="text-[13px] text-on-surface-variant">
-                  Pre-filled with the reconciled balance. The difference from {formatMoney(unpaid)} in
-                  unpaid bills is stored as an explicit manual adjustment; enter 0 to clear that adjustment.
+                  Pre-filled with the reconciled balance. The difference from {formatMoney(unpaid)}{' '}
+                  in unpaid bills is stored as an explicit manual adjustment; enter 0 to clear that
+                  adjustment.
                 </p>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <Field label="Due amount" required htmlFor="patient-due-amount">
@@ -436,13 +446,7 @@ export function PatientDetailSheet({
                     </div>
 
                     {entry.reports.map(report => (
-                      <ReportCard
-                        key={report.id}
-                        report={report}
-                        doctorName={patient.doctorName}
-                        age={age}
-                        gender={gender}
-                      />
+                      <ReportCard key={report.id} report={report} patient={patient} />
                     ))}
                   </div>
                 </motion.li>
@@ -455,17 +459,7 @@ export function PatientDetailSheet({
   );
 }
 
-function ReportCard({
-  report,
-  doctorName,
-  age,
-  gender,
-}: {
-  report: ReportRecord;
-  doctorName?: string;
-  age?: number;
-  gender?: string;
-}) {
+function ReportCard({ report, patient }: { report: ReportRecord; patient: PatientRecord }) {
   const results = Object.entries(report.resultData ?? {});
   // Show the ordered *profiles* (a CBC counts as one), not the expanded list of
   // every member parameter that `addTest` also stored.
@@ -480,7 +474,9 @@ function ReportCard({
           )}
           <p className="flex items-center gap-1.5 text-xs text-on-surface-variant">
             <Stethoscope className="h-3 w-3" aria-hidden="true" />
-            {doctorName || 'Self / walk-in'}
+            {(report.status === 'final'
+              ? report.issuanceSnapshot?.patient.doctorName
+              : patient.doctorName) || 'Self / walk-in'}
           </p>
         </div>
         <StatusPill tone={report.status === 'final' ? 'success' : 'neutral'} dot>
@@ -509,7 +505,7 @@ function ReportCard({
       ) : (
         <ul className="divide-y divide-outline-variant/40">
           {results.map(([name, value]) => {
-            const { status, rangeLabel, unit } = resolveValueStatus(name, value, age, gender);
+            const { status, rangeLabel, unit } = valueStatusFor(report, name, value, patient);
             const Icon = status ? STATUS_ICON[status] : MinusCircle;
             return (
               <li key={name} className="flex items-center justify-between gap-3 py-2">

@@ -77,7 +77,8 @@ export function buildCrashPayload(error: unknown, context: ErrorContext): CrashP
   const safeContext: ErrorContext = {};
   for (const key of ['scope', 'operation', 'entity', 'errorCode'] as const) {
     const value = context[key];
-    if (typeof value === 'string' && /^[A-Za-z0-9:._/-]{1,80}$/.test(value)) safeContext[key] = value;
+    if (typeof value === 'string' && /^[A-Za-z0-9:._/-]{1,80}$/.test(value))
+      safeContext[key] = value;
     else if (typeof value === 'number' && Number.isFinite(value)) safeContext[key] = value;
   }
   if (typeof context.retryable === 'boolean') safeContext.retryable = context.retryable;
@@ -114,14 +115,15 @@ function reportTo(payload: CrashPayload): void {
  * Safe to call from `catch` blocks anywhere in the app; it never throws.
  */
 export function captureError(error: unknown, context: ErrorContext = {}): void {
-  const { message } = describe(error);
-  const fingerprint = `${message}|${context.scope ?? ''}`;
+  const payload = buildCrashPayload(error, context);
+  const fingerprint = `${payload.name}|${payload.context.scope ?? ''}|${payload.context.entity ?? ''}|${payload.context.errorCode ?? ''}`;
 
-  // Always keep a console trace: vite.config.ts preserves console.error in the
-  // production build precisely so this line survives.
-  console.error(`[PathoMitra]${context.scope ? ` ${String(context.scope)}:` : ''}`, {
-    name: error instanceof Error ? error.name : typeof error,
-    correlationId: globalThis.crypto.randomUUID(),
+  // The console receives only the same allow-listed, redacted fields as the
+  // durable log. Raw messages, stacks, paths and patient values never appear.
+  console.error('[PathoMitra]', {
+    name: payload.name,
+    correlationId: payload.correlationId,
+    ...payload.context,
   });
 
   if (seen.has(fingerprint) || reportsSent >= MAX_REPORTS_PER_SESSION) return;
@@ -129,9 +131,9 @@ export function captureError(error: unknown, context: ErrorContext = {}): void {
   reportsSent += 1;
 
   try {
-    reportTo(buildCrashPayload(error, context));
-  } catch (reportingError) {
-    console.error('PathoMitra: error reporting failed', reportingError);
+    reportTo(payload);
+  } catch {
+    console.error('[PathoMitra] diagnostics unavailable', { name: payload.name });
   }
 }
 

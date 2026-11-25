@@ -20,7 +20,11 @@ describe('Field', () => {
   });
 
   it('associates a hint when there is no error', () => {
-    render(<Field label="Phone" hint="Include country code"><TextInput /></Field>);
+    render(
+      <Field label="Phone" hint="Include country code">
+        <TextInput />
+      </Field>,
+    );
     const input = screen.getByRole('textbox', { name: 'Phone' });
     const hint = screen.getByText('Include country code');
     expect(input.getAttribute('aria-describedby')).toBe(hint.id);

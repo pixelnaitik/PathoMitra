@@ -125,7 +125,7 @@ describe('geometry', () => {
 describe('clampCopies', () => {
   it('keeps the field inside what a printer can do', () => {
     expect(clampCopies(0)).toBe(1);
-    expect(clampCopies(1000)).toBe(99);
+    expect(clampCopies(1000)).toBe(20);
     expect(clampCopies(Number.NaN)).toBe(1);
     expect(clampCopies(2.6)).toBe(3);
   });

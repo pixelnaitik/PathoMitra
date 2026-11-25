@@ -84,6 +84,18 @@ export function isLetterheadDataUrl(value: unknown): value is string {
  */
 export const SETTINGS_UPDATED_EVENT = 'settings-updated';
 export const CUSTOM_TESTS_UPDATED_EVENT = 'custom-tests-updated';
+export const SETTINGS_PERSIST_ERROR_EVENT = 'pathomitra:settings-persist-error';
+
+/** Report a storage failure without putting settings or patient data in the event. */
+export function reportSettingsPersistenceError(
+  scope: 'settings' | 'customTests' | 'journal',
+  message: string,
+): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(
+    new CustomEvent(SETTINGS_PERSIST_ERROR_EVENT, { detail: { scope, message } }),
+  );
+}
 
 export interface LabSettings {
   name: string;
@@ -216,6 +228,11 @@ export interface LabSettings {
   backupDestination?: string;
   /** Last successful restore drill on this or another device. */
   lastRestoreDrillAt?: string;
+  lastRestoreDrillDurationMs?: number;
+  lastRestoreDrillRpoMs?: number;
+  lastRestoreDrillRecords?: number;
+  lastRestoreDrillSnapshot?: string;
+  lastRestoreDrillOutcome?: 'passed' | 'failed';
   /**
    * Stamped on every write; used as the last-write-wins token when the local
    * copy is reconciled against `labSettings/current` in Firestore.
@@ -251,6 +268,11 @@ export const DEFAULT_SETTINGS: LabSettings = {
   lastOffDeviceBackupAt: '',
   backupDestination: '',
   lastRestoreDrillAt: '',
+  lastRestoreDrillDurationMs: 0,
+  lastRestoreDrillRpoMs: 0,
+  lastRestoreDrillRecords: 0,
+  lastRestoreDrillSnapshot: '',
+  lastRestoreDrillOutcome: 'passed',
   // Legacy field kept only as a fallback for older stored settings; the UI
   // edits reportTableBodyFontSize / shareTableBodyFontSize directly.
   tableBodyFontSize: RECOMMENDED_LAYOUT_DEFAULTS.tableBodyFontSize,
@@ -393,10 +415,29 @@ export function migrateSettings(parsed: Record<string, unknown>): Record<string,
   if (typeof s.screenshotsAllowed !== 'boolean')
     s.screenshotsAllowed = DEFAULT_SETTINGS.screenshotsAllowed;
   const backupDays = Number(s.backupReminderDays);
-  s.backupReminderDays = Number.isFinite(backupDays) ? Math.max(1, Math.min(90, Math.trunc(backupDays))) : DEFAULT_SETTINGS.backupReminderDays;
-  if (typeof s.lastOffDeviceBackupAt !== 'string') s.lastOffDeviceBackupAt = DEFAULT_SETTINGS.lastOffDeviceBackupAt;
-  if (typeof s.backupDestination !== 'string') s.backupDestination = DEFAULT_SETTINGS.backupDestination;
-  if (typeof s.lastRestoreDrillAt !== 'string') s.lastRestoreDrillAt = DEFAULT_SETTINGS.lastRestoreDrillAt;
+  s.backupReminderDays = Number.isFinite(backupDays)
+    ? Math.max(1, Math.min(90, Math.trunc(backupDays)))
+    : DEFAULT_SETTINGS.backupReminderDays;
+  if (typeof s.lastOffDeviceBackupAt !== 'string')
+    s.lastOffDeviceBackupAt = DEFAULT_SETTINGS.lastOffDeviceBackupAt;
+  if (typeof s.backupDestination !== 'string')
+    s.backupDestination = DEFAULT_SETTINGS.backupDestination;
+  if (typeof s.lastRestoreDrillAt !== 'string')
+    s.lastRestoreDrillAt = DEFAULT_SETTINGS.lastRestoreDrillAt;
+  const drillDuration = Number(s.lastRestoreDrillDurationMs);
+  s.lastRestoreDrillDurationMs = Number.isFinite(drillDuration)
+    ? Math.max(0, Math.min(604_800_000, drillDuration))
+    : 0;
+  const drillRpo = Number(s.lastRestoreDrillRpoMs);
+  s.lastRestoreDrillRpoMs = Number.isFinite(drillRpo) ? Math.max(0, drillRpo) : 0;
+  const drillRecords = Number(s.lastRestoreDrillRecords);
+  s.lastRestoreDrillRecords = Number.isFinite(drillRecords)
+    ? Math.max(0, Math.floor(drillRecords))
+    : 0;
+  s.lastRestoreDrillSnapshot =
+    typeof s.lastRestoreDrillSnapshot === 'string' ? s.lastRestoreDrillSnapshot.slice(0, 180) : '';
+  if (s.lastRestoreDrillOutcome !== 'passed' && s.lastRestoreDrillOutcome !== 'failed')
+    s.lastRestoreDrillOutcome = 'passed';
   if (s.cornerStyle !== 'rounded' && s.cornerStyle !== 'sharp')
     s.cornerStyle = DEFAULT_SETTINGS.cornerStyle;
   // The brand logo only survives as an inline image data URL within the size
@@ -460,7 +501,7 @@ export function readSettings(): LabSettings {
 }
 
 /** Persist settings, apply the theme and notify other mounted components. */
-export function writeSettings(settings: LabSettings): void {
+export function writeSettings(settings: LabSettings): boolean {
   const prefs = sanitizeNotificationPrefs(settings.notificationPrefs);
   // Clamp the layout numbers on the way out too: `migrateSettings` protects a
   // read, but a bad write must not be able to put an unprintable margin or a
@@ -474,14 +515,20 @@ export function writeSettings(settings: LabSettings): void {
     notificationPrefs: prefs,
     updatedAt: new Date().toISOString(),
   };
+  let persisted = true;
   try {
     localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(stamped));
-  } catch (e) {
-    console.error('SettingsContext: failed to persist settings', e);
+  } catch {
+    persisted = false;
+    reportSettingsPersistenceError(
+      'settings',
+      'Settings could not be cached on this device. The encrypted settings copy is still being updated.',
+    );
   }
   applyTheme(stamped.themeId || 'navy', stamped.themeMode === 'dark' ? 'dark' : 'light');
   applyAppearance(stamped);
-  window.dispatchEvent(new Event(SETTINGS_UPDATED_EVENT));
+  window.dispatchEvent(new CustomEvent(SETTINGS_UPDATED_EVENT, { detail: { settings: stamped } }));
+  return persisted;
 }
 
 /** Read stored custom pathology tests. Never throws. */
@@ -494,11 +541,19 @@ export function readCustomTests(): PathologyTest[] {
   }
 }
 
-export function writeCustomTests(tests: PathologyTest[]): void {
+export function writeCustomTests(tests: PathologyTest[]): boolean {
+  let persisted = true;
   try {
     localStorage.setItem(CUSTOM_TESTS_STORAGE_KEY, JSON.stringify(tests));
-  } catch (e) {
-    console.error('SettingsContext: failed to persist custom tests', e);
+  } catch {
+    persisted = false;
+    reportSettingsPersistenceError(
+      'customTests',
+      'Custom tests could not be cached on this device. The encrypted settings copy is still being updated.',
+    );
   }
-  window.dispatchEvent(new Event(CUSTOM_TESTS_UPDATED_EVENT));
+  window.dispatchEvent(
+    new CustomEvent(CUSTOM_TESTS_UPDATED_EVENT, { detail: { customTests: tests } }),
+  );
+  return persisted;
 }

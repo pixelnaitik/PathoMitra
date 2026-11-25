@@ -10,6 +10,8 @@
  * preload is a sandboxed CJS bundle and cannot import from `src/`, so the
  * pairing is enforced by matching channel names, not by the compiler.
  */
+import type { Role } from './models';
+import type { ListOptions } from '../data/types';
 
 /** Result of a desktop file write — superset of the Android SavedFile shape. */
 export interface DesktopSavedResult {
@@ -71,6 +73,8 @@ export interface DesktopPrintRequest {
   };
 }
 
+export type DesktopPrintStartRequest = Omit<DesktopPrintRequest, 'pages'>;
+
 export interface DesktopPrintResult {
   ok: boolean;
   /** The spooler's own words when `ok` is false. */
@@ -83,6 +87,12 @@ export interface DesktopBridge {
   db: {
     init(): Promise<void>;
     load(entity: string): Promise<string | null>;
+    get(entity: string, id: string): Promise<string | null>;
+    query(entity: string, options?: ListOptions): Promise<string>;
+    count(entity: string, where: ListOptions['where']): Promise<number>;
+    set(entity: string, id: string, json: string): Promise<void>;
+    update(entity: string, id: string, patchJson: string): Promise<void>;
+    delete(entity: string, id: string): Promise<void>;
     save(entity: string, json: string): Promise<void>;
     clear(): Promise<void>;
     /**
@@ -125,6 +135,20 @@ export interface DesktopBridge {
      * call is not optimistic: `ok` is true only when Chromium reported success.
      */
     job(request: DesktopPrintRequest): Promise<DesktopPrintResult>;
+    begin(request: DesktopPrintStartRequest): Promise<DesktopPrintResult & { jobId?: string }>;
+    page(jobId: string, pngDataUrl: string): Promise<DesktopPrintResult & { pageNumber?: number }>;
+    commit(jobId: string): Promise<DesktopPrintResult>;
+    cancel(jobId: string): Promise<DesktopPrintResult>;
+  };
+  backupDestination: {
+    choose(): Promise<{ id: string; label: string } | null>;
+    status(): Promise<{ id: string; label: string } | null>;
+    copy(fileName: string, payload: string): Promise<{ fileName: string; verified: boolean }>;
+  };
+  reportSigning: {
+    publicKey(): Promise<{ publicKey: JsonWebKey; keyId: string }>;
+    sign(manifest: string): Promise<{ signature: string; signedAt: string }>;
+    verify(manifest: string, signature: string, keyId?: string): Promise<{ valid: boolean }>;
   };
   shell: {
     /** Open with the user's default handler — the desktop stand-in for both
@@ -132,8 +156,19 @@ export interface DesktopBridge {
     show(target: string): Promise<void>;
   };
   session: {
+    open(
+      identifier: string,
+      password: string,
+    ): Promise<{ token: string; principal: { uid: string; role: Role; name: string } } | null>;
+    openBiometric(
+      operatorId: string,
+    ): Promise<{ token: string; principal: { uid: string; role: Role; name: string } } | null>;
+    close(): Promise<void>;
     /** Main-process minimize/suspend/lock events. A lock event requires re-authentication. */
     onState(callback: (state: 'lock') => void): () => void;
+  };
+  system: {
+    storagePressure(): Promise<{ usage: number; quota: number }>;
   };
   keyring: {
     set(account: string, secret: string): Promise<void>;

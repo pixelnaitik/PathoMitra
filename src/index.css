@@ -62,7 +62,7 @@
   --on-primary: #ffffff;
   --primary-container: #08477e;
   --on-primary-container: #bfe0ff;
-  --secondary: #0e8c7f;
+  --secondary: #0b7c70;
   --on-secondary: #ffffff;
   --secondary-container: #0b6e64;
   --on-secondary-container: #9ff0e6;
@@ -200,7 +200,7 @@
   --on-secondary-container: #bfe0ff;
   --tertiary: #143f3a;
   --tertiary-container: #1f4f48;
-  --accent: #0d9488;
+  --accent: #08786e;
 }
 [data-theme='dark'][data-palette='teal'] {
   --primary: #38d9c4;
@@ -228,7 +228,7 @@
   --on-secondary-container: #f3d9ff;
   --tertiary: #3c2a5e;
   --tertiary-container: #4c3872;
-  --accent: #7c4dff;
+  --accent: #7042e8;
 }
 [data-theme='dark'][data-palette='amethyst'] {
   --primary: #b79bff;
@@ -264,7 +264,7 @@
   --primary-container: #48484a;
   --on-primary-container: #e5e5ea;
   --secondary: #8e8e93;
-  --on-secondary: #f2f2f5;
+  --on-secondary: #1c1c1e;
   --secondary-container: #3a3a3c;
   --on-secondary-container: #e5e5ea;
   --tertiary: #636366;
@@ -284,7 +284,7 @@
   --on-secondary-container: #ffd9d4;
   --tertiary: #5e2228;
   --tertiary-container: #742c33;
-  --accent: #d64550;
+  --accent: #c63d47;
 }
 [data-theme='dark'][data-palette='maroon'] {
   --primary: #ff8e96;

@@ -142,7 +142,14 @@ export default function DashboardLayout({
         setActiveTab(tab);
         return;
       }
-      const param = tab === 'reports' ? 'report' : tab === 'patients' ? 'openPatient' : tab === 'doctors' ? 'openDoctor' : null;
+      const param =
+        tab === 'reports'
+          ? 'report'
+          : tab === 'patients'
+            ? 'openPatient'
+            : tab === 'doctors'
+              ? 'openDoctor'
+              : null;
       const url = param
         ? `/dashboard/${tab}?${param}=${encodeURIComponent(id)}`
         : `/dashboard/${tab}`;
@@ -276,9 +283,13 @@ export default function DashboardLayout({
       try {
         const pressure = await storagePressure();
         if (active && pressure.supported && pressure.ratio >= 0.95) {
-          enableSafeMode('Device storage is at least 95% full. New clinical writes are paused to protect existing records.');
+          enableSafeMode(
+            'Device storage is at least 95% full. New clinical writes are paused to protect existing records.',
+          );
         }
-      } catch { /* storage estimates are advisory and unavailable on some shells */ }
+      } catch {
+        /* storage estimates are advisory and unavailable on some shells */
+      }
     };
     void check();
     const timer = window.setInterval(() => void check(), 60_000);
@@ -654,7 +665,6 @@ export default function DashboardLayout({
               <button
                 type="button"
                 onClick={() => setActiveTab('settings')}
-                aria-label="Open settings"
                 className="flex items-center gap-3 cursor-pointer rounded-full p-1.5 pr-1 transition-colors hover:bg-surface-container-high/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
                 <div className="flex flex-col items-end hidden sm:flex">
@@ -668,6 +678,7 @@ export default function DashboardLayout({
                 <div className="w-9 h-9 rounded-full bg-surface-container border border-[var(--elevated-border)] flex items-center justify-center overflow-hidden">
                   <AvatarIcon seed={avatarSeed} />
                 </div>
+                <span className="sr-only">Open settings</span>
               </button>
             </div>
           </div>

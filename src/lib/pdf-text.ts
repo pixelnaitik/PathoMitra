@@ -74,9 +74,10 @@ const isPrintable = (ch: string): boolean => {
  * Unlike a drop-everything filter this one *transcodes* where a meaning exists
  * (`₹` → `Rs.`, `±` → `+/-`) and drops only what has no safe spelling, so a
  * Devanagari name loses its characters rather than acquiring random punctuation
- * in their place. Dropping is still lossy and `F-1` (embed a Unicode font) is
- * the real fix; until then a lost character is honest and a substituted one is
- * a fabrication on a clinical document.
+ * in their place. Production PDF builders no longer use this lossy path: they
+ * embed script-specific Noto families through `pdf-fonts.ts` and fail closed for
+ * unsupported or irreconcilable mixed-script fields. This helper remains for
+ * standard-14 probes and legacy callers that explicitly require WinAnsi.
  */
 export function winAnsiSafe(value: unknown): string {
   let text = String(value ?? '');

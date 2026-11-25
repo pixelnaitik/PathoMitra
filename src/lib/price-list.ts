@@ -246,15 +246,30 @@ export function sanitizeBillingPrefs(raw: unknown): BillingPrefs {
     ...(e.referralCompliance && typeof e.referralCompliance === 'object'
       ? {
           referralCompliance: {
-            mode: (e.referralCompliance as Record<string, unknown>).mode === 'payout-enabled' ? 'payout-enabled' as const : 'tracking-only' as const,
+            mode:
+              (e.referralCompliance as Record<string, unknown>).mode === 'payout-enabled'
+                ? ('payout-enabled' as const)
+                : ('tracking-only' as const),
             ...(typeof (e.referralCompliance as Record<string, unknown>).acknowledgedBy === 'string'
-              ? { acknowledgedBy: String((e.referralCompliance as Record<string, unknown>).acknowledgedBy).slice(0, 128) }
+              ? {
+                  acknowledgedBy: String(
+                    (e.referralCompliance as Record<string, unknown>).acknowledgedBy,
+                  ).slice(0, 128),
+                }
               : {}),
             ...(typeof (e.referralCompliance as Record<string, unknown>).acknowledgedAt === 'string'
-              ? { acknowledgedAt: String((e.referralCompliance as Record<string, unknown>).acknowledgedAt).slice(0, 64) }
+              ? {
+                  acknowledgedAt: String(
+                    (e.referralCompliance as Record<string, unknown>).acknowledgedAt,
+                  ).slice(0, 64),
+                }
               : {}),
             ...(typeof (e.referralCompliance as Record<string, unknown>).policyVersion === 'string'
-              ? { policyVersion: String((e.referralCompliance as Record<string, unknown>).policyVersion).slice(0, 80) }
+              ? {
+                  policyVersion: String(
+                    (e.referralCompliance as Record<string, unknown>).policyVersion,
+                  ).slice(0, 80),
+                }
               : {}),
           },
         }
@@ -405,7 +420,11 @@ export async function upsertPrice(input: PriceUpsertInput): Promise<PriceList> {
   const at = input.at || new Date().toISOString();
   const history: PriceChange[] = existing
     ? [
-        { price: existing.price, changedAt: existing.effectiveFrom || at, changedBy: current.updatedBy || input.actor },
+        {
+          price: existing.price,
+          changedAt: existing.effectiveFrom || at,
+          changedBy: current.updatedBy || input.actor,
+        },
         ...(existing.history ?? []),
       ].slice(0, HISTORY_LIMIT)
     : [];
@@ -524,7 +543,11 @@ export async function bulkAdjustPrices(
       price: after,
       effectiveFrom: at,
       history: [
-        { price: before, changedAt: existing.effectiveFrom || at, changedBy: current.updatedBy || actor },
+        {
+          price: before,
+          changedAt: existing.effectiveFrom || at,
+          changedBy: current.updatedBy || actor,
+        },
         ...(existing.history ?? []),
       ].slice(0, HISTORY_LIMIT),
       approvedBy: actor.trim(),

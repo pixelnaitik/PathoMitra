@@ -75,7 +75,7 @@ function stubOpen(allowed: boolean) {
   const open = vi.fn((url: string, _target?: string, features?: string) => {
     // The spec behaviour that broke the preview: noopener ⇒ no window handle.
     if (features?.includes('noopener')) return null;
-    return allowed ? { url, document: { title: '' } } : null;
+    return allowed ? { url, opener: window, document: { title: '' } } : null;
   });
   vi.stubGlobal('open', open);
   return open;
@@ -124,9 +124,9 @@ describe('previewPdf in a browser', () => {
     expect(open).toHaveBeenCalledWith('blob:report', '_blank');
     // The handle only exists because no feature string was passed; naming it is
     // what makes the viewer offer "report-42.pdf" on save.
-    expect((open.mock.results[0]?.value as { document: { title: string } }).document.title).toBe(
-      'report-42.pdf',
-    );
+    const tab = open.mock.results[0]?.value as { opener: unknown; document: { title: string } };
+    expect(tab.opener).toBeNull();
+    expect(tab.document.title).toBe('report-42.pdf');
     expect(doc.save).not.toHaveBeenCalled();
   });
 

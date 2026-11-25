@@ -1,16 +1,17 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { DesktopRepository } from './desktopRepository';
 import type { DesktopBridge } from '../lib/desktop-bridge';
+import { applyQuery, makeDoc } from './query';
+import type { ListOptions } from './types';
 
 /**
  * P0.4 / P0.5 — the desktop `transaction()` is a real atomic unit.
  *
  * The repository is exercised against a fake Electron bridge that mimics the
- * main process: whole-collection JSON rows, a `save` for single writes and a
- * `commit` that applies several collections as ONE all-or-nothing batch. We
- * assert the properties the fix exists to guarantee, not the implementation:
- * a transaction issues exactly one commit and never a per-collection save; and
- * any failure — in the body or at commit — leaves the database untouched.
+ * main process: document/query IPC for ordinary writes and a `commit` that
+ * applies several collections as ONE all-or-nothing batch. A transaction issues
+ * exactly one commit and never a per-document write; any failure leaves the
+ * database untouched.
  */
 
 type Collections = Map<string, string>;
@@ -19,6 +20,7 @@ function makeBridge(failCommitOn?: (entity: string) => boolean) {
   const collections: Collections = new Map();
   const calls = {
     saves: [] as string[],
+    queries: [] as Array<{ entity: string; options?: ListOptions }>,
     commits: 0,
     committedEntities: [] as string[],
   };
@@ -28,6 +30,61 @@ function makeBridge(failCommitOn?: (entity: string) => boolean) {
     db: {
       init: async () => {},
       load: async (entity: string) => collections.get(entity) ?? null,
+      get: async (entity: string, id: string) => {
+        const store = JSON.parse(collections.get(entity) ?? '{}') as Record<
+          string,
+          Record<string, unknown>
+        >;
+        return store[id] ? JSON.stringify(store[id]) : null;
+      },
+      query: async (entity: string, options?: ListOptions) => {
+        calls.queries.push({ entity, options });
+        const store = JSON.parse(collections.get(entity) ?? '{}') as Record<
+          string,
+          Record<string, unknown>
+        >;
+        const docs = Object.entries(store).map(([id, data]) => makeDoc(id, data));
+        return JSON.stringify(
+          applyQuery(docs, options).map(doc => ({ id: doc.id, data: doc.data() })),
+        );
+      },
+      count: async (entity: string, where: ListOptions['where']) => {
+        const store = JSON.parse(collections.get(entity) ?? '{}') as Record<
+          string,
+          Record<string, unknown>
+        >;
+        return applyQuery(
+          Object.entries(store).map(([id, data]) => makeDoc(id, data)),
+          { where },
+        ).length;
+      },
+      set: async (entity: string, id: string, json: string) => {
+        calls.saves.push(entity);
+        const store = JSON.parse(collections.get(entity) ?? '{}') as Record<
+          string,
+          Record<string, unknown>
+        >;
+        store[id] = JSON.parse(json) as Record<string, unknown>;
+        collections.set(entity, JSON.stringify(store));
+      },
+      update: async (entity: string, id: string, patchJson: string) => {
+        calls.saves.push(entity);
+        const store = JSON.parse(collections.get(entity) ?? '{}') as Record<
+          string,
+          Record<string, unknown>
+        >;
+        if (!store[id]) throw new Error('missing');
+        store[id] = { ...store[id], ...(JSON.parse(patchJson) as Record<string, unknown>) };
+        collections.set(entity, JSON.stringify(store));
+      },
+      delete: async (entity: string, id: string) => {
+        const store = JSON.parse(collections.get(entity) ?? '{}') as Record<
+          string,
+          Record<string, unknown>
+        >;
+        delete store[id];
+        collections.set(entity, JSON.stringify(store));
+      },
       save: async (entity: string, json: string) => {
         calls.saves.push(entity);
         collections.set(entity, json);
@@ -123,16 +180,46 @@ describe('DesktopRepository.transaction (P0.4)', () => {
     expect(collections.has('reports')).toBe(true);
   });
 
-  it('a nested transaction joins the open one instead of flushing early', async () => {
+  it('rejects a nested transaction instead of sharing the outer rollback boundary', async () => {
     const { repo, calls } = await withRepo();
-    await repo.transaction(async tx => {
-      await tx.set('patients', 'p1', { name: 'Asha' });
-      await repo.transaction(async inner => {
-        await inner.set('reports', 'r1', { status: 'final' });
-      });
+    await expect(
+      repo.transaction(async tx => {
+        await tx.set('patients', 'p1', { name: 'Asha' });
+        await repo.transaction(async inner => {
+          await inner.set('reports', 'r1', { status: 'final' });
+        });
+      }),
+    ).rejects.toThrow(/already active/);
+    expect(calls.commits).toBe(0);
+    expect(await repo.get('patients', 'p1')).toBeNull();
+  });
+
+  it('uses paged document queries and server-side counts for ordinary reads', async () => {
+    const { repo, calls } = await withRepo();
+    await repo.set('patients', 'p1', { name: 'A', createdAt: '2026-01-01' });
+    await repo.set('patients', 'p2', { name: 'B', createdAt: '2026-01-03' });
+    await repo.set('patients', 'p3', { name: 'C', createdAt: '2026-01-02' });
+    const page = await repo.list('patients', {
+      orderBy: 'createdAt',
+      direction: 'desc',
+      limit: 1,
+      offset: 1,
     });
-    expect(calls.commits).toBe(1);
-    expect([...calls.committedEntities].sort()).toEqual(['patients', 'reports']);
+    expect(page.map(doc => doc.id)).toEqual(['p3']);
+    expect(calls.queries.at(-1)).toMatchObject({
+      entity: 'patients',
+      options: { limit: 1, offset: 1 },
+    });
+    expect(await repo.count('patients', [{ field: 'name', op: 'contains', value: 'A' }])).toBe(1);
+  });
+
+  it('does not promote a single write into the cache before IPC persistence succeeds', async () => {
+    const { repo, bridge } = await withRepo();
+    bridge.db.set = async () => {
+      throw new Error('IPC write failed');
+    };
+    await expect(repo.set('patients', 'p1', { name: 'Asha' })).rejects.toThrow(/IPC write failed/);
+    expect(await repo.get('patients', 'p1')).toBeNull();
   });
 
   it('never notifies a listener with a partial transaction', async () => {

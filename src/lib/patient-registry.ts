@@ -128,6 +128,8 @@ export interface DuplicateCandidate {
   name: string;
   age: string | number;
   phone?: string;
+  dateOfBirth?: string;
+  externalId?: string;
 }
 
 export interface ProbableDuplicate extends DuplicateCandidate {
@@ -147,7 +149,13 @@ export interface ProbableDuplicate extends DuplicateCandidate {
  * patient never flags that patient as their own duplicate.
  */
 export function findProbableDuplicates(
-  input: { name: string; age: string | number; phone?: string },
+  input: {
+    name: string;
+    age: string | number;
+    phone?: string;
+    dateOfBirth?: string;
+    externalId?: string;
+  },
   candidates: readonly DuplicateCandidate[],
   excludeId?: string,
 ): ProbableDuplicate[] {
@@ -163,14 +171,27 @@ export function findProbableDuplicates(
       nameKey.length > 0 &&
       patientNameKey(candidate.name) === nameKey &&
       String(candidate.age ?? '').trim() === ageKey;
+    const sameBirthDate =
+      !!input.dateOfBirth &&
+      input.dateOfBirth === candidate.dateOfBirth &&
+      patientNameKey(candidate.name) === nameKey;
+    const sameExternalId =
+      !!input.externalId &&
+      input.externalId.trim().toUpperCase() === candidate.externalId?.trim().toUpperCase();
 
-    if (samePhone || sameNameAndAge) {
+    if (samePhone || sameNameAndAge || sameBirthDate || sameExternalId) {
       found.push({
         id: candidate.id,
         name: candidate.name,
         age: candidate.age,
         phone: candidate.phone,
-        reason: samePhone ? `same phone number (${candidate.phone || phone})` : 'same name and age',
+        reason: sameExternalId
+          ? 'same external identifier'
+          : sameBirthDate
+            ? 'same name and date of birth'
+            : samePhone
+              ? `same phone number (${candidate.phone || phone})`
+              : 'same name and age',
       });
     }
   }
@@ -192,6 +213,11 @@ export function validatePatientForm(form: {
   name: string;
   age: string | number;
   phone?: string;
+  dateOfBirth?: string;
+  guardianName?: string;
+  guardianPhone?: string;
+  externalIdType?: 'national-id' | 'birth-certificate' | 'other';
+  externalId?: string;
   address?: string;
 }): string | null {
   const name = String(form.name ?? '').trim();
@@ -214,6 +240,37 @@ export function validatePatientForm(form: {
   }
   if (phone && (normalisePhone(phone).length < 8 || normalisePhone(phone).length > 15)) {
     return 'Phone must contain 8–15 digits.';
+  }
+
+  const dateOfBirth = String(form.dateOfBirth ?? '').trim();
+  if (dateOfBirth) {
+    const parsed = new Date(`${dateOfBirth}T00:00:00.000Z`);
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth) ||
+      Number.isNaN(parsed.getTime()) ||
+      parsed.toISOString().slice(0, 10) !== dateOfBirth ||
+      parsed.getTime() > Date.now()
+    ) {
+      return 'Date of birth must be a valid date that is not in the future.';
+    }
+  }
+
+  const guardianName = String(form.guardianName ?? '').trim();
+  if (guardianName.length > 100) return 'Guardian name must be 100 characters or fewer.';
+  const guardianPhone = String(form.guardianPhone ?? '').trim();
+  if (
+    guardianPhone &&
+    (!PHONE_RE.test(guardianPhone) ||
+      normalisePhone(guardianPhone).length < 8 ||
+      normalisePhone(guardianPhone).length > 15)
+  ) {
+    return 'Guardian phone must contain 8–15 digits and only spaces, + ( ) -.';
+  }
+
+  const externalId = String(form.externalId ?? '').trim();
+  if (externalId.length > 128) return 'External identifier must be 128 characters or fewer.';
+  if (!!externalId !== !!form.externalIdType) {
+    return 'Choose an identifier type and enter its value, or leave both blank.';
   }
 
   const address = String(form.address ?? '').trim();

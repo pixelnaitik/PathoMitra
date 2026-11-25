@@ -6,6 +6,7 @@
  * aggregates so later patient edits cannot change what was ordered or collected.
  */
 import { getRepository } from '../data';
+import type { DataRepository } from '../data/types';
 import { generateId } from '../data/query';
 import { findTestInfo } from './pathology-tests';
 import { resolvePriceDetails } from './price-list';
@@ -23,6 +24,12 @@ import {
   type SampleRecord,
   type SampleStatus,
 } from './models';
+
+export interface CreateOrderHooks {
+  id?: string;
+  operationId?: string;
+  afterCreate?: (tx: DataRepository, order: OrderRecord, samples: SampleRecord[]) => Promise<void>;
+}
 
 export interface CreateOrderInput {
   patientId: string;
@@ -66,10 +73,6 @@ function dayKey(date: Date): string {
   return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
 }
 
-function randomSuffix(): string {
-  return generateId().replace(/-/g, '').slice(0, 8).toUpperCase();
-}
-
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   if (value && typeof value === 'object') {
@@ -82,10 +85,16 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-type CustodyEventInput = Pick<CustodyEvent, 'id' | 'action' | 'actor' | 'at' | 'from' | 'to' | 'location' | 'note'>;
+type CustodyEventInput = Pick<
+  CustodyEvent,
+  'id' | 'action' | 'actor' | 'at' | 'from' | 'to' | 'location' | 'note'
+>;
 
 async function custodyHash(event: CustodyEventInput & { previousHash?: string }): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonicalJson(event)));
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(canonicalJson(event)),
+  );
   return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
@@ -103,7 +112,8 @@ export async function verifyCustodyChain(
 ): Promise<{ valid: boolean; reason?: string }> {
   let previousHash: string | undefined;
   for (const event of sample.custody) {
-    if (!event.eventHash) return { valid: false, reason: 'A legacy custody event is not hash-chained.' };
+    if (!event.eventHash)
+      return { valid: false, reason: 'A legacy custody event is not hash-chained.' };
     if ((event.previousHash ?? '') !== (previousHash ?? '')) {
       return { valid: false, reason: 'Custody hash chain is broken.' };
     }
@@ -125,12 +135,33 @@ async function allocateOrderNoInTransaction(tx: RepositoryTx, now: Date): Promis
   for (let step = 1; step <= 100; step += 1) {
     const sequence = cursor + step;
     const candidate = `${prefix}-${String(sequence).padStart(4, '0')}`;
-    const existing = await tx.list('orders', { where: [{ field: 'orderNo', op: '==', value: candidate }] });
+    const existing = await tx.list('orders', {
+      where: [{ field: 'orderNo', op: '==', value: candidate }],
+    });
     if (existing.length > 0) continue;
     await tx.set('meta', counterId, { value: sequence, allocatedAt: now.toISOString() });
     return candidate;
   }
   throw new Error('Order numbers could not be advanced safely. No order was created.');
+}
+
+async function allocateAccessionInTransaction(tx: RepositoryTx, now: Date): Promise<string> {
+  const day = dayKey(now);
+  const counterId = `accession-no-${day}`;
+  const counter = await tx.get('meta', counterId);
+  const stored = Number(counter?.data().value);
+  const cursor = Number.isFinite(stored) && stored > 0 ? Math.floor(stored) : 0;
+  for (let step = 1; step <= 1000; step += 1) {
+    const sequence = cursor + step;
+    const candidate = `ACC-${day}-${String(sequence).padStart(6, '0')}`;
+    const existing = await tx.list('samples', {
+      where: [{ field: 'accessionNo', op: '==', value: candidate }],
+    });
+    if (existing.length > 0) continue;
+    await tx.set('meta', counterId, { value: sequence, allocatedAt: now.toISOString() });
+    return candidate;
+  }
+  throw new Error('Accession numbers could not be advanced safely. No sample was created.');
 }
 
 function parseOrder(data: Record<string, unknown>): OrderRecord {
@@ -162,6 +193,7 @@ type RepositoryTx = Parameters<Parameters<ReturnType<typeof getRepository>['tran
 async function createOrderInternal(
   input: CreateOrderInput,
   includeSamples: boolean,
+  hooks: CreateOrderHooks = {},
 ): Promise<{ order: OrderRecord; samples: SampleRecord[] }> {
   const repo = getRepository();
   const now = stamp(input.now);
@@ -172,10 +204,27 @@ async function createOrderInternal(
     throw new Error('Acknowledge specimen preparation before accepting a STAT order.');
   }
 
-  const id = generateId();
+  const id = hooks.id ?? generateId();
+  const operationKey = hooks.operationId ? `operation-${hooks.operationId}` : null;
   let result: { order: OrderRecord; samples: SampleRecord[] } | null = null;
 
   await repo.transaction(async tx => {
+    if (operationKey) {
+      const prior = await tx.get('meta', operationKey);
+      if (prior) {
+        const orderDoc = await tx.get('orders', String(prior.data().orderId));
+        if (!orderDoc) throw new Error('The prior operation references a missing order.');
+        const order = parseOrder({ id: String(prior.data().orderId), ...orderDoc.data() });
+        const sampleDocs = await tx.list('samples', {
+          where: [{ field: 'orderId', op: '==', value: order.id }],
+        });
+        result = {
+          order,
+          samples: sampleDocs.map(doc => parseSample({ id: doc.id, ...doc.data() })),
+        };
+        return;
+      }
+    }
     const patient = await tx.get('patients', input.patientId);
     if (!patient) throw new Error('The patient for this order no longer exists.');
     const patientName = String(patient.data().name ?? '').trim();
@@ -185,7 +234,11 @@ async function createOrderInternal(
       const active = await tx.list('orders', {
         where: [
           { field: 'patientId', op: '==', value: input.patientId },
-          { field: 'status', op: 'in', value: ['ordered', 'collected', 'processing', 'resulted', 'issued'] },
+          {
+            field: 'status',
+            op: 'in',
+            value: ['ordered', 'collected', 'processing', 'resulted', 'issued'],
+          },
         ],
       });
       const wanted = [...tests].sort().join('\u0000');
@@ -194,7 +247,9 @@ async function createOrderInternal(
         return [...names.map(item => item.name ?? '')].sort().join('\u0000') === wanted;
       });
       if (duplicate) {
-        throw new Error('An active order already contains these tests. Open it or explicitly allow a duplicate.');
+        throw new Error(
+          'An active order already contains these tests. Open it or explicitly allow a duplicate.',
+        );
       }
     }
 
@@ -251,6 +306,14 @@ async function createOrderInternal(
     const samples = includeSamples
       ? await createSamplesInTransaction(tx, order, input.actor, now)
       : [];
+    await hooks.afterCreate?.(tx, order, samples);
+    if (operationKey) {
+      await tx.set('meta', operationKey, {
+        orderId: order.id,
+        sampleIds: samples.map(sample => sample.id),
+        createdAt: now,
+      });
+    }
     result = { order, samples };
   });
 
@@ -265,8 +328,9 @@ export async function createOrder(input: CreateOrderInput): Promise<OrderRecord>
 /** Create the requisition and all expected specimens in one transaction. */
 export async function createOrderWithSamples(
   input: CreateOrderInput,
+  hooks: CreateOrderHooks = {},
 ): Promise<{ order: OrderRecord; samples: SampleRecord[] }> {
-  return createOrderInternal(input, true);
+  return createOrderInternal(input, true, hooks);
 }
 
 /** Supersede an order with a linked replacement while retaining the original. */
@@ -278,7 +342,8 @@ export async function amendOrder(
   if (!actor.trim()) throw new Error('An amendment requires an operator identity.');
   if (!reason.trim()) throw new Error('An order amendment requires a reason.');
   const repo = getRepository();
-  let result: { original: OrderRecord; replacement: OrderRecord; samples: SampleRecord[] } | null = null;
+  let result: { original: OrderRecord; replacement: OrderRecord; samples: SampleRecord[] } | null =
+    null;
   await repo.transaction(async tx => {
     const doc = await tx.get('orders', orderId);
     if (!doc) throw new Error('This order no longer exists.');
@@ -297,7 +362,10 @@ export async function amendOrder(
       status: 'ordered',
       supersedesOrderId: original.id,
       revision: original.revision + 1,
-      items: original.items.map((item, index) => ({ ...item, id: `${replacementId}-item-${index + 1}` })),
+      items: original.items.map((item, index) => ({
+        ...item,
+        id: `${replacementId}-item-${index + 1}`,
+      })),
       cancelledReason: undefined,
       createdBy: actor.trim(),
       createdAt: now,
@@ -313,8 +381,15 @@ export async function amendOrder(
     });
     await tx.set('orders', orderId, originalValue);
     await tx.set('orders', replacementId, replacementValue);
-    await appendAudit(tx, 'order.amended', 'orders', orderId, actor, now, { replacementId, orderNo, reason: reason.trim() });
-    await appendAudit(tx, 'order.created', 'orders', replacementId, actor, now, { supersedesOrderId: orderId, revision: replacementValue.revision });
+    await appendAudit(tx, 'order.amended', 'orders', orderId, actor, now, {
+      replacementId,
+      orderNo,
+      reason: reason.trim(),
+    });
+    await appendAudit(tx, 'order.created', 'orders', replacementId, actor, now, {
+      supersedesOrderId: orderId,
+      revision: replacementValue.revision,
+    });
     const replacement = { ...replacementValue, id: replacementId } as OrderRecord;
     const samples = await createSamplesInTransaction(tx, replacement, actor, now);
     result = {
@@ -376,17 +451,16 @@ async function createSamplesInTransaction(
   if (!['ordered', 'collected'].includes(order.status)) {
     throw new Error(`Specimens cannot be created while the order is ${order.status}.`);
   }
-  const existing = await tx.list('samples', { where: [{ field: 'orderId', op: '==', value: order.id }] });
+  const existing = await tx.list('samples', {
+    where: [{ field: 'orderId', op: '==', value: order.id }],
+  });
   const byItem = new Set(existing.map(doc => String(doc.data().orderItemId)));
-  const accessions = new Set(existing.map(doc => String(doc.data().accessionNo)));
   const created: SampleRecord[] = [];
 
   for (const item of order.items) {
     if (byItem.has(item.id)) continue;
     const id = generateId();
-    let accessionNo = `ACC-${dayKey(new Date(now))}-${randomSuffix()}`;
-    while (accessions.has(accessionNo)) accessionNo = `ACC-${dayKey(new Date(now))}-${randomSuffix()}`;
-    accessions.add(accessionNo);
+    const accessionNo = await allocateAccessionInTransaction(tx, new Date(now));
     const value = SampleSchema.parse({
       id,
       accessionNo,
@@ -404,14 +478,20 @@ async function createSamplesInTransaction(
       updatedAt: now,
     });
     await tx.set('samples', id, value);
-    await appendAudit(tx, 'sample.expected', 'samples', id, actor, now, { orderId: order.id, accessionNo });
+    await appendAudit(tx, 'sample.expected', 'samples', id, actor, now, {
+      orderId: order.id,
+      accessionNo,
+    });
     created.push({ ...value, id } as SampleRecord);
   }
   return created;
 }
 
 /** Materialize expected specimens for every order item; safe to retry. */
-export async function createSamplesForOrder(orderId: string, actor: string): Promise<SampleRecord[]> {
+export async function createSamplesForOrder(
+  orderId: string,
+  actor: string,
+): Promise<SampleRecord[]> {
   const repo = getRepository();
   let created: SampleRecord[] = [];
   await repo.transaction(async tx => {
@@ -428,7 +508,17 @@ export async function transitionSample(
   sampleId: string,
   nextStatus: SampleStatus,
   actor: string,
-  options: { reason?: string; location?: string; from?: string; to?: string; note?: string; source?: string; collectionSite?: string; temperatureC?: number; container?: string } = {},
+  options: {
+    reason?: string;
+    location?: string;
+    from?: string;
+    to?: string;
+    note?: string;
+    source?: string;
+    collectionSite?: string;
+    temperatureC?: number;
+    container?: string;
+  } = {},
 ): Promise<SampleRecord> {
   const repo = getRepository();
   let updated: SampleRecord | null = null;
@@ -451,7 +541,8 @@ export async function transitionSample(
           ? 'received'
           : nextStatus === 'processing'
             ? 'centrifuged'
-            : nextStatus) as CustodyEvent['action'];
+            : nextStatus
+    ) as CustodyEvent['action'];
     const event = await chainedCustodyEvent(sample.custody.at(-1), {
       id: generateId(),
       action,
@@ -509,7 +600,7 @@ export async function createRecollection(
     }
     const now = stamp();
     const id = generateId();
-    const accessionNo = `ACC-${dayKey(new Date(now))}-${randomSuffix()}`;
+    const accessionNo = await allocateAccessionInTransaction(tx, new Date(now));
     const value = SampleSchema.parse({
       ...original,
       id,
@@ -523,13 +614,15 @@ export async function createRecollection(
       rejectionReason: undefined,
       recollectionOfSampleId: originalSampleId,
       aliquots: [],
-      custody: [await chainedCustodyEvent(undefined, {
-        id: generateId(),
-        action: 'recollected',
-        actor: actor.trim(),
-        at: now,
-        note: reason.trim(),
-      })],
+      custody: [
+        await chainedCustodyEvent(undefined, {
+          id: generateId(),
+          action: 'recollected',
+          actor: actor.trim(),
+          at: now,
+          note: reason.trim(),
+        }),
+      ],
       createdAt: now,
       updatedAt: now,
     });
@@ -562,12 +655,21 @@ export async function recordCustodyEvent(
     }
     if (!actor.trim()) throw new Error('An operator identity is required for custody changes.');
     const now = stamp();
-    const aliquots = action === 'aliquoted'
-      ? [...sample.aliquots, { id: generateId(), label: `Aliquot ${sample.aliquots.length + 1}`, location: options.location }]
-      : sample.aliquots;
+    const aliquots =
+      action === 'aliquoted'
+        ? [
+            ...sample.aliquots,
+            {
+              id: generateId(),
+              label: `Aliquot ${sample.aliquots.length + 1}`,
+              location: options.location,
+            },
+          ]
+        : sample.aliquots;
     const value = SampleSchema.parse({
       ...sample,
-      storageLocation: action === 'stored' ? options.location ?? sample.storageLocation : sample.storageLocation,
+      storageLocation:
+        action === 'stored' ? (options.location ?? sample.storageLocation) : sample.storageLocation,
       aliquots,
       custody: [
         ...sample.custody,
@@ -583,7 +685,9 @@ export async function recordCustodyEvent(
       updatedAt: now,
     });
     await tx.set('samples', sampleId, value);
-    await appendAudit(tx, `sample.${action}`, 'samples', sampleId, actor, now, { location: options.location });
+    await appendAudit(tx, `sample.${action}`, 'samples', sampleId, actor, now, {
+      location: options.location,
+    });
     updated = { ...value, id: sampleId } as SampleRecord;
   });
   if (!updated) throw new Error('The custody event could not be saved.');

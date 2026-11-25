@@ -48,45 +48,47 @@ export default function TechnologyPage() {
                   The PathoMitra Advantage
                 </h2>
               </Reveal>
-            <div className="grid md:grid-cols-3 gap-8">
-              {[
-                {
-                  icon: WifiOff,
-                  title: 'Offline by Design',
-                  desc: 'The Android build does not request the INTERNET permission, so patient data has no pathway off the device. The Windows desktop build works the same way on your bench PC — no server, no sync, and the lab keeps working through outages and dead connections.',
-                },
-                {
-                  icon: Lock,
-                  title: 'Encrypted on the Device',
-                  desc: 'In the Android app, records sit in a SQLCipher (AES-256) database whose key is held in the hardware keystore, never in the app bundle or plain preferences. The Windows build stores the same AES-256 encrypted database with its key in the Windows Credential Locker (DPAPI). The browser build runs the same console on unencrypted local storage.',
-                },
-                {
-                  icon: Zap,
-                  title: 'Built for Bench Speed',
-                  desc: 'Keyboard-first data entry, command search, progressively-paged lists and an undo history — designed around typing hundreds of results a day.',
-                },
-                {
-                  icon: Fingerprint,
-                  title: 'Device-Bound Unlock',
-                  desc: 'A PBKDF2-hashed PIN everywhere, plus an optional biometric or screen-lock credential on Android, verified by the operating system rather than by this app.',
-                },
-                {
-                  icon: Github,
-                  title: 'Open Source (MIT)',
-                  desc: 'The whole console — Android, Windows and browser — is published under the MIT license at github.com/pixelnaitik/PathoMitra. Read the code, or have your IT partner audit it before it ever touches patient data.',
-                },
-              ].map((benefit, i) => (
-                <Reveal key={i} delay={i * 0.07} y={22}>
-                  <div className="card-hover spotlight group h-full bg-surface-container-lowest p-8 rounded-3xl border border-outline-variant/30 shadow-card">
-                    <div className="w-12 h-12 bg-surface-container rounded-xl flex items-center justify-center mb-6 transition-colors duration-300 group-hover:bg-primary/10">
-                      <benefit.icon className="w-6 h-6 text-primary-container transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:scale-110 group-hover:-rotate-6" />
+              <div className="grid md:grid-cols-3 gap-8">
+                {[
+                  {
+                    icon: WifiOff,
+                    title: 'Offline by Design',
+                    desc: 'The Android build does not request the INTERNET permission, so patient data has no pathway off the device. The Windows desktop build works the same way on your bench PC — no server, no sync, and the lab keeps working through outages and dead connections.',
+                  },
+                  {
+                    icon: Lock,
+                    title: 'Encrypted on the Device',
+                    desc: 'In the Android app, records sit in a SQLCipher (AES-256) database whose key is held in the hardware keystore, never in the app bundle or plain preferences. The Windows build stores the same AES-256 encrypted database with its key in the Windows Credential Locker (DPAPI). The browser build runs the same console on unencrypted local storage.',
+                  },
+                  {
+                    icon: Zap,
+                    title: 'Built for Bench Speed',
+                    desc: 'Keyboard-first data entry, command search, progressively-paged lists and an undo history — designed around typing hundreds of results a day.',
+                  },
+                  {
+                    icon: Fingerprint,
+                    title: 'Device-Bound Unlock',
+                    desc: 'A PBKDF2-hashed PIN everywhere, plus an optional biometric or screen-lock credential on Android, verified by the operating system rather than by this app.',
+                  },
+                  {
+                    icon: Github,
+                    title: 'Open Source (MIT)',
+                    desc: 'The whole console — Android, Windows and browser — is published under the MIT license at github.com/pixelnaitik/PathoMitra. Read the code, or have your IT partner audit it before it ever touches patient data.',
+                  },
+                ].map((benefit, i) => (
+                  <Reveal key={i} delay={i * 0.07} y={22}>
+                    <div className="card-hover spotlight group h-full bg-surface-container-lowest p-8 rounded-3xl border border-outline-variant/30 shadow-card">
+                      <div className="w-12 h-12 bg-surface-container rounded-xl flex items-center justify-center mb-6 transition-colors duration-300 group-hover:bg-primary/10">
+                        <benefit.icon className="w-6 h-6 text-primary-container transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:scale-110 group-hover:-rotate-6" />
+                      </div>
+                      <h3 className="text-xl font-bold text-on-surface mb-3">{benefit.title}</h3>
+                      <p className="text-on-surface-variant text-sm leading-relaxed">
+                        {benefit.desc}
+                      </p>
                     </div>
-                    <h3 className="text-xl font-bold text-on-surface mb-3">{benefit.title}</h3>
-                    <p className="text-on-surface-variant text-sm leading-relaxed">{benefit.desc}</p>
-                  </div>
-                </Reveal>
-              ))}
-            </div>
+                  </Reveal>
+                ))}
+              </div>
             </div>
           </div>
         </main>

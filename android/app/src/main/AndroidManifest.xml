@@ -39,13 +39,10 @@
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
 
-        <!-- The app schedules one inexact daily work-review reminder. A boot
-             receiver is intentionally omitted: the reminder is re-armed on the
-             next app launch, avoiding an unnecessary background startup while
-             still reminding staff when the app is closed. -->
+        <!-- Capacitor restores already-scheduled inexact reminders after reboot. -->
         <receiver
             android:name="com.capacitorjs.plugins.localnotifications.LocalNotificationRestoreReceiver"
-            tools:node="remove" />
+            android:exported="false" />
     </application>
 
     <!-- Permissions -->
@@ -68,8 +65,16 @@
     <uses-permission
         android:name="android.permission.USE_EXACT_ALARM"
         tools:node="remove"/>
-    <!-- No boot receiver: scheduled reminders are re-armed on app launch. -->
+    <!-- Restore inexact local reminders after a device reboot. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+
+    <!-- WorkManager contributes these for optional constraint/foreground modes.
+         PathoMitra uses local, non-network work only, so remove them from the
+         merged manifest to preserve the no-network invariant. -->
     <uses-permission
-        android:name="android.permission.RECEIVE_BOOT_COMPLETED"
+        android:name="android.permission.ACCESS_NETWORK_STATE"
+        tools:node="remove"/>
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE"
         tools:node="remove"/>
 </manifest>

@@ -1,46 +1,36 @@
-/**
- * Electron-backed {@link DataRepository} — the desktop counterpart of the
- * APK's `SqliteRepository`.
- *
- * Query semantics are identical to {@link WebRepository} on purpose: the same
- * `applyQuery`/`makeDoc` helpers run in the renderer, so a filter or an
- * `orderBy` can never disagree between platforms — only *where the JSON
- * lives* changes. Reads are served from a renderer-side cache; every mutation
- * writes the collection back through the IPC bridge, where the main process
- * stores it in the SQLCipher file (`electron/db.ts`, key in Windows Credential
- * Manager). The renderer never sees the key or the raw file.
- *
- * v1 granularity is one row per collection (see electron/db.ts). If a lab's
- * report count ever makes whole-collection JSON writes heavy, the upgrade is
- * row-level statements in the main process — the DataRepository contract here
- * does not change.
- */
+/** Electron repository: document/query IPC outside explicit bulk transactions. */
 import { desktopBridge, type DesktopBridge } from '../lib/desktop-bridge';
-import type { DataRepository, EntityName, ListOptions, LocalDoc, WhereFilter } from './types';
 import { applyQuery, generateId, makeDoc } from './query';
-import { ENTITY_NAMES } from './entities';
+import { ENTITY_NAMES, type EntityName } from './entities';
+import type {
+  DataRepository,
+  ListOptions,
+  LocalDoc,
+  RepositoryPrincipal,
+  WhereFilter,
+} from './types';
 
 type Store = Record<string, Record<string, unknown>>;
-
+type Subscriber = (docs: LocalDoc[]) => void;
 const ALL_ENTITIES: readonly EntityName[] = ENTITY_NAMES;
 
+function docsFromJson(json: string): LocalDoc[] {
+  const rows = JSON.parse(json) as Array<{ id: string; data: Record<string, unknown> }>;
+  return rows.map(row => makeDoc(row.id, row.data));
+}
+
+function storeDocs(store: Store): LocalDoc[] {
+  return Object.entries(store).map(([id, data]) => makeDoc(id, data));
+}
+
 export class DesktopRepository implements DataRepository {
-  private bridge: DesktopBridge;
-  private memory = new Map<EntityName, Promise<Store>>();
-  private listeners = new Map<EntityName, Set<(docs: LocalDoc[]) => void>>();
+  private readonly bridge: DesktopBridge;
+  private readonly queues = new Map<EntityName, Promise<void>>();
+  private readonly listeners = new Map<EntityName, Map<Subscriber, ListOptions | undefined>>();
+  private readonly failures = new Map<EntityName, Set<(error: unknown) => void>>();
   private ready: Promise<void> | null = null;
-  /** Tail of the per-entity mutation chain (see `queue`). */
-  private queues = new Map<EntityName, Promise<void>>();
-  /** Error callbacks registered alongside listeners (see `subscribe`). */
-  private failures = new Map<EntityName, Set<(error: unknown) => void>>();
-  /**
-   * The active buffered transaction, or null when none is open. While set,
-   * every write goes into the collection's in-memory `buffers` instead of
-   * persisting, and listeners stay silent until the outcome is known — so
-   * {@link transaction} commits the whole buffer set as ONE atomic
-   * main-process write (`bridge.db.commit`) or not at all.
-   */
   private tx: { buffers: Map<EntityName, Store>; touched: Set<EntityName> } | null = null;
+  private transactionUnitActive = false;
 
   constructor() {
     const bridge = desktopBridge();
@@ -53,44 +43,9 @@ export class DesktopRepository implements DataRepository {
     return this.ready;
   }
 
-  /**
-   * The collection's store, loaded once and cached for the session.
-   *
-   * A failed load is NOT cached as an empty store: the next mutation would
-   * then persist `{}` + its own document over the collection and silently
-   * destroy everything else in it. Dropping the cache entry on failure keeps
-   * the error honest for the caller and lets a later call retry the read.
-   */
-  private store(entity: EntityName): Promise<Store> {
-    let cached = this.memory.get(entity);
-    if (!cached) {
-      cached = this.bridge.db.load(entity).then(raw => (raw ? (JSON.parse(raw) as Store) : {}));
-      cached = cached.catch((err: unknown) => {
-        if (this.memory.get(entity) === cached) this.memory.delete(entity);
-        throw err;
-      });
-      this.memory.set(entity, cached);
-    }
-    return cached;
-  }
-
-  private async persist(entity: EntityName, store: Store): Promise<void> {
-    this.memory.set(entity, Promise.resolve(store));
-    await this.bridge.db.save(entity, JSON.stringify(store));
-  }
-
-  /**
-   * Run one mutation for `entity` after every mutation already queued for it.
-   *
-   * Whole-collection writes are read-copy-persist; two that interleave (a
-   * report save racing a note write) would each copy the pre-mutation store
-   * and the slower one would roll the faster one's document back out of the
-   * database. Chaining per entity makes the read and its write atomic
-   * against sibling mutations, and failures do not poison the chain.
-   */
   private queue<T>(entity: EntityName, task: () => Promise<T>): Promise<T> {
-    const prev = this.queues.get(entity) ?? Promise.resolve();
-    const run = prev.then(task, task);
+    const previous = this.queues.get(entity) ?? Promise.resolve();
+    const run = previous.then(task, task);
     this.queues.set(
       entity,
       run.then(
@@ -101,51 +56,62 @@ export class DesktopRepository implements DataRepository {
     return run;
   }
 
-  private async toDocs(entity: EntityName): Promise<LocalDoc[]> {
-    const store = await this.store(entity);
-    return Object.keys(store).map(id => makeDoc(id, store[id]));
+  private drain(entity: EntityName): Promise<void> {
+    return (this.queues.get(entity) ?? Promise.resolve()).then(
+      () => undefined,
+      () => undefined,
+    );
+  }
+
+  private async loadStore(entity: EntityName): Promise<Store> {
+    const buffered = this.tx?.buffers.get(entity);
+    if (buffered) return buffered;
+    const json = await this.bridge.db.load(entity);
+    return json ? (JSON.parse(json) as Store) : {};
+  }
+
+  private async toDocs(entity: EntityName, options: ListOptions = {}): Promise<LocalDoc[]> {
+    const buffered = this.tx?.buffers.get(entity);
+    if (buffered) return applyQuery(storeDocs(buffered), options);
+    return docsFromJson(await this.bridge.db.query(entity, options));
   }
 
   async list(entity: EntityName, options: ListOptions = {}): Promise<LocalDoc[]> {
-    return applyQuery(await this.toDocs(entity), options);
+    await this.init();
+    return this.toDocs(entity, options);
   }
 
   async get(entity: EntityName, id: string): Promise<LocalDoc | null> {
-    const store = await this.store(entity);
-    return store[id] ? makeDoc(id, store[id]) : null;
+    await this.init();
+    const buffered = this.tx?.buffers.get(entity);
+    if (buffered) return buffered[id] ? makeDoc(id, buffered[id]) : null;
+    const json = await this.bridge.db.get(entity, id);
+    return json ? makeDoc(id, JSON.parse(json) as Record<string, unknown>) : null;
   }
 
-  /**
-   * Apply one document-level mutation to `entity`.
-   *
-   * Outside a transaction the change is queued per entity (read-copy-persist,
-   * then emit) exactly as before. Inside one (`this.tx` set) it mutates the
-   * collection's working buffer instead: nothing reaches the database or the
-   * listeners until {@link transaction} commits the whole buffer set atomically.
-   * A later write to the same entity within the transaction reads the pending
-   * buffer, so a merge sees the earlier one's change.
-   */
-  private async applyMutation(
+  private async applyBufferedMutation(
     entity: EntityName,
     transform: (store: Store) => Store,
   ): Promise<void> {
-    if (this.tx) {
-      const base = this.tx.buffers.get(entity) ?? (await this.store(entity));
-      this.tx.buffers.set(entity, transform({ ...base }));
-      this.tx.touched.add(entity);
-      return;
-    }
-    await this.queue(entity, async () => {
-      const store = transform({ ...(await this.store(entity)) });
-      await this.persist(entity, store);
-      await this.emit(entity);
-    });
+    const tx = this.tx;
+    if (!tx) throw new Error('No active database transaction.');
+    const base = tx.buffers.get(entity) ?? (await this.loadStore(entity));
+    tx.buffers.set(entity, transform({ ...base }));
+    tx.touched.add(entity);
   }
 
   async set(entity: EntityName, id: string, value: Record<string, unknown>): Promise<void> {
-    await this.applyMutation(entity, store => {
-      store[id] = value;
-      return store;
+    await this.init();
+    if (this.tx) {
+      await this.applyBufferedMutation(entity, store => {
+        store[id] = value;
+        return store;
+      });
+      return;
+    }
+    await this.queue(entity, async () => {
+      await this.bridge.db.set(entity, id, JSON.stringify(value));
+      await this.emit(entity);
     });
   }
 
@@ -156,40 +122,55 @@ export class DesktopRepository implements DataRepository {
   }
 
   async update(entity: EntityName, id: string, patch: Record<string, unknown>): Promise<void> {
-    await this.applyMutation(entity, store => {
-      if (!store[id]) throw new Error(`Cannot update missing ${entity} document: ${id}`);
-      store[id] = { ...store[id], ...patch };
-      return store;
+    await this.init();
+    if (this.tx) {
+      await this.applyBufferedMutation(entity, store => {
+        if (!store[id]) throw new Error(`Cannot update missing ${entity} document: ${id}`);
+        store[id] = { ...store[id], ...patch };
+        return store;
+      });
+      return;
+    }
+    await this.queue(entity, async () => {
+      await this.bridge.db.update(entity, id, JSON.stringify(patch));
+      await this.emit(entity);
     });
   }
 
   async delete(entity: EntityName, id: string): Promise<void> {
-    await this.applyMutation(entity, store => {
-      delete store[id];
-      return store;
+    await this.init();
+    if (this.tx) {
+      await this.applyBufferedMutation(entity, store => {
+        delete store[id];
+        return store;
+      });
+      return;
+    }
+    await this.queue(entity, async () => {
+      await this.bridge.db.delete(entity, id);
+      await this.emit(entity);
     });
   }
 
   async count(entity: EntityName, where?: WhereFilter[]): Promise<number> {
-    return applyQuery(await this.toDocs(entity), { where }).length;
+    await this.init();
+    const buffered = this.tx?.buffers.get(entity);
+    if (buffered) return applyQuery(storeDocs(buffered), { where }).length;
+    return this.bridge.db.count(entity, where ?? []);
   }
 
-  /**
-   * Like the other two repositories, listeners fire after local mutations —
-   * but the initial replay is async because the first read hits the main
-   * process. Unsubscribe stays synchronous, matching Firestore's contract.
-   */
   subscribe(
     entity: EntityName,
-    cb: (docs: LocalDoc[]) => void,
+    cb: Subscriber,
     onError?: (error: unknown) => void,
+    options?: ListOptions,
   ): () => void {
-    let set = this.listeners.get(entity);
-    if (!set) {
-      set = new Set();
-      this.listeners.set(entity, set);
+    let listeners = this.listeners.get(entity);
+    if (!listeners) {
+      listeners = new Map();
+      this.listeners.set(entity, listeners);
     }
-    set.add(cb);
+    listeners.set(cb, options);
     if (onError) {
       let failed = this.failures.get(entity);
       if (!failed) {
@@ -198,105 +179,76 @@ export class DesktopRepository implements DataRepository {
       }
       failed.add(onError);
     }
-    // The first read is async — drop the replay if the caller already
-    // unsubscribed (component gone). A failed first read replays an empty list
-    // *and* reports the error: the UI must never hang in "loading", but an empty
-    // list must never be presented as "the lab has no records" either.
-    void this.toDocs(entity)
+    void this.toDocs(entity, options)
       .then(docs => {
-        if (set?.has(cb)) cb(docs);
+        if (listeners?.has(cb)) cb(docs);
       })
       .catch(error => {
-        if (set?.has(cb)) {
+        if (listeners?.has(cb)) {
           onError?.(error);
           cb([]);
         }
       });
     return () => {
-      set?.delete(cb);
+      listeners?.delete(cb);
       if (onError) this.failures.get(entity)?.delete(onError);
     };
   }
 
   private async emit(entity: EntityName): Promise<void> {
-    const set = this.listeners.get(entity);
-    if (!set || set.size === 0) return;
-    try {
-      const docs = await this.toDocs(entity);
-      set.forEach(cb => cb(docs));
-    } catch (error) {
-      this.failures.get(entity)?.forEach(cb => cb(error));
+    const listeners = this.listeners.get(entity);
+    if (!listeners?.size) return;
+    const groups = new Map<string, { options?: ListOptions; callbacks: Subscriber[] }>();
+    for (const [callback, options] of listeners) {
+      const key = JSON.stringify(options ?? {});
+      const group = groups.get(key) ?? { options, callbacks: [] };
+      group.callbacks.push(callback);
+      groups.set(key, group);
+    }
+    for (const group of groups.values()) {
+      try {
+        const docs = await this.toDocs(entity, group.options);
+        group.callbacks.forEach(callback => callback(docs));
+      } catch (error) {
+        this.failures.get(entity)?.forEach(callback => callback(error));
+      }
     }
   }
 
-  /**
-   * Run several mutations as ONE atomic unit — the desktop counterpart of the
-   * native store's SQLCipher transaction (P0.4/P0.5).
-   *
-   * The body's writes are buffered per collection (see `applyMutation`) and sent
-   * through a single `bridge.db.commit`, which the main process runs inside one
-   * SQLite BEGIN/COMMIT. A report amendment and its history row therefore land
-   * together or not at all; a restore cannot half-apply. If the body throws, or
-   * the commit fails, nothing was ever promoted into the cache and the database
-   * received no partial batch — listeners re-read the unchanged state.
-   *
-   * Atomicity caveat kept honest: the localStorage (web/dev) adapter has no such
-   * guarantee and says so in `webRepository.ts`; this method only makes the
-   * desktop claim true, matching the native store.
-   */
-  async transaction(fn: (tx: DataRepository) => Promise<void>): Promise<void> {
-    // Nested call joins the open transaction rather than flushing it early.
-    if (this.tx) {
-      await fn(this);
-      return;
-    }
-    // Let every queued mutation settle first so the buffer starts from committed
-    // state, not a mid-write cache snapshot.
-    await Promise.all(ALL_ENTITIES.map(entity => this.drain(entity)));
+  async setPrincipal(_actor: RepositoryPrincipal | null): Promise<void> {
+    // Electron binds uid/role to the main-process session token, not renderer state.
+  }
 
-    const tx: { buffers: Map<EntityName, Store>; touched: Set<EntityName> } = {
-      buffers: new Map(),
-      touched: new Set(),
-    };
-    this.tx = tx;
+  /** Buffer every write and commit touched collections as one main-process unit. */
+  async transaction(fn: (tx: DataRepository) => Promise<void>): Promise<void> {
+    if (this.tx || this.transactionUnitActive) {
+      throw new Error('A database transaction is already active; retry after it completes.');
+    }
+    this.transactionUnitActive = true;
     try {
-      await fn(this);
-      const entries = [...tx.buffers.entries()].map(([entity, store]) => ({
-        entity,
-        json: JSON.stringify(store),
-      }));
-      if (entries.length > 0) {
-        await this.bridge.db.commit(entries);
-        // Success: the committed stores become the new cache, so listeners re-read
-        // exactly what persisted and any later write chains off them.
-        for (const [entity, store] of tx.buffers) this.memory.set(entity, Promise.resolve(store));
+      await Promise.all(ALL_ENTITIES.map(entity => this.drain(entity)));
+      const tx = { buffers: new Map<EntityName, Store>(), touched: new Set<EntityName>() };
+      this.tx = tx;
+      try {
+        await fn(this);
+        const entries = [...tx.buffers.entries()].map(([entity, store]) => ({
+          entity,
+          json: JSON.stringify(store),
+        }));
+        if (entries.length > 0) await this.bridge.db.commit(entries);
+      } finally {
+        this.tx = null;
+        for (const entity of tx.touched) await this.emit(entity);
       }
     } finally {
-      this.tx = null;
-      // Notify after the outcome is known — after a commit the rows are new; on a
-      // throw the touched collections are re-read from the untouched database.
-      for (const entity of tx.touched) await this.emit(entity);
+      this.transactionUnitActive = false;
     }
   }
 
-  /** Resolve when every mutation queued for `entity` has settled. */
-  private drain(entity: EntityName): Promise<void> {
-    return (this.queues.get(entity) ?? Promise.resolve()).then(
-      () => undefined,
-      () => undefined,
-    );
-  }
-
-  /**
-   * Drop every collection — "erase all data". Queued mutations are drained
-   * first: a write still in the chain must not re-persist its stale store
-   * (from the memory cache) after the database rows are gone.
-   */
   async clearAll(): Promise<void> {
+    if (this.tx) throw new Error('Cannot erase data inside a transaction.');
     await Promise.all(ALL_ENTITIES.map(entity => this.drain(entity)));
     await this.bridge.db.clear();
-    this.memory.clear();
-    for (const entity of ALL_ENTITIES) this.memory.set(entity, Promise.resolve({}));
     for (const entity of ALL_ENTITIES) await this.emit(entity);
   }
 }

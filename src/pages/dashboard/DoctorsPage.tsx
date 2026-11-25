@@ -1,19 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion } from 'motion/react';
-import {
-  collection,
-  query,
-  orderBy,
-  onSnapshot,
-  addDoc,
-  deleteDoc,
-  doc,
-  updateDoc,
-  getDocs,
-  getDoc,
-  db,
-} from '../../data/fs';
+import { collection, query, orderBy, onSnapshot, doc, getDocs, getDoc, db } from '../../data/fs';
 import { handleFirestoreError, OperationType } from '../../lib/firestore-errors';
+import { captureError } from '../../lib/telemetry';
 import { cn } from '../../lib/utils';
 import { Plus, Stethoscope, Users, Trash2, Edit2, FileText, Loader2 } from 'lucide-react';
 import { DEFAULT_DOCTORS } from '../../lib/doctors';
@@ -39,9 +28,14 @@ import {
   statementsSummary,
 } from '../../lib/referrals';
 import type { DoctorStatement } from '../../lib/referrals';
-import { doctorNameKey } from '../../lib/doctor-registry';
+import { createDoctor, deleteDoctor, doctorNameKey, updateDoctor } from '../../lib/doctor-registry';
 import { formatMoney, getBillingPrefs } from '../../lib/price-list';
-import { payoutsForDoctor, recordReferralPayout, referralLedgerBalance } from '../../lib/referral-payouts';
+import { can } from '../../lib/permissions';
+import {
+  payoutsForDoctor,
+  recordReferralPayout,
+  referralLedgerBalance,
+} from '../../lib/referral-payouts';
 import { buildStatementPdf, outputInvoicePdf } from '../../lib/invoice-pdf';
 import { readSettings } from '../../lib/settings';
 import {
@@ -75,10 +69,18 @@ type StatementTarget = {
   isDefault?: boolean;
 };
 
-export default function DoctorsPage({ initialDoctorId, clearAction }: { initialDoctorId?: string | null; clearAction?: () => void }) {
+export default function DoctorsPage({
+  initialDoctorId,
+  clearAction,
+}: {
+  initialDoctorId?: string | null;
+  clearAction?: () => void;
+}) {
   const { role, user } = useAuth();
   const [doctors, setDoctors] = useState<DoctorRecord[]>([]);
   const [patients, setPatients] = useState<PatientRecord[]>([]);
+  const [sourceErrors, setSourceErrors] = useState({ doctors: false, patients: false });
+  const [reloadKey, setReloadKey] = useState(0);
   const [searchTerm, setSearchTerm] = useState('');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
@@ -123,9 +125,15 @@ export default function DoctorsPage({ initialDoctorId, clearAction }: { initialD
     }
     let active = true;
     void payoutsForDoctor(doctorId)
-      .then(rows => { if (active) setPayouts(rows); })
-      .catch(() => { if (active) setPayouts([]); });
-    return () => { active = false; };
+      .then(rows => {
+        if (active) setPayouts(rows);
+      })
+      .catch(() => {
+        if (active) setPayouts([]);
+      });
+    return () => {
+      active = false;
+    };
   }, [statementDoctor?.id]);
 
   useEffect(() => {
@@ -138,7 +146,9 @@ export default function DoctorsPage({ initialDoctorId, clearAction }: { initialD
         clearAction?.();
       })
       .catch(error => handleFirestoreError(error, OperationType.GET, 'doctors'));
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, [initialDoctorId, clearAction]);
   /**
    * Which `doctor:month` request the displayed statement answers. Loading is
@@ -167,27 +177,32 @@ export default function DoctorsPage({ initialDoctorId, clearAction }: { initialD
         // document missing `name` would otherwise crash the search filter
         // below on `undefined.toLowerCase()` and blank the whole page.
         setDoctors(readDoctors(snapshot.docs));
+        setSourceErrors(previous => ({ ...previous, doctors: false }));
       },
-      error => {
-        handleFirestoreError(error, OperationType.GET, path);
-      },
+      () => setSourceErrors(previous => ({ ...previous, doctors: true })),
     );
     return () => unsubscribe();
-  }, []);
+  }, [reloadKey]);
 
   useEffect(() => {
     const qPatients = query(collection(db, 'patients'));
     const unsubscribePatients = onSnapshot(
       qPatients,
-      snapshot => setPatients(readPatients(snapshot.docs)),
-      error => handleFirestoreError(error, OperationType.GET, 'patients'),
+      snapshot => {
+        setPatients(readPatients(snapshot.docs));
+        setSourceErrors(previous => ({ ...previous, patients: false }));
+      },
+      () => setSourceErrors(previous => ({ ...previous, patients: true })),
     );
     return () => unsubscribePatients();
-  }, []);
+  }, [reloadKey]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const path = 'doctors';
+    if (!can(role, 'manageDoctors')) {
+      toast.error('Only an administrator can change doctor records.');
+      return;
+    }
     // A blank box means "no rate agreed", not "0%" — and a stray `500` from a
     // mistyped field must never reach a payout, so the value is clamped here at
     // the only write door rather than trusted from the input.
@@ -195,7 +210,9 @@ export default function DoctorsPage({ initialDoctorId, clearAction }: { initialD
     const referralPercent =
       rawPercent === '' ? 0 : Math.min(100, Math.max(0, Number(rawPercent) || 0));
     if (referralPercent > 0 && getBillingPrefs().referralCompliance?.mode !== 'payout-enabled') {
-      toast.error('Enable referral payout compliance in Settings → Manage Tests before setting a rate.');
+      toast.error(
+        'Enable referral payout compliance in Settings → Manage Tests before setting a rate.',
+      );
       return;
     }
     const payload = {
@@ -206,17 +223,18 @@ export default function DoctorsPage({ initialDoctorId, clearAction }: { initialD
     };
     try {
       if (editingDoctor) {
-        await updateDoc(doc(db, path, editingDoctor.id), payload);
+        await updateDoctor(
+          editingDoctor.id,
+          { ...payload, active: editingDoctor.active },
+          operatorStamp(user),
+        );
       } else {
-        await addDoc(collection(db, path), {
-          ...payload,
-          createdAt: new Date().toISOString(),
-        });
+        await createDoctor({ ...payload, active: true }, operatorStamp(user));
       }
       setIsModalOpen(false);
       resetForm();
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, path);
+      toast.error(err instanceof Error ? err.message : 'The doctor could not be saved.');
     }
   };
 
@@ -255,27 +273,44 @@ export default function DoctorsPage({ initialDoctorId, clearAction }: { initialD
    */
   const saveCommission = async () => {
     if (!commissionDoctor) return;
+    if (!can(role, 'manageDoctors')) {
+      toast.error('Only an administrator can change referral rates.');
+      return;
+    }
     const name = commissionDoctor.name.trim();
     const raw = commissionValue.trim();
     const referralPercent = raw === '' ? 0 : Math.min(100, Math.max(0, Number(raw) || 0));
     if (referralPercent > 0 && getBillingPrefs().referralCompliance?.mode !== 'payout-enabled') {
-      toast.error('Enable referral payout compliance in Settings → Manage Tests before setting a rate.');
+      toast.error(
+        'Enable referral payout compliance in Settings → Manage Tests before setting a rate.',
+      );
       return;
     }
-    const path = 'doctors';
     setCommissionSaving(true);
     try {
       if (commissionDoctor.isDefault) {
-        await addDoc(collection(db, path), {
-          name,
-          phone: commissionDoctor.phone || '',
-          clinic: '',
-          referralPercent,
-          active: true,
-          createdAt: new Date().toISOString(),
-        });
+        await createDoctor(
+          {
+            name,
+            phone: commissionDoctor.phone || '',
+            clinic: '',
+            referralPercent,
+            active: true,
+          },
+          operatorStamp(user),
+        );
       } else {
-        await updateDoc(doc(db, path, commissionDoctor.id), { referralPercent });
+        await updateDoctor(
+          commissionDoctor.id,
+          {
+            name,
+            phone: commissionDoctor.phone,
+            clinic: commissionDoctor.clinic,
+            referralPercent,
+            active: commissionDoctor.active,
+          },
+          operatorStamp(user),
+        );
       }
       setCommissionDoctor(null);
       toast.success(
@@ -284,7 +319,7 @@ export default function DoctorsPage({ initialDoctorId, clearAction }: { initialD
           : `${name}: commission cleared.`,
       );
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, path);
+      toast.error(err instanceof Error ? err.message : 'The referral rate could not be saved.');
     } finally {
       setCommissionSaving(false);
     }
@@ -292,6 +327,10 @@ export default function DoctorsPage({ initialDoctorId, clearAction }: { initialD
 
   const recordPayout = async () => {
     if (!statementDoctor || statementDoctor.id.startsWith('default_')) return;
+    if (!can(role, 'manageBilling')) {
+      toast.error('Only a billing-authorized operator can record a payout.');
+      return;
+    }
     setPayoutSaving(true);
     try {
       await recordReferralPayout({
@@ -365,9 +404,11 @@ export default function DoctorsPage({ initialDoctorId, clearAction }: { initialD
 
   const getDoctorStats = (doctorName: string, doctorId?: string) => {
     // Stable id wins; legacy records without one retain the folded-name fallback.
-    const referrals = patients.filter(p => doctorId && !doctorId.startsWith('default_')
-      ? p.doctorId === doctorId || (!p.doctorId && dnameMatches(p.doctorName, doctorName))
-      : dnameMatches(p.doctorName, doctorName));
+    const referrals = patients.filter(p =>
+      doctorId && !doctorId.startsWith('default_')
+        ? p.doctorId === doctorId || (!p.doctorId && dnameMatches(p.doctorName, doctorName))
+        : dnameMatches(p.doctorName, doctorName),
+    );
     const patientsCount = referrals.length;
     // Count total tests across those patients
     const testsCount = referrals.reduce(
@@ -484,7 +525,7 @@ export default function DoctorsPage({ initialDoctorId, clearAction }: { initialD
       else if (message) toast.info(message);
       else toast.success('Statement ready.');
     } catch (err) {
-      console.error('Statement export failed:', err);
+      captureError(err, { scope: 'doctors:statement-pdf', entity: 'invoices' });
       toast.error('Could not build the statement.');
     } finally {
       setPrinting(false);
@@ -493,6 +534,29 @@ export default function DoctorsPage({ initialDoctorId, clearAction }: { initialD
 
   return (
     <div className="space-y-6">
+      {(sourceErrors.doctors || sourceErrors.patients) && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-error/30 bg-error-container/40 p-4"
+        >
+          <p className="text-sm font-semibold text-error">
+            Doctor and referral data is partial or stale:{' '}
+            {sourceErrors.doctors && 'doctor register'}
+            {sourceErrors.doctors && sourceErrors.patients && ', '}
+            {sourceErrors.patients && 'patient referrals'} could not be read.
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setSourceErrors({ doctors: false, patients: false });
+              setReloadKey(value => value + 1);
+            }}
+          >
+            Retry doctors
+          </Button>
+        </div>
+      )}
       <div className="flex flex-col md:flex-row justify-between gap-4">
         <div className="flex flex-col sm:flex-row flex-1 max-w-lg items-stretch gap-2">
           <SearchField
@@ -871,12 +935,7 @@ export default function DoctorsPage({ initialDoctorId, clearAction }: { initialD
         width="sm"
         footer={
           <div className="flex gap-3">
-            <Button
-              variant="outline"
-              size="lg"
-              fullWidth
-              onClick={() => setCommissionDoctor(null)}
-            >
+            <Button variant="outline" size="lg" fullWidth onClick={() => setCommissionDoctor(null)}>
               Cancel
             </Button>
             <Button
@@ -936,12 +995,11 @@ export default function DoctorsPage({ initialDoctorId, clearAction }: { initialD
         message={`Are you sure you want to delete ${doctorToDelete?.name}? This action cannot be undone.`}
         onConfirm={async () => {
           if (!doctorToDelete) return;
-          const path = 'doctors';
           try {
-            await deleteDoc(doc(db, path, doctorToDelete.id));
+            await deleteDoctor(doctorToDelete.id, operatorStamp(user));
             setDoctorToDelete(null);
           } catch (err) {
-            handleFirestoreError(err, OperationType.DELETE, path);
+            toast.error(err instanceof Error ? err.message : 'The doctor could not be deleted.');
           }
         }}
       />
@@ -1049,7 +1107,7 @@ export default function DoctorsPage({ initialDoctorId, clearAction }: { initialD
                     value={formatMoney(statement.totals.billAmount)}
                   />
                   <SummaryCell label="Collected" value={formatMoney(statement.totals.collected)} />
-                  <SummaryCell label="Rate applied" value={`${statement.percent}%`} />
+                  <SummaryCell label="Rate applied" value={statement.rateLabel} />
                   <SummaryCell
                     label="Commission"
                     value={formatMoney(statement.totals.commission)}
@@ -1061,34 +1119,67 @@ export default function DoctorsPage({ initialDoctorId, clearAction }: { initialD
               <Card pad="sm" className="space-y-3">
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <SummaryCell label="Paid / adjusted" value={formatMoney(payoutBalance.paid)} />
-                  <SummaryCell label="Remaining payable" value={formatMoney(payoutBalance.balance)} emphasis />
+                  <SummaryCell
+                    label="Remaining payable"
+                    value={formatMoney(payoutBalance.balance)}
+                    emphasis
+                  />
                 </div>
-                {statementDoctor && !statementDoctor.id.startsWith('default_') && getBillingPrefs().referralCompliance?.mode === 'payout-enabled' && (
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <Field label="Payout amount">
-                      <TextInput type="number" min={0} step="0.01" value={payoutAmount} onChange={e => setPayoutAmount(e.target.value)} />
-                    </Field>
-                    <Field label="Mode">
-                      <select value={payoutMode} onChange={e => setPayoutMode(e.target.value as PaymentMode)} className="h-11 w-full rounded-xl border border-outline-variant bg-surface px-3">
-                        <option value="cash">Cash</option><option value="upi">UPI</option><option value="bank">Bank transfer</option><option value="card">Card</option>
-                      </select>
-                    </Field>
-                    <Field label="Reference">
-                      <TextInput value={payoutReference} onChange={e => setPayoutReference(e.target.value)} />
-                    </Field>
-                    <Field label="Note">
-                      <TextInput value={payoutNote} onChange={e => setPayoutNote(e.target.value)} />
-                    </Field>
-                    <div className="sm:col-span-2">
-                      <Button loading={payoutSaving} disabled={!(Number(payoutAmount) > 0)} onClick={() => void recordPayout()}>Record payout</Button>
+                {statementDoctor &&
+                  !statementDoctor.id.startsWith('default_') &&
+                  getBillingPrefs().referralCompliance?.mode === 'payout-enabled' && (
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <Field label="Payout amount">
+                        <TextInput
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          value={payoutAmount}
+                          onChange={e => setPayoutAmount(e.target.value)}
+                        />
+                      </Field>
+                      <Field label="Mode">
+                        <select
+                          value={payoutMode}
+                          onChange={e => setPayoutMode(e.target.value as PaymentMode)}
+                          className="h-11 w-full rounded-xl border border-outline-variant bg-surface px-3"
+                        >
+                          <option value="cash">Cash</option>
+                          <option value="upi">UPI</option>
+                          <option value="bank">Bank transfer</option>
+                          <option value="card">Card</option>
+                        </select>
+                      </Field>
+                      <Field label="Reference">
+                        <TextInput
+                          value={payoutReference}
+                          onChange={e => setPayoutReference(e.target.value)}
+                        />
+                      </Field>
+                      <Field label="Note">
+                        <TextInput
+                          value={payoutNote}
+                          onChange={e => setPayoutNote(e.target.value)}
+                        />
+                      </Field>
+                      <div className="sm:col-span-2">
+                        <Button
+                          loading={payoutSaving}
+                          disabled={!(Number(payoutAmount) > 0)}
+                          onClick={() => void recordPayout()}
+                        >
+                          Record payout
+                        </Button>
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )}
                 {payouts.length > 0 && (
                   <ul className="divide-y divide-outline-variant/20 text-xs">
                     {payouts.map(entry => (
                       <li key={entry.id} className="flex justify-between gap-3 py-2">
-                        <span>{entry.type} · {entry.mode} · {entry.reference || entry.note || '—'}</span>
+                        <span>
+                          {entry.type} · {entry.mode} · {entry.reference || entry.note || '—'}
+                        </span>
                         <span>{formatMoney(entry.amount)}</span>
                       </li>
                     ))}
